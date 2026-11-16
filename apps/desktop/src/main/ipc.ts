@@ -4,6 +4,7 @@ import { totalmem } from 'node:os'
 import { ZodError, type ZodType } from 'zod'
 import { Events, Ipc } from '@shared/channels'
 import { schemas } from '@shared/schemas'
+import { trainingSchemas } from '@shared/training'
 import { resolveToolset, toolDefinitions } from '@shared/agent/registry'
 import type { AgentMode, AiToolCall, AiToolResult } from '@shared/ai'
 import type { IpcResult } from '@shared/types'
@@ -75,7 +76,7 @@ import { inspectRemoteResource, removeRemoteResource } from './services/remoteRe
 import { getTrainingHost } from './services/trainingHosts'
 import { pushTestNotification } from './services/desktopNotifications'
 import { isInside } from './lib/paths'
-import { errorCode } from './lib/codedError'
+import { codedError, errorCode } from './lib/codedError'
 import { getEngineFeatures } from './services/engineFeatures'
 import { importImageBytes, importImageFile, pruneProjectMasks, saveMask } from './services/studioAssets'
 import { addControlAdapter, listControlAdapters, removeControlAdapter } from './services/controlAdapters'
@@ -90,9 +91,27 @@ import {
   removeTrainerVersion,
   trainerDoctor,
   trainerMirrorInfo,
-  startTrainerRun,
 } from './services/trainers'
 import { listTrainerBranches, listTrainerCommits } from './services/trainerGit'
+import { autoCaption } from './services/training/captions'
+import { addToDataset, removeFromDataset, scanDataset, setCaption } from './services/training/dataset'
+import { prepareTraining, trainingReadiness } from './services/training/readiness'
+import {
+  trainerVersionInUse,
+  trainingChooseStep,
+  trainingCommand,
+  trainingCreate,
+  trainingDuplicate,
+  trainingGet,
+  trainingList,
+  trainingRemove,
+  trainingReveal,
+  trainingSamples,
+  trainingStart,
+  trainingStop,
+  trainingUpdate,
+} from './services/training/run'
+import { assertDatasetEditable, getTrainingProject } from './services/training/store'
 import { getBackendInfo } from './services/backend'
 import { deleteProject, getProject, listProjects, saveProject } from './services/projects'
 import { listLaunchRows, removeLaunchRow, upsertLaunchRow } from './services/launchQueue'
@@ -115,6 +134,12 @@ import {
   remoteVersion,
   remoteVersions,
 } from './services/remoteTrainer'
+
+async function assertTrainerVersionFree(versionId: string): Promise<void> {
+  if (await trainerVersionInUse(versionId)) {
+    throw codedError('E_TRAINER_IN_USE', '有训练正在用这个训练器版本。等训练结束或停止后再删除。')
+  }
+}
 
 function toResult<T>(fn: () => Promise<T> | T): Promise<IpcResult<T>> {
   return Promise.resolve()
@@ -296,7 +321,9 @@ export function registerIpc(): void {
   })
 
   handle(Ipc.windowOpen, schemas.windowOpen, ({ kind, route }) => {
-    openWindow(kind, route)
+    // 训练 lives in the main window now; an old intent for the trainer window lands there.
+    if (kind === 'trainer') openWindow('studio', '/training')
+    else openWindow('studio', route)
     return true
   })
 
@@ -399,6 +426,7 @@ export function registerIpc(): void {
   )
 
   handle(Ipc.trainerRemoteRemove, schemas.trainerRemoteVersion, async ({ hostId, versionId }) => {
+    await assertTrainerVersionFree(versionId)
     await remoteRemoveVersion(getSettings(), remoteVersion(getSettings(), hostId, versionId))
     return true
   })
@@ -414,6 +442,7 @@ export function registerIpc(): void {
   handle(Ipc.trainerCreate, schemas.trainerCreate, (input) => createTrainerVersion(getSettings(), input))
 
   handle(Ipc.trainerRemove, schemas.trainerId, async ({ id }) => {
+    await assertTrainerVersionFree(id)
     await removeTrainerVersion(getSettings(), id)
     return true
   })
@@ -422,7 +451,64 @@ export function registerIpc(): void {
 
   handle(Ipc.trainerDoctor, schemas.trainerId, ({ id }) => trainerDoctor(getSettings(), id))
 
-  handle(Ipc.trainerRun, schemas.trainerRun, (input) => startTrainerRun(getSettings(), input))
+  handle(Ipc.trainingReadiness, trainingSchemas.readiness, ({ hostId }) => trainingReadiness(hostId))
+
+  handle(Ipc.trainingPrepare, trainingSchemas.prepare, ({ hostId }) => prepareTraining(hostId))
+
+  handle(Ipc.trainingList, null, () => trainingList())
+
+  handle(Ipc.trainingCreate, trainingSchemas.create, ({ kind, hostId }) => trainingCreate(kind, hostId))
+
+  handle(Ipc.trainingGet, trainingSchemas.id, ({ id }) => trainingGet(id))
+
+  handle(Ipc.trainingUpdate, trainingSchemas.update, ({ id, patch }) => trainingUpdate(id, patch))
+
+  handle(Ipc.trainingRemove, trainingSchemas.id, async ({ id }) => {
+    await trainingRemove(id)
+    return true
+  })
+
+  handle(Ipc.trainingDuplicate, trainingSchemas.id, ({ id }) => trainingDuplicate(id))
+
+  handle(Ipc.trainingDataset, trainingSchemas.id, async ({ id }) => {
+    await getTrainingProject(id)
+    return scanDataset(id)
+  })
+
+  handle(Ipc.trainingDatasetAdd, trainingSchemas.datasetAdd, async ({ id, paths: sources }) => {
+    await assertDatasetEditable(id)
+    return addToDataset(id, sources)
+  })
+
+  handle(Ipc.trainingDatasetRemove, trainingSchemas.datasetRemove, async ({ id, names }) => {
+    await assertDatasetEditable(id)
+    return removeFromDataset(id, names)
+  })
+
+  handle(Ipc.trainingCaptionSet, trainingSchemas.captionSet, async ({ id, name, caption }) => {
+    await assertDatasetEditable(id)
+    return setCaption(id, name, caption)
+  })
+
+  handle(Ipc.trainingCaptionAuto, trainingSchemas.captionAuto, async ({ id, names }) => {
+    await assertDatasetEditable(id)
+    return autoCaption(id, names)
+  })
+
+  handle(Ipc.trainingCommand, trainingSchemas.id, ({ id }) => trainingCommand(id))
+
+  handle(Ipc.trainingStart, trainingSchemas.id, ({ id }) => trainingStart(id))
+
+  handle(Ipc.trainingStop, trainingSchemas.id, ({ id }) => trainingStop(id))
+
+  handle(Ipc.trainingSamples, trainingSchemas.id, ({ id }) => trainingSamples(id))
+
+  handle(Ipc.trainingChooseStep, trainingSchemas.chooseStep, ({ id, step }) => trainingChooseStep(id, step))
+
+  handle(Ipc.trainingReveal, trainingSchemas.id, async ({ id }) => {
+    await trainingReveal(id)
+    return true
+  })
 
   handle(Ipc.settingsGet, null, () => getSettings())
 
