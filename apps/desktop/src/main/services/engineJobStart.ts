@@ -11,7 +11,7 @@ import { getSettings } from './settings'
 import { startEngineJob } from './supervisor'
 import { assertGenerationAllowed } from '../update/gate'
 
-const INPUT_KEYS = new Set(['initImage', 'mask', 'control', 'references', 'sampling'])
+const INPUT_KEYS = new Set(['initImage', 'mask', 'control', 'references', 'visionReferences', 'sampling'])
 
 const text = (value: unknown): string | undefined => (typeof value === 'string' && value ? value : undefined)
 

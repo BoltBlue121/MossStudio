@@ -14,7 +14,7 @@ import { isInside } from '../lib/paths'
  * control adapter must be a registered one.
  */
 
-export type JobInputs = Pick<JobParams, 'initImage' | 'mask' | 'control' | 'references' | 'sampling'>
+export type JobInputs = Pick<JobParams, 'initImage' | 'mask' | 'control' | 'references' | 'visionReferences' | 'sampling'>
 
 export interface JobInputContext {
   /** Folders input pictures may come from: the project's assets, outputs, gallery folders. */
@@ -28,7 +28,7 @@ export interface JobInputContext {
 
 export function pickJobInputs(source: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
-  for (const key of ['initImage', 'mask', 'control', 'references', 'sampling'] as const) {
+  for (const key of ['initImage', 'mask', 'control', 'references', 'visionReferences', 'sampling'] as const) {
     if (source[key] !== undefined && source[key] !== null) out[key] = source[key]
   }
   return out
@@ -85,6 +85,7 @@ function checkFeatures(inputs: JobInputs, features: EngineFeatures, remote: bool
   if ((inputs.initImage || inputs.mask) && !features.imageInput) throw missing('起始图')
   if (inputs.control && !features.control) throw missing('控制图')
   if (inputs.references && !features.references) throw missing('参考图')
+  if (inputs.visionReferences && !features.visionReferences) throw missing('人物参考图')
   const sampling = inputs.sampling
   if (sampling?.hires && !features.hires) throw missing('高清修复')
   // A CLI engine runs euler with the MOSS schedule: naming exactly those is not a change.
@@ -152,6 +153,12 @@ export async function validateJobInputs(source: Record<string, unknown>, context
     const paths = []
     for (const [index, path] of inputs.references.paths.entries()) paths.push(await checkImage(path, `参考图 ${index + 1}`, roots))
     out.references = { ...inputs.references, paths }
+  }
+  if (inputs.visionReferences) {
+    const paths = []
+    for (const [index, path] of inputs.visionReferences.paths.entries())
+      paths.push(await checkImage(path, `人物参考图 ${index + 1}`, roots))
+    out.visionReferences = { ...inputs.visionReferences, paths }
   }
   return Object.fromEntries(Object.entries(out).filter(([, value]) => value !== undefined)) as JobInputs
 }

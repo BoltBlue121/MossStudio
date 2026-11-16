@@ -1157,3 +1157,15 @@ describe('jobInputsSchema paths', () => {
     expect(jobInputsSchema.safeParse({ references: { paths: ['   '] } }).error?.issues[0]?.message).toBe('图片路径不能为空')
   })
 })
+
+describe('jobInputsSchema vision references', () => {
+  it('takes 1 to 4 pictures, a pixel cap the engine accepts and a weight from 0 to 2', () => {
+    const vision = (patch: Record<string, unknown>) => jobInputsSchema.safeParse({ visionReferences: { paths: ['/p/a.png'], ...patch } })
+    expect(vision({ maxPixels: 25_000, weight: 0.5 }).success).toBe(true)
+    expect(vision({ paths: [] }).error?.issues[0]?.message).toBe('至少需要 1 张参考图')
+    expect(vision({ paths: ['/a', '/b', '/c', '/d', '/e'] }).error?.issues[0]?.message).toBe('参考图最多 4 张')
+    expect(vision({ maxPixels: 512 }).error?.issues[0]?.message).toBe('参考图像素需在 1024 到 4194304 之间')
+    expect(vision({ maxPixels: 25_000.5 }).success).toBe(false)
+    expect(vision({ weight: 2.5 }).error?.issues[0]?.message).toBe('参考强度需在 0 到 2 之间')
+  })
+})

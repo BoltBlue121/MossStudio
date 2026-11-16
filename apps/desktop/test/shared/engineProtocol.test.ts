@@ -477,11 +477,22 @@ describe('engineFeaturesOf', () => {
       imageInput: true,
       control: true,
       references: true,
+      visionReferences: false,
+      visionGuidance: false,
       hires: true,
       samplers: true,
       lora: true,
       values: hello22.values,
     })
+    // A 2.3 engine with vision references says so.
+    const vision = engineFeaturesOf(decodeEngineHello({ ...hello22, capabilities: { ...hello22.capabilities, vision_references: true } }))
+    expect(vision.visionReferences).toBe(true)
+    expect(vision.visionGuidance).toBe(false)
+    // One whose weight guides the sampling says that too.
+    const guided = engineFeaturesOf(
+      decodeEngineHello({ ...hello22, capabilities: { ...hello22.capabilities, vision_references: true, vision_guidance: true } }),
+    )
+    expect(guided.visionGuidance).toBe(true)
   })
 
   it('treats an engine without these capabilities (older than 2.2) as supporting none of them', () => {
@@ -493,6 +504,8 @@ describe('engineFeaturesOf', () => {
       imageInput: false,
       control: false,
       references: false,
+      visionReferences: false,
+      visionGuidance: false,
       hires: false,
       samplers: false,
       lora: true,

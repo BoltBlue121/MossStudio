@@ -803,6 +803,8 @@ export function engineFeaturesFixture(patch: Partial<EngineFeatures> = {}): Engi
     imageInput: true,
     control: true,
     references: true,
+    visionReferences: true,
+    visionGuidance: true,
     hires: true,
     samplers: true,
     lora: true,

@@ -194,6 +194,8 @@ export function engineFeaturesOf(hello: EngineHello): EngineFeatures {
     imageInput: on('image_input'),
     control: on('control'),
     references: on('references'),
+    visionReferences: on('vision_references'),
+    visionGuidance: on('vision_guidance'),
     hires: on('hires'),
     samplers: on('samplers'),
     // Every moss-server since protocol 2 loads LoRAs; only an explicit `false` says otherwise.

@@ -787,6 +787,8 @@ export interface JobParams {
   control?: JobControl
   /** Reference pictures for an edit adapter (at most 4). */
   references?: JobReferences
+  /** Pictures the text encoder's vision tower puts into the prompt (at most 4; EngineFeatures.visionReferences). */
+  visionReferences?: JobVisionReferences
   /** Sampler, scheduler and the second (hires) pass; absent fields use the engine's defaults. */
   sampling?: JobSampling
 }
@@ -827,6 +829,15 @@ export interface JobReferences {
   maxEdge?: number
 }
 
+/** MossInfer's generate `vision_references`: each picture becomes ~1 prompt token per 32×32 pixels. */
+export interface JobVisionReferences {
+  paths: string[]
+  /** 1024–4194304; engine default 100000 (about 90 tokens). A character portrait at about this size works best. */
+  maxPixels?: number
+  /** 0–2, engine default 1: below 1 the pictures pull less. */
+  weight?: number
+}
+
 export interface JobHires {
   width: number
   height: number
@@ -853,6 +864,10 @@ export interface EngineFeatures {
   imageInput: boolean
   control: boolean
   references: boolean
+  /** Vision references (`vision_references`): pictures put into the prompt, no adapter needed. Absent on older engines. */
+  visionReferences?: boolean
+  /** `vision_references.weight` guides the sampling (`vision_guidance`); before, it faded the pictures toward gray. */
+  visionGuidance?: boolean
   hires: boolean
   samplers: boolean
   /** LoRA adapters (`adapters`). */

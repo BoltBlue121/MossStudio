@@ -204,3 +204,34 @@ describe('jobInputFiles / rewriteJobInputPaths', () => {
     expect(rewriteJobInputPaths(base, (path) => `/x${path}`)).toEqual(base)
   })
 })
+
+describe('vision references', () => {
+  const vision: JobParams = {
+    ...base,
+    visionReferences: { paths: ['/p/assets/aki.png', '/p/assets/ren.png'], maxPixels: 120000, weight: 0.8 },
+  }
+
+  it('become the engine’s vision_references, optional members only when set', () => {
+    expect(buildGenerateParams(vision, { output: '/o.png' })['vision_references']).toEqual({
+      images: ['/p/assets/aki.png', '/p/assets/ren.png'],
+      max_pixels: 120000,
+      weight: 0.8,
+    })
+    expect(buildGenerateParams({ ...base, visionReferences: { paths: ['/a.png'] } }, { output: '/o.png' })['vision_references']).toEqual({
+      images: ['/a.png'],
+    })
+    expect(buildGenerateParams(base, { output: '/o.png' })).not.toHaveProperty('vision_references')
+  })
+
+  it('are input pictures: listed for upload and rewritten for a remote host', () => {
+    expect(jobInputFiles(vision)).toEqual([
+      { role: 'vision', index: 0, path: '/p/assets/aki.png' },
+      { role: 'vision', index: 1, path: '/p/assets/ren.png' },
+    ])
+    expect(rewriteJobInputPaths(vision, (path) => `/remote${path}`).visionReferences).toEqual({
+      paths: ['/remote/p/assets/aki.png', '/remote/p/assets/ren.png'],
+      maxPixels: 120000,
+      weight: 0.8,
+    })
+  })
+})

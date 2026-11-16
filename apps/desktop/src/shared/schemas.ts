@@ -120,6 +120,18 @@ export const jobInputsSchema = z
           .max(16, '控制图最多 16 张'),
       })
       .optional(),
+    visionReferences: z
+      .object({
+        paths: z.array(inputPath).min(1, '至少需要 1 张参考图').max(4, '参考图最多 4 张'),
+        maxPixels: z
+          .number()
+          .int()
+          .min(1024, '参考图像素需在 1024 到 4194304 之间')
+          .max(4194304, '参考图像素需在 1024 到 4194304 之间')
+          .optional(),
+        weight: z.number().min(0, '参考强度需在 0 到 2 之间').max(2, '参考强度需在 0 到 2 之间').optional(),
+      })
+      .optional(),
     references: z
       .object({
         paths: z.array(inputPath).min(1, '至少需要 1 张参考图').max(4, '参考图最多 4 张'),

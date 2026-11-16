@@ -118,6 +118,30 @@ describe('validateJobInputs: accepted requests', () => {
   })
 })
 
+describe('validateJobInputs: vision references', () => {
+  it('checks every picture like any input and keeps the settings', async () => {
+    const aki = put(join(assets(), 'aki.png'))
+    await expect(
+      validateJobInputs(
+        { visionReferences: { paths: [aki], maxPixels: 100000, weight: 1.2 } },
+        context({ features: features({ visionReferences: true }) }),
+      ),
+    ).resolves.toEqual({ visionReferences: { paths: [aki], maxPixels: 100000, weight: 1.2 } })
+    const stray = put(join(outside(), 'stray.png'))
+    expect(
+      (await failure({ visionReferences: { paths: [stray] } }, context({ features: features({ visionReferences: true }) }))).code,
+    ).toBe('E_INPUT_PATH')
+  })
+
+  it('refuses more than four pictures or settings out of range', async () => {
+    const aki = put(join(assets(), 'aki.png'))
+    const ok = context({ features: features({ visionReferences: true }) })
+    expect((await failure({ visionReferences: { paths: [aki, aki, aki, aki, aki] } }, ok)).message).toBe('参考图最多 4 张')
+    expect((await failure({ visionReferences: { paths: [aki], weight: 3 } }, ok)).message).toBe('参考强度需在 0 到 2 之间')
+    expect((await failure({ visionReferences: { paths: [aki], maxPixels: 10 } }, ok)).message).toBe('参考图像素需在 1024 到 4194304 之间')
+  })
+})
+
 describe('validateJobInputs: paths', () => {
   it('rejects a picture outside every allowed folder', async () => {
     const stray = put(join(outside(), 'stray.png'))
@@ -251,6 +275,10 @@ describe('validateJobInputs: what the engine supports', () => {
       message: '当前引擎不支持起始图，请更新 MossInfer',
     })
     expect((await failure({ references: { paths: ['/a.png'] } }, old)).message).toBe('当前引擎不支持参考图，请更新 MossInfer')
+    // Vision references need an engine that says it has them (MossInfer with vision_references).
+    expect((await failure({ visionReferences: { paths: ['/a.png'] } }, context({ features: features() }))).message).toBe(
+      '当前引擎不支持人物参考图，请更新 MossInfer',
+    )
     expect((await failure({ sampling: { hires: { width: 1024, height: 1024 } } }, old)).message).toBe(
       '当前引擎不支持高清修复，请更新 MossInfer',
     )

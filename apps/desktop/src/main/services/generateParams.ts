@@ -64,6 +64,13 @@ export function buildGenerateParams(params: JobParams, options: GenerateRequestO
     out['references'] = references
   }
 
+  if (params.visionReferences?.paths.length) {
+    const vision: Record<string, unknown> = { images: [...params.visionReferences.paths] }
+    if (params.visionReferences.maxPixels !== undefined) vision['max_pixels'] = params.visionReferences.maxPixels
+    if (params.visionReferences.weight !== undefined) vision['weight'] = params.visionReferences.weight
+    out['vision_references'] = vision
+  }
+
   const sampling = params.sampling
   if (sampling) {
     if (sampling.sampler) out['sampler'] = sampling.sampler
@@ -98,12 +105,15 @@ export function previewEveryFor(steps: number): number {
 }
 
 /** Every image file a job reads, in a stable order, with where it sits in the params. */
-export function jobInputFiles(params: JobParams): Array<{ role: 'init' | 'mask' | 'control' | 'reference'; index: number; path: string }> {
-  const files: Array<{ role: 'init' | 'mask' | 'control' | 'reference'; index: number; path: string }> = []
+export function jobInputFiles(
+  params: JobParams,
+): Array<{ role: 'init' | 'mask' | 'control' | 'reference' | 'vision'; index: number; path: string }> {
+  const files: Array<{ role: 'init' | 'mask' | 'control' | 'reference' | 'vision'; index: number; path: string }> = []
   if (params.initImage) files.push({ role: 'init', index: 0, path: params.initImage.path })
   if (params.mask) files.push({ role: 'mask', index: 0, path: params.mask.path })
   params.control?.images.forEach((image, index) => files.push({ role: 'control', index, path: image.path }))
   params.references?.paths.forEach((path, index) => files.push({ role: 'reference', index, path }))
+  params.visionReferences?.paths.forEach((path, index) => files.push({ role: 'vision', index, path }))
   return files
 }
 
@@ -117,5 +127,8 @@ export function rewriteJobInputPaths(params: JobParams, rewrite: (path: string) 
       ? { control: { ...params.control, images: params.control.images.map((image) => ({ ...image, path: rewrite(image.path) })) } }
       : {}),
     ...(params.references ? { references: { ...params.references, paths: params.references.paths.map(rewrite) } } : {}),
+    ...(params.visionReferences
+      ? { visionReferences: { ...params.visionReferences, paths: params.visionReferences.paths.map(rewrite) } }
+      : {}),
   }
 }

@@ -494,7 +494,10 @@ function handleRunnerEvent(job: JobRecord, runningJob: RunningJob, payload: stri
   }
 }
 
-export interface StartEngineJobInput extends Pick<JobParams, 'initImage' | 'mask' | 'control' | 'references' | 'sampling'> {
+export interface StartEngineJobInput extends Pick<
+  JobParams,
+  'initImage' | 'mask' | 'control' | 'references' | 'visionReferences' | 'sampling'
+> {
   projectId?: string
   canvasId?: string
   canvasLineage?: string[]
@@ -583,6 +586,7 @@ function paramsOf(input: StartEngineJobInput): JobParams {
     ...(input.mask ? { mask: input.mask } : {}),
     ...(input.control ? { control: input.control } : {}),
     ...(input.references ? { references: input.references } : {}),
+    ...(input.visionReferences ? { visionReferences: input.visionReferences } : {}),
     ...(input.sampling ? { sampling: input.sampling } : {}),
   }
 }
