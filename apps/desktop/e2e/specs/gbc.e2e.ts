@@ -173,6 +173,38 @@ describe('拆成区域', () => {
   })
 })
 
+describe('解析', () => {
+  const app = useApp()
+
+  it('reads a board picture from the top bar and turns it into a 画面', async () => {
+    const page = await openBoard(app)
+    await page.locator('[data-gbc-toggle]').click()
+    const panel = page.locator('[data-gbc-panel]')
+    await panel.waitFor()
+    await panel.getByLabel('从画板选择').selectOption('img-1')
+    await panel.locator('[data-gbc-run]').click()
+    await expect.poll(() => panel.locator('#gbc-caption').inputValue()).toBe('午后的窗台，阳光照在一只睡着的橘猫身上')
+    await app.screenshot('gbc-parse-panel-light')
+
+    await panel.getByRole('button', { name: '变成画面' }).click()
+    await expect.poll(async () => (await cardIds(page)).length).toBe(3)
+    const created = (await cardIds(page)).find((id) => id !== 'img-1' && id !== 'canvas-1')!
+    const made = card(page, created)
+    await expect.poll(() => made.locator('[data-region-id]').count()).toBe(2)
+    expect(await made.textContent()).toContain('小猫照片')
+
+    // The same picture can go in as a vision reference of the 画面 just made.
+    await panel.getByRole('button', { name: '作为参考图' }).click()
+    await expect.poll(async () => (await cardIds(page)).length).toBe(4)
+    await expect.poll(() => page.locator('[data-references-row]').count()).toBe(1)
+  })
+
+  it('is not offered while 看图拆区域 is off', async () => {
+    const page = await openBoard(app, { settings: { gbcEnabled: false } })
+    expect(await page.locator('[data-gbc-toggle]').count()).toBe(0)
+  })
+})
+
 describe('设置 › 功能 › 看图拆区域', () => {
   const app = useApp()
 
