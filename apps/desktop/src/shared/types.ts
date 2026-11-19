@@ -133,6 +133,7 @@ export interface ModelSource {
 export interface ModelSourceFile {
   path: string
   name: string
+  size: number
   role: ScannedModel['role'] | 'control_adapter'
   state: 'available' | 'pending' | 'incompatible'
 }

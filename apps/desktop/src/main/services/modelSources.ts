@@ -30,11 +30,45 @@ const inspectionSchema = z.object({
   controlKinds: z.array(z.string()).optional(),
 })
 const cacheEntrySchema = z.object({ size: z.number(), mtimeMs: z.number(), value: z.union([inspectionSchema, z.string()]) })
-const indexSchema = z.object({ engine: z.string(), files: z.record(z.string(), cacheEntrySchema) })
+const sourceKind = z.enum(['comfyui', 'webui', 'forge', 'custom'])
+const discoveredSourceSchema = z.object({ kind: sourceKind, path: z.string() })
+const scanFileSchema = z.object({
+  path: z.string(),
+  name: z.string(),
+  size: z.number(),
+  mtimeMs: z.number(),
+  layout: z.enum(['comfyui-single-file', 'diffusers-folder', 'unknown']),
+})
+const sourceStatusSchema = discoveredSourceSchema.extend({
+  id: z.string(),
+  roots: z.array(z.string()),
+  available: z.number(),
+  pending: z.number(),
+  incompatible: z.number(),
+  issues: z.array(z.string()),
+  files: z.array(
+    scanFileSchema.pick({ path: true, name: true, size: true }).extend({
+      role: z.enum(['dit', 'text_encoder', 'vae', 'support', 'full', 'lora', 'control_adapter']),
+      state: z.enum(['available', 'pending', 'incompatible']),
+    }),
+  ),
+})
+const indexSchema = z.object({
+  engine: z.string(),
+  files: z.record(z.string(), cacheEntrySchema),
+  snapshot: z
+    .object({
+      key: z.string(),
+      statuses: z.array(sourceStatusSchema),
+      weights: z.array(z.object({ file: scanFileSchema, inspection: inspectionSchema, sourceIds: z.array(z.string()) })),
+    })
+    .optional(),
+})
+const discoverySchema = z.object({ sources: z.array(discoveredSourceSchema) })
 type Inspection = z.infer<typeof inspectionSchema>
 
 interface SharedWeight {
-  file: ScannedModel
+  file: z.infer<typeof scanFileSchema>
   inspection: Inspection
   sourceIds: Set<string>
 }
@@ -44,6 +78,7 @@ let statuses: ModelSourceStatus[] = []
 let ongoing: Promise<void> | null = null
 let scanGeneration = 0
 let cachedEngine: string | null = null
+let inventoryEngine = ''
 const inspected = new Map<string, z.infer<typeof cacheEntrySchema>>()
 
 async function loadIndex(engine: string): Promise<void> {
@@ -53,11 +88,16 @@ async function loadIndex(engine: string): Promise<void> {
   cachedEngine = key
   inspected.clear()
   if (!engine) return
+  const index = await readSharedIndex()
+  if (index?.engine === engine) {
+    for (const [path, value] of Object.entries(index.files)) inspected.set(path, value)
+  }
+}
+
+async function readSharedIndex(): Promise<z.infer<typeof indexSchema> | undefined> {
   try {
-    const parsed = indexSchema.safeParse(JSON.parse(await readFile(file, 'utf8')))
-    if (parsed.success && parsed.data.engine === engine) {
-      for (const [path, value] of Object.entries(parsed.data.files)) inspected.set(path, value)
-    }
+    const parsed = indexSchema.safeParse(JSON.parse(await readFile(paths.sharedModelIndex(), 'utf8')))
+    if (parsed.success) return parsed.data
   } catch {
     // 缓存不可读时从共享文件重新检查。
   }
@@ -140,22 +180,79 @@ async function inspectWeight(file: ScannedModel, request: EngineRequest | null):
   }
 }
 
-async function scanSources(settings: Settings, generation: number): Promise<void> {
-  const sources = settings.modelSources ?? []
-  const writable = await managedRoots(settings)
-  const roots = await Promise.all(sources.map((source) => sourceRoots(source)))
-  const readable = roots.map((item) => item.roots.filter((root) => !writable.some((target) => overlaps(root, target))))
-  const allRoots = [...new Set(readable.flat())]
-  const scans = new Map<string, Awaited<ReturnType<typeof scanModelDirectory>>>()
+async function sharedEngine(): Promise<{ server: string | null; key: string }> {
   const server = localServerPath()
-  const serverInfo = server ? await stat(server).catch(() => null) : null
-  const engineKey = server && serverInfo ? server + ':' + serverInfo.mtimeMs : ''
+  const info = server ? await stat(server).catch(() => null) : null
+  return { server, key: server && info ? server + ':' + info.mtimeMs : '' }
+}
+
+function snapshotKey(sources: ModelSource[], writable: string[]): string {
+  const locations = sources.map(({ id, kind, path }) => [id, kind, modelPathKey(path)])
+  return createHash('sha256')
+    .update(JSON.stringify([locations, writable.map(modelPathKey)]))
+    .digest('hex')
+}
+
+/** 用上次清单恢复选择器。文件使用前仍检查真实路径、大小和修改时间。 */
+export async function restoreModelSources(settings: Settings): Promise<void> {
+  const sources = settings.modelSources ?? []
+  if (!sources.length) return
+  const [index, writable, engine] = await Promise.all([readSharedIndex(), managedRoots(settings), sharedEngine()])
+  const snapshot = index?.snapshot
+  if (!index || !snapshot || snapshot.key !== snapshotKey(sources, writable)) {
+    await refreshModelSources(settings)
+    return
+  }
+  const engineChanged = index.engine !== engine.key
+  inventoryEngine = engine.key
+  const compatible = snapshot.weights.filter(({ file }) => !engineChanged || file.layout === 'diffusers-folder')
+  inventory = new Map(
+    compatible.map(({ file, inspection, sourceIds }) => [idFor(file.path), { file, inspection, sourceIds: new Set(sourceIds) }]),
+  )
+  statuses = engineChanged
+    ? snapshot.statuses.map((source) => {
+        const available = source.files.filter((file) => inventory.has(idFor(file.path))).length
+        return {
+          ...source,
+          available,
+          pending: source.files.length - available,
+          incompatible: 0,
+          files: source.files.map((file) => ({ ...file, state: inventory.has(idFor(file.path)) ? 'available' : 'pending' })),
+          issues: [...source.issues, '引擎已变更，请点击自动扫描重新检查共享权重'],
+        }
+      })
+    : snapshot.statuses
+}
+
+async function scanSources(settings: Settings, generation: number, changed: boolean): Promise<void> {
+  const sources = settings.modelSources ?? []
+  const [writable, { server, key: engineKey }] = await Promise.all([managedRoots(settings), sharedEngine()])
+  const unchanged = new Map<string, ModelSourceStatus>()
+  if (changed && inventoryEngine === engineKey) {
+    for (const source of sources) {
+      const last = statuses.find((status) => status.id === source.id && status.path === source.path && status.kind === source.kind)
+      if (last && !last.roots.some((root) => writable.some((target) => overlaps(root, target)))) unchanged.set(source.id, last)
+    }
+  }
+  const roots = await Promise.all(sources.map((source) => (unchanged.has(source.id) ? Promise.resolve(null) : sourceRoots(source))))
+  const readable = roots.map((item) => item?.roots.filter((root) => !writable.some((target) => overlaps(root, target))) ?? [])
+  const allRoots = [...new Set([...readable.flat(), ...[...unchanged.values()].flatMap((source) => source.roots)])]
+  const scans = new Map<string, Awaited<ReturnType<typeof scanModelDirectory>>>()
   await loadIndex(engineKey)
   const next = new Map<string, SharedWeight>()
+  for (const [id, weight] of inventory) {
+    const sourceIds = new Set([...weight.sourceIds].filter((sourceId) => unchanged.has(sourceId)))
+    if (sourceIds.size) next.set(id, { ...weight, sourceIds })
+  }
   const nextStatuses: ModelSourceStatus[] = []
   const groups: Array<{ status: ModelSourceStatus; files: Map<string, ScannedModel> }> = []
   for (const [index, source] of sources.entries()) {
     if (generation !== scanGeneration) return
+    const kept = unchanged.get(source.id)
+    if (kept) {
+      nextStatuses.push(kept)
+      continue
+    }
     const resolved = roots[index]!
     const sourceRoots = readable[index]!
     const status: ModelSourceStatus = {
@@ -201,14 +298,15 @@ async function scanSources(settings: Settings, generation: number): Promise<void
         if (generation !== scanGeneration) return
         if (!results.has(id)) results.set(id, await inspectWeight(file, request))
         const result = results.get(id)
-        const entry: ModelSourceFile = { path: file.path, name: file.name, role: file.role, state: 'pending' }
+        const entry: ModelSourceFile = { path: file.path, name: file.name, size: file.size, role: file.role, state: 'pending' }
         if (typeof result === 'string') entry.state = 'incompatible'
         else if (result) {
           entry.state = 'available'
           entry.role = result.role
-          const weight = next.get(id) ?? { file, inspection: result, sourceIds: new Set<string>() }
-          weight.sourceIds.add(status.id)
-          next.set(id, weight)
+          const { path, name, size, mtimeMs, layout } = file
+          const sourceIds = next.get(id)?.sourceIds ?? new Set<string>()
+          sourceIds.add(status.id)
+          next.set(id, { file: { path, name, size, mtimeMs, layout }, inspection: result, sourceIds })
         }
         status[entry.state]++
         status.files.push(entry)
@@ -231,16 +329,26 @@ async function scanSources(settings: Settings, generation: number): Promise<void
   else await inspectGroups(null)
   if (generation !== scanGeneration) return
   inventory = next
+  inventoryEngine = engineKey
   statuses = nextStatuses
-  const currentKeys = new Set([...scans.values()].flatMap((scan) => scan.candidates.map((file) => modelPathKey(file.path))))
+  const currentKeys = new Set(nextStatuses.flatMap((source) => source.files.map((file) => modelPathKey(file.path))))
   for (const key of inspected.keys()) if (!currentKeys.has(key)) inspected.delete(key)
-  if (engineKey) {
-    try {
-      await mkdir(paths.cache(), { recursive: true })
-      await writeFileAtomic(paths.sharedModelIndex(), JSON.stringify({ engine: engineKey, files: Object.fromEntries(inspected) }))
-    } catch (error) {
-      console.warn('[model-sources] 无法保存模型检查索引', error)
-    }
+  try {
+    await mkdir(paths.cache(), { recursive: true })
+    await writeFileAtomic(
+      paths.sharedModelIndex(),
+      JSON.stringify({
+        engine: engineKey,
+        files: Object.fromEntries(inspected),
+        snapshot: {
+          key: snapshotKey(sources, writable),
+          statuses: nextStatuses,
+          weights: [...next.values()].map((weight) => ({ ...weight, sourceIds: [...weight.sourceIds] })),
+        },
+      }),
+    )
+  } catch (error) {
+    console.warn('[model-sources] 无法保存模型检查索引', error)
   }
 }
 
@@ -257,7 +365,7 @@ export async function refreshModelSources(settings: Settings, changed = false): 
     settings = getSettings()
   } else if (ongoing) return ongoing
   if (!(settings.modelSources?.length || statuses.length || inventory.size)) return
-  const run = scanSources(settings, scanGeneration)
+  const run = scanSources(settings, scanGeneration, changed)
   ongoing = run
   try {
     await run
@@ -266,13 +374,47 @@ export async function refreshModelSources(settings: Settings, changed = false): 
   }
 }
 
-export async function modelSourcesView(
-  settings: Settings,
-  mode: 'discover' | 'connected' | 'probe' = 'discover',
-): Promise<ModelSourcesView> {
+let discoveryTask: { force: boolean; promise: ReturnType<typeof nearbyModelSources> } | null = null
+
+async function discoverModelSources(force: boolean): Promise<Awaited<ReturnType<typeof nearbyModelSources>>> {
+  const current = discoveryTask
+  if (current) {
+    if (!force || current.force) return current.promise
+    await current.promise
+    return discoverModelSources(true)
+  }
+  const cacheFile = paths.modelSourceDiscovery()
+  const task = (async () => {
+    if (!force) {
+      try {
+        const parsed = discoverySchema.safeParse(JSON.parse(await readFile(cacheFile, 'utf8')))
+        if (parsed.success) return parsed.data
+      } catch {
+        // 首次打开或缓存损坏时才进行自动发现。
+      }
+    }
+    const discovery = await nearbyModelSources(force)
+    try {
+      await mkdir(paths.cache(), { recursive: true })
+      // 服务在线状态只显示在点击扫描的那次。原始历史记录不会写入缓存。
+      await writeFileAtomic(cacheFile, JSON.stringify({ sources: discovery.sources }))
+    } catch (error) {
+      console.warn('[model-sources] 无法保存目录发现缓存', error)
+    }
+    return discovery
+  })()
+  discoveryTask = { force, promise: task }
+  try {
+    return await task
+  } finally {
+    if (discoveryTask?.promise === task) discoveryTask = null
+  }
+}
+
+export async function modelSourcesView(settings: Settings, mode: 'cached' | 'connected' | 'scan' = 'cached'): Promise<ModelSourcesView> {
   const sources = settings.modelSources ?? []
   const paths = new Set(sources.map((source) => modelPathKey(source.path)))
-  const discovery = mode === 'connected' ? { sources: [] } : await nearbyModelSources(mode === 'probe')
+  const discovery = mode === 'connected' ? { sources: [] } : await discoverModelSources(mode === 'scan')
   return {
     sources: sources.map(
       (source) =>

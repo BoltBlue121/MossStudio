@@ -95,7 +95,14 @@ import { addControlAdapter, listControlAdapters, removeControlAdapter } from './
 import { applyThemeSource, applyUiScale, controlWindow, openWindow } from './windows'
 import { getGpuInventory, listDevices, refreshGpuInventory } from './services/devices'
 import { getOnboardingStatus } from './services/onboarding'
-import { addModelSource, assertSharedStorage, modelSourcesView, refreshModelSources, removeModelSource } from './services/modelSources'
+import {
+  addModelSource,
+  assertSharedStorage,
+  modelSourcesView,
+  refreshModelSources,
+  removeModelSource,
+  restoreModelSources,
+} from './services/modelSources'
 import {
   createTrainerVersion,
   installTrainerRuntime,
@@ -209,7 +216,9 @@ export function registerIpc(): void {
   }
   const startupSettings = getSettings()
   const startupModelSources = startupSettings.modelSources?.length
-    ? refreshSharedModels(startupSettings).catch((error: unknown) => console.warn('[model-sources]', error))
+    ? restoreModelSources(startupSettings)
+        .then(() => invalidateCatalog())
+        .catch((error: unknown) => console.warn('[model-sources]', error))
     : undefined
   // Keeps the engine on the newest release while settings.engineAutoUpdate is on.
   startEngineAutoUpdate()
@@ -736,15 +745,22 @@ export function registerIpc(): void {
     await startupModelSources
     return getCatalog(getSettings(), true)
   })
-  handle(Ipc.modelSourcesList, null, () => modelSourcesView(getSettings(), 'connected'))
-  handle(Ipc.modelSourcesProbe, null, () => modelSourcesView(getSettings(), 'probe'))
-  handle(Ipc.modelSourcesRefresh, null, async () => {
-    await refreshSharedModels(getSettings())
+  handle(Ipc.modelSourcesList, null, async () => {
+    await startupModelSources
     return modelSourcesView(getSettings())
   })
+  handle(Ipc.modelSourcesRefresh, null, async () => {
+    await startupModelSources
+    await refreshSharedModels(getSettings())
+    return modelSourcesView(getSettings(), 'scan')
+  })
   handle(Ipc.modelSourcesAdd, schemas.modelSourcesAdd, async ({ path, kind, id }) => {
+    await startupModelSources
     if (!path) {
-      const picked = await dialog.showOpenDialog({ title: '选择共享模型目录', properties: ['openDirectory'] })
+      const picked = await dialog.showOpenDialog({
+        title: kind === 'custom' ? '选择自定义模型目录' : '选择安装目录或模型目录',
+        properties: ['openDirectory'],
+      })
       if (picked.canceled || !picked.filePaths[0]) return modelSourcesView(getSettings())
       path = picked.filePaths[0]
     }
@@ -754,6 +770,7 @@ export function registerIpc(): void {
     return modelSourcesView(getSettings())
   })
   handle(Ipc.modelSourcesRemove, schemas.modelSourcesRemove, async ({ id }) => {
+    await startupModelSources
     const settings = removeModelSource(id)
     emit(Events.settingsChanged, settings)
     await refreshSharedModels(settings, true)

@@ -8,15 +8,21 @@ import { installerLogLocations, terminalInstallations } from '@main/services/mod
 import { comfyModelPaths, findModelSources, guessModelSourceKind, sourceRoots } from '@main/services/modelSourcePaths'
 import { probeLocalModelServices } from '@main/services/modelSourceServices'
 import {
+  addModelSource,
   modelSourcesView,
   refreshModelSources,
+  restoreModelSources,
   resolveSharedWeight,
   sharedModels,
   sharedAdapters,
   sharedControlAdapters,
 } from '@main/services/modelSources'
 
-const mocks = vi.hoisted(() => ({ server: null as string | null, inspect: vi.fn() }))
+const mocks = vi.hoisted(() => ({ server: null as string | null, inspect: vi.fn(), discover: vi.fn() }))
+vi.mock('@main/services/modelSourcePaths', async (load) => ({
+  ...(await load<typeof import('@main/services/modelSourcePaths')>()),
+  nearbyModelSources: mocks.discover,
+}))
 vi.mock('@main/services/engineInstalls', () => ({ localServerPath: () => mocks.server }))
 vi.mock('@main/lib/probeEngine', () => ({
   withEngineRequests: async (server: string, task: (request: (method: string, params: unknown) => Promise<unknown>) => Promise<unknown>) =>
@@ -213,6 +219,68 @@ describe('共享目录路径', () => {
 describe('共享模型索引', () => {
   const data = useTempDataRoot()
 
+  it('第一次发现后复用候选缓存，手动扫描才更新结果和在线服务', async () => {
+    const settings = settingsFixture()
+    const first = { path: join(temp(), '首个来源'), kind: 'comfyui' }
+    const second = { path: join(temp(), '下一个来源'), kind: 'forge' }
+    mocks.discover.mockReset()
+    mocks.discover.mockResolvedValueOnce({ sources: [first] })
+    mocks.discover.mockResolvedValueOnce({ sources: [first, second], services: [{ kind: 'comfyui', port: 8188 }] })
+    expect((await modelSourcesView(settings)).suggestions).toMatchObject([first])
+    expect((await modelSourcesView(settings)).suggestions).toMatchObject([first])
+    expect(mocks.discover.mock.calls).toEqual([[false]])
+    const fresh = await modelSourcesView(settings, 'scan')
+    expect(fresh.suggestions).toMatchObject([first, second])
+    expect(fresh.services).toEqual([{ kind: 'comfyui', port: 8188 }])
+    const reopened = await modelSourcesView(settings)
+    expect(reopened.suggestions).toMatchObject([first, second])
+    expect(reopened.services).toBeUndefined()
+    expect(mocks.discover.mock.calls).toEqual([[false], [true]])
+    const cache = await readFile(join(data(), 'cache', 'model-source-discovery.json'), 'utf8')
+    expect(JSON.parse(cache)).toEqual({ sources: [first, second] })
+  })
+
+  it('允许手动添加两套同类软件，更换路径只更新指定来源', async () => {
+    const roots = ['Comfy One', 'Comfy Two', 'Comfy Three'].map((name) => join(temp(), name))
+    await Promise.all(roots.map((root) => mkdir(join(root, 'models'), { recursive: true })))
+    const first = (await addModelSource(roots[0]!, 'comfyui')).modelSources![0]!
+    const combined = (await addModelSource(roots[1]!, 'comfyui')).modelSources!
+    expect(combined.map((source) => source.path)).toEqual(roots.slice(0, 2))
+    expect(combined[1]!.id).not.toBe(first.id)
+    const changed = (await addModelSource(roots[2]!, 'comfyui', first.id)).modelSources!
+    expect(changed).toEqual([{ ...first, path: roots[2] }, combined[1]])
+  })
+
+  it('重新启动用原清单，只有手动扫描才发现新文件', async () => {
+    const root = join(temp(), '共享')
+    const server = join(temp(), 'moss-server')
+    const old = join(root, 'old.safetensors')
+    const added = join(root, 'added.safetensors')
+    await mkdir(root)
+    await writeFile(server, 'engine')
+    await writeFile(old, 'weight')
+    mocks.server = server
+    mocks.inspect.mockClear()
+    mocks.inspect.mockResolvedValue({ kind: 'dit', loadable: true })
+    const settings = settingsFixture({
+      modelsRoot: join(temp(), '内置'),
+      modelSources: [{ id: 'source', kind: 'custom', path: root }],
+    })
+    await refreshModelSources(settings)
+    await writeFile(added, 'new weight')
+    await restoreModelSources(settings)
+    expect(sharedModels([]).map((file) => file.name)).toEqual(['old.safetensors'])
+    expect(mocks.inspect).toHaveBeenCalledTimes(1)
+    await refreshModelSources(settings)
+    expect(
+      sharedModels([])
+        .map((file) => file.name)
+        .sort(),
+    ).toEqual(['added.safetensors', 'old.safetensors'])
+    expect(mocks.inspect).toHaveBeenCalledTimes(2)
+    mocks.inspect.mockClear()
+  })
+
   it('识别具备运行配置的完整 Diffusers 模型并直接返回文件夹路径', async () => {
     const base = temp()
     const root = join(base, '完整模型')
@@ -259,9 +327,9 @@ describe('共享模型索引', () => {
     expect(status).toMatchObject({ available: 1, pending: 1, incompatible: 1 })
     expect(status?.files).toEqual(
       expect.arrayContaining([
-        { path: join(folder, 'ready.safetensors'), name: 'ready.safetensors', role: 'lora', state: 'available' },
-        { path: join(folder, 'pending.safetensors'), name: 'pending.safetensors', role: 'lora', state: 'pending' },
-        { path: join(folder, 'unavailable.safetensors'), name: 'unavailable.safetensors', role: 'lora', state: 'incompatible' },
+        { path: join(folder, 'ready.safetensors'), name: 'ready.safetensors', size: 6, role: 'lora', state: 'available' },
+        { path: join(folder, 'pending.safetensors'), name: 'pending.safetensors', size: 6, role: 'lora', state: 'pending' },
+        { path: join(folder, 'unavailable.safetensors'), name: 'unavailable.safetensors', size: 6, role: 'lora', state: 'incompatible' },
       ]),
     )
     expect(sharedAdapters().map(({ name }) => name)).toEqual(['ready.safetensors'])

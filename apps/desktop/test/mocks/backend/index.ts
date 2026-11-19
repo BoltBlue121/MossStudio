@@ -394,18 +394,23 @@ function defaultHandlers(): Map<string, Handler> {
             ...(['dit', 'text_encoder', 'vae'] as const).map((role) => ({
               path: source.path + '/models/' + role + '.safetensors',
               name: role + '.safetensors',
+              size: 10,
               role,
               state: 'available',
             })),
-            { path: source.path + '/models/loras/style.safetensors', name: 'style.safetensors', role: 'lora', state: 'incompatible' },
+            { path: '/workspace/shared/loras/style.safetensors', name: 'style.safetensors', size: 10, role: 'lora', state: 'incompatible' },
           ]
         : [],
       issues: state.sharedModelDirectory?.available ? [] : ['读不到模型目录'],
     })),
-    suggestions: state.sharedModelDirectory && !state.settings.modelSources?.length ? [suggestedSource] : [],
+    suggestions:
+      state.sharedModelDirectory && !state.settings.modelSources?.some((source) => source.path === suggestedSource.path)
+        ? [suggestedSource]
+        : [],
   })
   const syncSources = ({ state, emit }: { state: MockBackendState; emit: (event: EventChannel, data: unknown) => void }) => {
     const models = state.catalog.models.filter((model) => !model.id.startsWith('shared-'))
+    const adapters = state.catalog.adapters.filter((adapter) => !adapter.id.startsWith('shared-'))
     if (state.settings.modelSources?.length && state.sharedModelDirectory?.available) {
       for (const role of ['dit', 'text_encoder', 'vae'] as const) {
         models.push({
@@ -424,21 +429,50 @@ function defaultHandlers(): Map<string, Handler> {
           installed: true,
         })
       }
+      adapters.push({
+        id: 'shared-ready-lora',
+        name: 'ready-lora.safetensors',
+        provider: 'local',
+        repo: '/workspace/shared/loras/ready-lora.safetensors',
+        revision: 'local',
+        kind: 'lora',
+        files: ['ready-lora.safetensors'],
+        sizeBytes: 10,
+        installedBytes: 10,
+        license: 'local',
+        tags: ['shared-directory'],
+        notes: '共享目录',
+        installed: true,
+      })
     }
-    state.catalog = { ...state.catalog, models }
+    state.catalog = { ...state.catalog, models, adapters }
     emit(Events.modelsChanged, null)
     return sourcesView(state)
   }
   h.set(Ipc.modelSourcesList, (_, { state }) => sourcesView(state))
-  h.set(Ipc.modelSourcesProbe, (_, { state }) => ({ ...sourcesView(state), services: [{ kind: 'comfyui', port: 8188 }] }))
-  h.set(Ipc.modelSourcesRefresh, (_, ctx) => syncSources(ctx))
-  h.set(Ipc.modelSourcesAdd, (_, ctx) => {
-    ctx.state.settings = { ...ctx.state.settings, modelSources: [suggestedSource] }
+  h.set(Ipc.modelSourcesRefresh, (_, ctx) => ({ ...syncSources(ctx), services: [{ kind: 'comfyui', port: 8188 }] }))
+  h.set(Ipc.modelSourcesAdd, (payload, ctx) => {
+    const { path, kind, id } = p<{ path?: string; kind?: NonNullable<Settings['modelSources']>[number]['kind']; id?: string }>(payload)
+    const current = ctx.state.settings.modelSources ?? []
+    const source =
+      path === suggestedSource.path
+        ? suggestedSource
+        : {
+            id: id ?? 'manual-' + current.length,
+            kind: kind ?? 'custom',
+            path: '/workspace/' + (kind ?? 'custom') + '-manual-' + current.length,
+          }
+    const modelSources = id ? current.map((entry) => (entry.id === id ? source : entry)) : [...current, source]
+    ctx.state.settings = { ...ctx.state.settings, modelSources }
     ctx.emit(Events.settingsChanged, ctx.state.settings)
     return syncSources(ctx)
   })
-  h.set(Ipc.modelSourcesRemove, (_, ctx) => {
-    ctx.state.settings = { ...ctx.state.settings, modelSources: [] }
+  h.set(Ipc.modelSourcesRemove, (payload, ctx) => {
+    const { id } = p<{ id: string }>(payload)
+    ctx.state.settings = {
+      ...ctx.state.settings,
+      modelSources: (ctx.state.settings.modelSources ?? []).filter((source) => source.id !== id),
+    }
     ctx.emit(Events.settingsChanged, ctx.state.settings)
     return syncSources(ctx)
   })

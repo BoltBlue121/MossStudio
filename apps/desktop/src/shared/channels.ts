@@ -177,7 +177,6 @@ export const Ipc = {
   modelsCatalog: 'models:catalog',
   modelSourcesList: 'models:sources-list',
   modelSourcesRefresh: 'models:sources-refresh',
-  modelSourcesProbe: 'models:sources-probe',
   modelSourcesAdd: 'models:sources-add',
   modelSourcesRemove: 'models:sources-remove',
   modelsImportFolder: 'models:import-folder',

@@ -87,6 +87,7 @@ export const paths = {
   outputs: () => join(root(), 'outputs'),
   cache: () => join(root(), 'cache'),
   sharedModelIndex: () => join(root(), 'cache', 'shared-models.json'),
+  modelSourceDiscovery: () => join(root(), 'cache', 'model-source-discovery.json'),
   mossinfer: () => engineRoot(),
   logs: () => join(root(), 'logs'),
   trainerRoot: (custom?: string | null) => (custom ? resolve(custom) : join(root(), 'trainer')),

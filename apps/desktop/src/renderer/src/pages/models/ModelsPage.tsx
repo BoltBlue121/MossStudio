@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { cliGpuUuids, generationGpus } from '@shared/bundleFit'
 import { Ipc } from '@shared/channels'
 import type { SlotKey } from '@shared/modelCombos'
-import type { AppInfo, Catalog, ModelBundle } from '@shared/types'
+import type { AppInfo, Catalog, ModelBundle, ModelSourceFile, ModelSourceStatus } from '@shared/types'
 import { importFolderMessage, type UseFolderResult } from '../../lib/modelFolder'
 import { call } from '../../lib/api'
 import { useGpuInventory } from '../../lib/useGpuInventory'
@@ -33,7 +33,7 @@ import { CombinationDialog } from './CombinationDialog'
 import { ControlAdaptersSection } from './ControlAdaptersSection'
 import { LoraTab } from './LoraTab'
 import { ModelSources } from './ModelSources'
-import { DeleteModelDialog, FeaturedModel, ModelList } from './ModelEntries'
+import { DeleteModelDialog, FeaturedModel, ModelList, SizeText } from './ModelEntries'
 import { bundleBlocker, bundleDeletePlan, bundleView, downloadGroups, modelSections, parseModelsQuery, type DownloadGroup } from './logic'
 import { useModelLocation, useSshHosts, type ModelLocation } from './useModelLocation'
 
@@ -41,6 +41,16 @@ import { useModelLocation, useSshHosts, type ModelLocation } from './useModelLoc
 const EMPTY_CATALOG: Pick<Catalog, 'bundles' | 'models' | 'adapters'> = { bundles: [], models: [], adapters: [] }
 
 type Tab = 'models' | 'lora' | 'downloads'
+
+const sharedRoleLabels: Record<ModelSourceFile['role'], string> = {
+  full: '模型',
+  dit: '主模型',
+  text_encoder: '文本编码器',
+  vae: 'VAE',
+  support: '运行配置',
+  lora: 'LoRA',
+  control_adapter: '控制适配器',
+}
 
 function StorageRow({ location }: { location: ModelLocation }): React.JSX.Element {
   const navigate = useNavigate()
@@ -89,15 +99,15 @@ function ModelsTab({
   catalog,
   location,
   preferredBundleId,
-  sourceRefresh,
 }: {
   catalog: Catalog
   location: ModelLocation
   preferredBundleId: string | null
-  sourceRefresh: number
 }): React.JSX.Element {
   const toast = useToast()
   const [deleting, setDeleting] = useState<ModelBundle | null>(null)
+  const [sources, setSources] = useState<ModelSourceStatus[]>([])
+  const [showIncompatible, setShowIncompatible] = useState(false)
   const settings = useApp((state) => state.settings)
   const { inventory } = useGpuInventory()
   const remote = location.kind === 'remote'
@@ -109,7 +119,7 @@ function ModelsTab({
     () =>
       catalog.bundles
         // Scanned local files and 自己组合 are built and run on this computer.
-        .filter((bundle) => !remote || (bundle.id !== 'local-files' && !bundle.custom))
+        .filter((bundle) => !bundle.id.startsWith('shared-') && (!remote || (bundle.id !== 'local-files' && !bundle.custom)))
         .map((bundle) =>
           bundleView(
             bundle,
@@ -121,6 +131,14 @@ function ModelsTab({
         ),
     [catalog, location.tasks, location.isModelInstalled, remote, gpus, cliGpus],
   )
+  const sharedModels = catalog.models.filter((model) => model.tags.includes('shared-directory') && model.installed)
+  const sharedFiles = sources.flatMap((source) => source.files)
+  const availablePaths = new Set(sharedFiles.filter((file) => file.state === 'available').map((file) => file.path))
+  const incompatible = [
+    ...new Map(
+      sharedFiles.filter((file) => file.state === 'incompatible' && !availablePaths.has(file.path)).map((file) => [file.path, file]),
+    ).values(),
+  ]
   const sections = modelSections(views, catalog.models, { remote, gpus, cliGpus }, preferredBundleId)
   const featuredView = sections.featured
   const deletePlan = (bundle: ModelBundle) =>
@@ -207,9 +225,46 @@ function ModelsTab({
       ) : null}
 
       {location.kind === 'local' ? (
-        <Section title="共享模型目录">
-          <ModelSources reload={sourceRefresh} />
-        </Section>
+        <>
+          <Section title="共享模型目录">
+            <ModelSources onSources={setSources} />
+          </Section>
+          {sources.length || sharedModels.length ? (
+            <Section title="可用模型">
+              {sharedModels.length ? (
+                <Group>
+                  {sharedModels.map((model) => (
+                    <Row key={model.id} title={model.name} description={sharedRoleLabels[model.role]}>
+                      <SizeText bytes={model.installedBytes || model.sizeBytes} />
+                    </Row>
+                  ))}
+                </Group>
+              ) : (
+                <p className="px-1 text-ui text-ink-2">
+                  {sources.some((source) => source.pending > 0) ? '共享模型待检查。' : '已接入的目录暂无可用模型。'}
+                </p>
+              )}
+              {incompatible.length ? (
+                <Advanced
+                  title="不兼容的模型和 LoRA"
+                  summary={incompatible.length + ' 项'}
+                  open={showIncompatible}
+                  onOpenChange={setShowIncompatible}
+                >
+                  {showIncompatible ? (
+                    <Group className="max-h-96 overflow-y-auto">
+                      {incompatible.map((file) => (
+                        <Row key={file.path} title={file.name} description={sharedRoleLabels[file.role]}>
+                          <SizeText bytes={file.size} />
+                        </Row>
+                      ))}
+                    </Group>
+                  ) : null}
+                </Advanced>
+              ) : null}
+            </Section>
+          ) : null}
+        </>
       ) : null}
 
       {!location.ready ? (
@@ -339,7 +394,6 @@ export function ModelsPage(): React.JSX.Element {
   const [tab, setTab] = useState<Tab>('models')
   const [preferredBundleId, setPreferredBundleId] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
-  const [sourceRefresh, setSourceRefresh] = useState(0)
 
   // Deep links from first run and elsewhere: ?bundle=…&component=…&hostId=…&tab=…
   useEffect(() => {
@@ -378,10 +432,6 @@ export function ModelsPage(): React.JSX.Element {
   async function refresh(): Promise<void> {
     setRefreshing(true)
     try {
-      if (location.kind === 'local') {
-        if (tab === 'models') setSourceRefresh((previous) => previous + 1)
-        else await call(Ipc.modelSourcesRefresh)
-      }
       await refreshCatalog()
       location.rescan()
     } catch (error) {
@@ -420,7 +470,7 @@ export function ModelsPage(): React.JSX.Element {
       {!catalog ? (
         <LoadingRow label="正在读取模型列表…" />
       ) : tab === 'models' ? (
-        <ModelsTab catalog={catalog} location={location} preferredBundleId={preferredBundleId} sourceRefresh={sourceRefresh} />
+        <ModelsTab catalog={catalog} location={location} preferredBundleId={preferredBundleId} />
       ) : tab === 'lora' ? (
         <LoraTab catalog={catalog} location={location} />
       ) : (
