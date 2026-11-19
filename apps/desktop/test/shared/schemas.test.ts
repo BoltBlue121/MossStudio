@@ -230,7 +230,7 @@ const cases = {
 
   modelSourcesAdd: {
     valid: {},
-    accepts: { 配置文件: { config: true }, 已发现的位置: { path: 'D:/ComfyUI', kind: 'comfyui' } },
+    accepts: { 更换目录: { id: 'source-a' }, 已发现的位置: { path: 'D:/ComfyUI', kind: 'comfyui' } },
     rejects: { 空路径: { path: ' ' }, 不识别的来源: { kind: 'other' } },
   },
 

@@ -1,10 +1,13 @@
 import { FileUp, Sparkles } from 'lucide-react'
-import { useState } from 'react'
-import type { AdapterEntry, Catalog, DownloadTask } from '@shared/types'
+import { useEffect, useState } from 'react'
+import { Ipc } from '@shared/channels'
+import type { AdapterEntry, Catalog, DownloadTask, ModelSourceFile, ModelSourcesView } from '@shared/types'
 import { useApp } from '../../store'
 import { Notice } from '../../components/common/Notice'
 import { Button, ConfirmDialog, EmptyState, Group, LoadingRow, Pill, Row, Section, Spinner, useToast } from '../../components/ui'
+import { call } from '../../lib/api'
 import { DownloadProgress } from './DownloadProgress'
+import { SharedWeightList } from './ModelSources'
 import { itemProgress, itemState, sizeText, taskFor } from './logic'
 import { DownloadActionIcon, RemoveButton, SizeText } from './ModelEntries'
 import type { ModelLocation } from './useModelLocation'
@@ -26,6 +29,24 @@ export function LoraTab({ catalog, location }: { catalog: Catalog; location: Mod
   const importAdapters = useApp((state) => state.importAdapters)
   const [busy, setBusy] = useState<string | null>(null)
   const [removing, setRemoving] = useState<AdapterEntry | null>(null)
+  const local = location.kind === 'local'
+  const [sharedFiles, setSharedFiles] = useState<ModelSourceFile[]>([])
+  useEffect(() => {
+    if (!local) return
+    let active = true
+    void call<ModelSourcesView>(Ipc.modelSourcesList)
+      .then(({ sources }) => {
+        if (!active) return
+        const loras = sources.flatMap((source) => source.files).filter((file) => file.role === 'lora' && file.state !== 'available')
+        setSharedFiles([...new Map(loras.map((file) => [file.path, file])).values()])
+      })
+      .catch(() => {
+        if (active) setSharedFiles([])
+      })
+    return () => {
+      active = false
+    }
+  }, [catalog, local])
   if (!location.ready) {
     const hostName = location.host?.name ?? '远程主机'
     return location.scanning ? (
@@ -117,6 +138,14 @@ export function LoraTab({ catalog, location }: { catalog: Catalog; location: Mod
           </Group>
         )}
       </Section>
+
+      {local && sharedFiles.length ? (
+        <Section title="共享目录里发现的 LoRA">
+          <Group className="px-4 py-3">
+            <SharedWeightList files={sharedFiles} />
+          </Group>
+        </Section>
+      ) : null}
 
       {available.length ? (
         <Section title="可以下载">

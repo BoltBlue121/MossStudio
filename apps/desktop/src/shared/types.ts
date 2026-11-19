@@ -130,17 +130,26 @@ export interface ModelSource {
   path: string
 }
 
+export interface ModelSourceFile {
+  path: string
+  name: string
+  role: ScannedModel['role'] | 'control_adapter'
+  state: 'available' | 'pending' | 'incompatible'
+}
+
 export interface ModelSourceStatus extends ModelSource {
   roots: string[]
   available: number
   pending: number
   incompatible: number
+  files: ModelSourceFile[]
   issues: string[]
 }
 
 export interface ModelSourcesView {
   sources: ModelSourceStatus[]
   suggestions: ModelSource[]
+  services?: Array<{ kind: Exclude<ModelSourceKind, 'custom'>; port: number }>
 }
 
 /** One file or diffusers folder found by a read-only directory scan. */

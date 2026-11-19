@@ -388,7 +388,18 @@ function defaultHandlers(): Map<string, Handler> {
       roots: [source.path + '/models'],
       available: state.sharedModelDirectory?.available ? 3 : 0,
       pending: 0,
-      incompatible: 0,
+      incompatible: state.sharedModelDirectory?.available ? 1 : 0,
+      files: state.sharedModelDirectory?.available
+        ? [
+            ...(['dit', 'text_encoder', 'vae'] as const).map((role) => ({
+              path: source.path + '/models/' + role + '.safetensors',
+              name: role + '.safetensors',
+              role,
+              state: 'available',
+            })),
+            { path: source.path + '/models/loras/style.safetensors', name: 'style.safetensors', role: 'lora', state: 'incompatible' },
+          ]
+        : [],
       issues: state.sharedModelDirectory?.available ? [] : ['读不到模型目录'],
     })),
     suggestions: state.sharedModelDirectory && !state.settings.modelSources?.length ? [suggestedSource] : [],
@@ -419,6 +430,7 @@ function defaultHandlers(): Map<string, Handler> {
     return sourcesView(state)
   }
   h.set(Ipc.modelSourcesList, (_, { state }) => sourcesView(state))
+  h.set(Ipc.modelSourcesProbe, (_, { state }) => ({ ...sourcesView(state), services: [{ kind: 'comfyui', port: 8188 }] }))
   h.set(Ipc.modelSourcesRefresh, (_, ctx) => syncSources(ctx))
   h.set(Ipc.modelSourcesAdd, (_, ctx) => {
     ctx.state.settings = { ...ctx.state.settings, modelSources: [suggestedSource] }

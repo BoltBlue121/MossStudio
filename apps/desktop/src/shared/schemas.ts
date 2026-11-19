@@ -466,7 +466,6 @@ export const schemas = {
     path: z.string().trim().min(1).max(4096).optional(),
     kind: z.enum(['comfyui', 'webui', 'forge', 'custom']).optional(),
     id: z.string().min(1).max(80).optional(),
-    config: z.boolean().optional(),
   }),
   modelSourcesRemove: z.object({ id: z.string().min(1).max(80) }),
 

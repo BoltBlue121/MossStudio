@@ -1,10 +1,20 @@
 import { mkdir, readFile, rename, symlink, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { useTempDataRoot, useTempDir } from '@test/helpers/tempDir'
 import { settingsFixture } from '@test/mocks/backend/fixtures'
-import { comfyModelPaths, sourceRoots } from '@main/services/modelSourcePaths'
-import { refreshModelSources, resolveSharedWeight, sharedModels, sharedAdapters, sharedControlAdapters } from '@main/services/modelSources'
+import { installerLogLocations, terminalInstallations } from '@main/services/modelSourceDiscovery'
+import { comfyModelPaths, findModelSources, guessModelSourceKind, sourceRoots } from '@main/services/modelSourcePaths'
+import { probeLocalModelServices } from '@main/services/modelSourceServices'
+import {
+  modelSourcesView,
+  refreshModelSources,
+  resolveSharedWeight,
+  sharedModels,
+  sharedAdapters,
+  sharedControlAdapters,
+} from '@main/services/modelSources'
 
 const mocks = vi.hoisted(() => ({ server: null as string | null, inspect: vi.fn() }))
 vi.mock('@main/services/engineInstalls', () => ({ localServerPath: () => mocks.server }))
@@ -16,6 +26,137 @@ vi.mock('@main/lib/probeEngine', () => ({
 const temp = useTempDir('moss-shared-sources-')
 
 describe('共享目录路径', () => {
+  it('从历史和安装日志提取产品路径，不把原始记录当成路径', () => {
+    const base = temp()
+    const home = join(base, '主页')
+    const renamed = join(base, '自定义名称')
+    const history = [
+      "cd '" + base + "'",
+      'git clone https://github.com/Comfy-Org/ComfyUI.git "自定义名称"',
+      'echo something unrelated',
+      "Set-Location -LiteralPath '" + renamed + "'",
+      'python main.py',
+      "python '" + join(base, '另一个工具', 'webui.py') + "'",
+    ].join('\n')
+    expect(terminalInstallations(history, home)).toEqual([join(base, '另一个工具'), renamed])
+    expect(
+      installerLogLocations(String.raw`[Installer] Extracted "D:\AI\ComfyUI\resources\app.asar"
+[Installer] Extracted "D:\AI\Unrelated\config.json"
+[Installer] Installed "E:\工具\sd-webui-forge-classic\webui.bat"`),
+    ).toEqual([String.raw`E:\工具\sd-webui-forge-classic`, String.raw`D:\AI\ComfyUI`])
+  })
+
+  it('用本机服务响应识别 ComfyUI 和未开启 API 的 WebUI', async () => {
+    const path = join(temp(), '自定义名称')
+    const hosts = [
+      createServer((_, response) => {
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ system: { comfyui_version: 'fixture', argv: [join(path, 'main.py')] }, devices: [] }))
+      }),
+      createServer((request, response) => {
+        if (request.url !== '/') {
+          response.writeHead(404).end()
+          return
+        }
+        response.writeHead(200, { 'content-type': 'text/html' })
+        response.end('<title>Stable Diffusion</title><script>window.gradio_config = {}</script>')
+      }),
+    ]
+    try {
+      const ports = await Promise.all(
+        hosts.map(
+          (host) =>
+            new Promise<number>((resolve, reject) => {
+              host.once('error', reject)
+              host.listen(0, '127.0.0.1', () => {
+                const address = host.address()
+                if (address && typeof address === 'object') resolve(address.port)
+                else reject(new Error('未获得本机测试端口'))
+              })
+            }),
+        ),
+      )
+      expect(await probeLocalModelServices(ports)).toEqual([
+        { kind: 'comfyui', port: ports[0], paths: [path] },
+        { kind: 'webui', port: ports[1], paths: [] },
+      ])
+    } finally {
+      for (const host of hosts) {
+        host.close()
+        host.closeAllConnections()
+      }
+    }
+  })
+
+  it('在限定位置识别改名的源码、便携包和整合包，排除备份及同名非程序目录', async () => {
+    const location = join(temp(), '下载')
+    const clone = join(location, '绘画工具')
+    const portable = join(location, '免安装', 'ComfyUI')
+    const forge = join(location, '图像整合包', 'sd-webui-forge-classic')
+    const backup = join(location, 'ComfyUI_backup')
+    const falseHit = join(location, 'ComfyUI-资料')
+    const registered = join(temp(), '任意安装目录', 'Stable')
+    const outOfScope = join(temp(), '其他', '手动接入')
+    for (const path of [clone, portable, forge, backup, falseHit, registered, outOfScope]) {
+      await mkdir(join(path, 'models'), { recursive: true })
+    }
+    for (const path of [clone, portable, backup, outOfScope]) {
+      await writeFile(join(path, 'main.py'), '')
+      await writeFile(join(path, 'folder_paths.py'), '')
+    }
+    for (const path of [forge, registered]) {
+      await writeFile(join(path, 'launch.py'), '')
+      await writeFile(join(path, 'webui.py'), '')
+    }
+    await mkdir(join(forge, 'modules_forge'))
+    const found = await findModelSources([location], [registered, portable], [])
+    expect(found).toHaveLength(4)
+    expect(found).toEqual(
+      expect.arrayContaining([
+        { path: registered, kind: 'webui' },
+        { path: clone, kind: 'comfyui' },
+        { path: join(location, '免安装'), kind: 'comfyui' },
+        { path: join(location, '图像整合包'), kind: 'forge' },
+      ]),
+    )
+    expect(await guessModelSourceKind(join(clone, 'models'))).toBe('comfyui')
+    expect(await guessModelSourceKind(join(forge, 'models'))).toBe('forge')
+    expect(await guessModelSourceKind(outOfScope)).toBe('comfyui')
+  })
+
+  it('选择 ComfyUI 的 models 仍会读取安装旁的额外配置', async () => {
+    const base = temp()
+    const primary = join(base, 'models')
+    const extras = join(base, '外部权重')
+    await Promise.all([primary, extras].map((path) => mkdir(path)))
+    await writeFile(join(base, 'extra_model_paths.yaml'), 'shared:\n  loras: 外部权重\n')
+    expect(await guessModelSourceKind(primary)).toBe('comfyui')
+    const result = await sourceRoots({ kind: 'comfyui', path: primary }, [])
+    expect(result.roots).toEqual([primary, extras])
+    expect(result.roles.get(extras)).toBe('lora')
+  })
+
+  it('读取 Forge 与 WebUI 的默认目录和启动参数里的外置目录，无需执行脚本', async () => {
+    const base = temp()
+    const webui = join(base, 'webui')
+    const models = join(webui, 'models')
+    const checkpoint = join(base, '主模型文件')
+    const loras = join(webui, '素材 库')
+    const vae = join(webui, '附加组件')
+    await Promise.all([models, checkpoint, loras, vae].map((path) => mkdir(path, { recursive: true })))
+    await writeFile(
+      join(webui, 'webui-user.bat'),
+      '@echo off\nset "COMMANDLINE_ARGS=--ckpt-dir "' + checkpoint + '" --lora-dir="素材 库" --vae-dir "%~dp0附加组件""\n',
+    )
+    for (const kind of ['forge', 'webui'] as const) {
+      const result = await sourceRoots({ kind, path: base }, [])
+      expect(result.roots).toEqual([models, checkpoint, loras, vae])
+      expect(result.roles.get(loras)).toBe('lora')
+      expect(result.roles.get(checkpoint)).toBe('dit')
+      expect(result.issues).toEqual([])
+    }
+  })
+
   it('同时解析默认目录、额外配置、相对路径及 YAML 多行值', async () => {
     const parent = temp()
     const base = join(parent, '便携版')
@@ -40,6 +181,19 @@ describe('共享目录路径', () => {
     const result = await sourceRoots({ kind: 'comfyui', path: temp() })
     expect(result.roots).toEqual([primary])
     expect(result.issues).toEqual([expect.stringContaining('配置格式有误')])
+  })
+
+  it('识别新版 Comfy Desktop 的安装目录并读到对应用户配置', async () => {
+    const base = temp()
+    const desktop = join(base, '下载', '自定义桌面安装')
+    const profile = join(base, 'comfyui-desktop-2')
+    const models = join(base, '模型库')
+    await Promise.all([join(desktop, 'resources'), profile, models].map((path) => mkdir(path, { recursive: true })))
+    await writeFile(join(desktop, 'Comfy Desktop.exe'), '')
+    await writeFile(join(desktop, 'resources', 'app.asar'), '')
+    await writeFile(join(profile, 'settings.json'), JSON.stringify({ modelsDirs: [models] }))
+    expect(await findModelSources([join(base, '下载')], [], [profile])).toEqual([{ kind: 'comfyui', path: desktop }])
+    expect((await sourceRoots({ kind: 'comfyui', path: desktop }, [profile])).roots).toEqual([models])
   })
 
   it('读取 Comfy Desktop 配置及 WebUI 和 Forge 整合包的模型目录', async () => {
@@ -80,6 +234,40 @@ describe('共享模型索引', () => {
     expect(model.role).toBe('full')
     expect(await resolveSharedWeight(model.id)).toBe(root)
   })
+  it('保留共享 LoRA 文件名并区分可用、待检查和不兼容', async () => {
+    const base = temp()
+    const root = join(base, '应用')
+    const folder = join(base, '自定义命名')
+    const server = join(base, 'moss-server')
+    await Promise.all([root, folder].map((path) => mkdir(path)))
+    await writeFile(join(root, 'extra_model_paths.yaml'), 'shared:\n  loras: ../自定义命名\n')
+    await writeFile(server, 'engine')
+    for (const name of ['ready.safetensors', 'unavailable.safetensors', 'pending.safetensors']) {
+      await writeFile(join(folder, name), 'weight')
+    }
+    mocks.server = server
+    mocks.inspect.mockImplementation(async (_server: string, _method: string, { path }: { path: string }) => {
+      if (path.endsWith('pending.safetensors')) throw new Error('引擎暂不可用')
+      return { kind: 'lora', loadable: path.endsWith('ready.safetensors') }
+    })
+    const settings = settingsFixture({
+      modelsRoot: join(base, 'moss-studio'),
+      modelSources: [{ id: 'lora', kind: 'comfyui', path: root }],
+    })
+    await refreshModelSources(settings)
+    const [status] = (await modelSourcesView(settings, 'connected')).sources
+    expect(status).toMatchObject({ available: 1, pending: 1, incompatible: 1 })
+    expect(status?.files).toEqual(
+      expect.arrayContaining([
+        { path: join(folder, 'ready.safetensors'), name: 'ready.safetensors', role: 'lora', state: 'available' },
+        { path: join(folder, 'pending.safetensors'), name: 'pending.safetensors', role: 'lora', state: 'pending' },
+        { path: join(folder, 'unavailable.safetensors'), name: 'unavailable.safetensors', role: 'lora', state: 'incompatible' },
+      ]),
+    )
+    expect(sharedAdapters().map(({ name }) => name)).toEqual(['ready.safetensors'])
+    mocks.inspect.mockClear()
+  })
+
   it('在原路径复用权重，去重，并在断开后恢复相同的 ID', async () => {
     const base = temp()
     const root = join(base, '用户目录')

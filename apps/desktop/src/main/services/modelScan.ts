@@ -60,7 +60,7 @@ interface RoleRule {
 const rules: RoleRule[] = [
   {
     role: 'dit',
-    directories: [/^diffusion[_-]?models?$/, /^unet$/, /^checkpoints?$/, /^transformer$/],
+    directories: [/^diffusion[_-]?models?$/, /^stable[-_]diffusion$/, /^unet$/, /^checkpoints?$/, /^transformer$/],
     names: [/moss[_-]?image/, /moss[_-]?(sft|base)/, /diffusion[_-]?model/],
   },
   {
@@ -90,14 +90,14 @@ function segments(relativePath: string): string[] {
 /** A directory name wins over a file name; the file name is a weaker signal. */
 function detectRole(relativePath: string): { role: ImportedModelRole | 'lora'; confidence: ScannedModel['confidence']; hint: string } {
   const directories = segments(relativePath)
+  if (directories.some((part) => /^(loras?|lycoris)$/.test(part))) {
+    return { role: 'lora', confidence: 'high', hint: '目录 loras' }
+  }
   for (const rule of rules) {
     for (const pattern of rule.directories) {
       const hit = directories.find((part) => pattern.test(part))
       if (hit) return { role: rule.role, confidence: 'high', hint: `目录 ${hit}` }
     }
-  }
-  if (directories.some((part) => /^(loras?|lycoris)$/.test(part))) {
-    return { role: 'lora', confidence: 'high', hint: '目录 loras' }
   }
   const name = basename(relativePath).toLowerCase()
   for (const rule of rules) {
@@ -185,7 +185,7 @@ async function walk(
     if (!info || !info.isFile() || info.size <= 0) continue
     result.files += 1
     const relativePath = relative(root, absolute)
-    const detected = detectRole(relativePath)
+    const detected = detectRole(shared ? join(basename(root), relativePath) : relativePath)
     result.candidates.push({
       path: absolute,
       relativePath,

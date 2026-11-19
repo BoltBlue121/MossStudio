@@ -395,7 +395,7 @@ export function ModelsPage(): React.JSX.Element {
     <PageScroll>
       <PageHeader
         title="模型"
-        description="下载用来生成图片的模型和 LoRA。"
+        description="管理生成图片用的模型和 LoRA。"
         actions={
           <>
             {locationPicker}

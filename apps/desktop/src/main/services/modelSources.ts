@@ -7,6 +7,7 @@ import type {
   ControlAdapterEntry,
   ModelEntry,
   ModelSource,
+  ModelSourceFile,
   ModelSourceStatus,
   ModelSourcesView,
   ScannedModel,
@@ -142,7 +143,7 @@ async function inspectWeight(file: ScannedModel, request: EngineRequest | null):
 async function scanSources(settings: Settings, generation: number): Promise<void> {
   const sources = settings.modelSources ?? []
   const writable = await managedRoots(settings)
-  const roots = await Promise.all(sources.map(sourceRoots))
+  const roots = await Promise.all(sources.map((source) => sourceRoots(source)))
   const readable = roots.map((item) => item.roots.filter((root) => !writable.some((target) => overlaps(root, target))))
   const allRoots = [...new Set(readable.flat())]
   const scans = new Map<string, Awaited<ReturnType<typeof scanModelDirectory>>>()
@@ -163,6 +164,7 @@ async function scanSources(settings: Settings, generation: number): Promise<void
       available: 0,
       pending: 0,
       incompatible: 0,
+      files: [],
       issues: [...resolved.issues],
     }
     nextStatuses.push(status)
@@ -175,7 +177,12 @@ async function scanSources(settings: Settings, generation: number): Promise<void
           scan = await scanModelDirectory(root, allRoots)
           scans.set(root, scan)
         }
-        for (const file of scan.candidates) files.set(idFor(file.path), file)
+        const role = resolved.roles.get(root)
+        for (const file of scan.candidates) {
+          const id = idFor(file.path)
+          if (role && file.layout !== 'diffusers-folder') files.set(id, { ...file, role })
+          else if (!files.has(id)) files.set(id, file)
+        }
         for (const item of scan.skipped)
           status.issues.push(item.reason.includes('已停止') ? item.reason : '部分文件夹无法读取：' + item.path)
       } catch {
@@ -188,18 +195,23 @@ async function scanSources(settings: Settings, generation: number): Promise<void
   async function inspectGroups(request: EngineRequest | null): Promise<void> {
     const results = new Map<string, Inspection | string | null>()
     for (const { status, files } of groups) {
+      status.available = status.pending = status.incompatible = 0
+      status.files = []
       for (const [id, file] of files) {
         if (generation !== scanGeneration) return
         if (!results.has(id)) results.set(id, await inspectWeight(file, request))
         const result = results.get(id)
-        if (!result) status.pending++
-        else if (typeof result === 'string') status.incompatible++
-        else {
-          status.available++
+        const entry: ModelSourceFile = { path: file.path, name: file.name, role: file.role, state: 'pending' }
+        if (typeof result === 'string') entry.state = 'incompatible'
+        else if (result) {
+          entry.state = 'available'
+          entry.role = result.role
           const weight = next.get(id) ?? { file, inspection: result, sourceIds: new Set<string>() }
           weight.sourceIds.add(status.id)
           next.set(id, weight)
         }
+        status[entry.state]++
+        status.files.push(entry)
       }
     }
   }
@@ -254,9 +266,13 @@ export async function refreshModelSources(settings: Settings, changed = false): 
   }
 }
 
-export async function modelSourcesView(settings: Settings): Promise<ModelSourcesView> {
+export async function modelSourcesView(
+  settings: Settings,
+  mode: 'discover' | 'connected' | 'probe' = 'discover',
+): Promise<ModelSourcesView> {
   const sources = settings.modelSources ?? []
   const paths = new Set(sources.map((source) => modelPathKey(source.path)))
+  const discovery = mode === 'connected' ? { sources: [] } : await nearbyModelSources(mode === 'probe')
   return {
     sources: sources.map(
       (source) =>
@@ -266,10 +282,12 @@ export async function modelSourcesView(settings: Settings): Promise<ModelSources
           available: 0,
           pending: 0,
           incompatible: 0,
+          files: [],
           issues: [],
         },
     ),
-    suggestions: (await nearbyModelSources())
+    services: discovery.services,
+    suggestions: discovery.sources
       .filter((source) => !paths.has(modelPathKey(source.path)))
       .map((source) => ({ ...source, id: idFor(source.path) })),
   }

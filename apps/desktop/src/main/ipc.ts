@@ -736,26 +736,19 @@ export function registerIpc(): void {
     await startupModelSources
     return getCatalog(getSettings(), true)
   })
-  handle(Ipc.modelSourcesList, null, () => modelSourcesView(getSettings()))
+  handle(Ipc.modelSourcesList, null, () => modelSourcesView(getSettings(), 'connected'))
+  handle(Ipc.modelSourcesProbe, null, () => modelSourcesView(getSettings(), 'probe'))
   handle(Ipc.modelSourcesRefresh, null, async () => {
     await refreshSharedModels(getSettings())
     return modelSourcesView(getSettings())
   })
-  handle(Ipc.modelSourcesAdd, schemas.modelSourcesAdd, async ({ path, kind, id, config }) => {
+  handle(Ipc.modelSourcesAdd, schemas.modelSourcesAdd, async ({ path, kind, id }) => {
     if (!path) {
-      const picked = await dialog.showOpenDialog(
-        config
-          ? {
-              title: '选择 ComfyUI 模型配置',
-              properties: ['openFile'],
-              filters: [{ name: 'ComfyUI 配置', extensions: ['yaml', 'yml', 'json'] }],
-            }
-          : { title: '选择共享模型目录', properties: ['openDirectory'] },
-      )
+      const picked = await dialog.showOpenDialog({ title: '选择共享模型目录', properties: ['openDirectory'] })
       if (picked.canceled || !picked.filePaths[0]) return modelSourcesView(getSettings())
       path = picked.filePaths[0]
     }
-    const settings = await addModelSource(path, config ? 'comfyui' : kind, id)
+    const settings = await addModelSource(path, kind, id)
     emit(Events.settingsChanged, settings)
     await refreshSharedModels(settings, true)
     return modelSourcesView(getSettings())
