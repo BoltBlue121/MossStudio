@@ -207,9 +207,10 @@ export function registerIpc(): void {
     invalidateCatalog()
     emit(Events.modelsChanged, { reason: 'shared-sources' })
   }
-  if (getSettings().modelSources?.length) {
-    void refreshSharedModels(getSettings()).catch((error: unknown) => console.warn('[model-sources]', error))
-  }
+  const startupSettings = getSettings()
+  const startupModelSources = startupSettings.modelSources?.length
+    ? refreshSharedModels(startupSettings).catch((error: unknown) => console.warn('[model-sources]', error))
+    : undefined
   // Keeps the engine on the newest release while settings.engineAutoUpdate is on.
   startEngineAutoUpdate()
   // Learn which GPUs this computer has (AMD / Intel via the small Vulkan probe) without blocking start-up.
@@ -731,7 +732,10 @@ export function registerIpc(): void {
     return writeChapterPages(result.filePaths[0], input)
   })
 
-  handle(Ipc.modelsCatalog, null, () => getCatalog(getSettings(), true))
+  handle(Ipc.modelsCatalog, null, async () => {
+    await startupModelSources
+    return getCatalog(getSettings(), true)
+  })
   handle(Ipc.modelSourcesList, null, () => modelSourcesView(getSettings()))
   handle(Ipc.modelSourcesRefresh, null, async () => {
     await refreshSharedModels(getSettings())
