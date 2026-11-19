@@ -74,6 +74,7 @@ import {
 } from './training'
 
 export interface MockBackendState {
+  sharedModelDirectory?: { available: boolean }
   settings: Settings
   env: EnvReport | null
   /** The update runtime (main/update); handlers keep it in step like main does. */
@@ -134,6 +135,7 @@ export interface MockBackendState {
 
 export type ScenarioName =
   | 'firstRun'
+  | 'sharedModelDirectory'
   | 'noGpu'
   | 'engineInstalling'
   | 'engineInstalledModelMissing'
@@ -227,6 +229,11 @@ export function scenario(name: ScenarioName = 'ready', patch: Partial<MockBacken
   const variants: Record<Exclude<ScenarioName, MachineScenario>, () => Partial<MockBackendState>> = {
     /** Nothing installed: onboarding pending, no engine, no model, a usable GPU. */
     firstRun,
+    sharedModelDirectory: () => ({
+      ...firstRun(),
+      engineReadiness: engineReadyFixture(),
+      sharedModelDirectory: { available: true },
+    }),
     /** First run on a machine without an NVIDIA GPU. */
     noGpu: () => ({
       ...firstRun(),

@@ -281,6 +281,7 @@ export const useApp = create<AppStore>((set, get) => {
       eventCounts.update += 1
       setUpdate(state)
     })
+    onEvent(Events.modelsChanged, () => void get().refreshCatalog())
     onEvent<DownloadTask>(Events.download, (task) => {
       if (!get().ready) startupDownloads.set(task.id, task)
       const previous = get().downloads.find((item) => item.id === task.id)

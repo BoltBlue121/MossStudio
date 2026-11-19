@@ -25,7 +25,7 @@ export function isFileBundle(
 ): boolean {
   return [bundle.components.dit, bundle.components.textEncoder, bundle.components.vae].some((id) => {
     const model = models.find((entry) => entry.id === id)
-    return model?.provider === 'local' || model?.format === 'comfyui'
+    return id.startsWith('shared-') || model?.provider === 'local' || model?.format === 'comfyui'
   })
 }
 
@@ -48,6 +48,9 @@ export function bundleWeightProblem(
   bundle: Pick<ModelBundle, 'components'>,
   models: readonly (Pick<ModelEntry, 'id'> & { precision?: string; tags?: readonly string[] })[],
 ): string | null {
+  if (Object.values(bundle.components).some((id) => id.startsWith('shared-') && !models.some((model) => model.id === id))) {
+    return '共享模型文件不可用，请刷新目录或重新选择'
+  }
   const dit = models.find((model) => model.id === bundle.components.dit)
   return dit && isFp16Dit(dit) ? '主模型是 FP16 版本，引擎读不了' : null
 }

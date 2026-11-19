@@ -122,6 +122,27 @@ export type ModelDirectoryId = 'dit' | 'textEncoder' | 'vae' | 'support' | 'adap
 
 export type ModelDirectories = Record<ModelDirectoryId, string | null>
 
+export type ModelSourceKind = 'comfyui' | 'webui' | 'forge' | 'custom'
+
+export interface ModelSource {
+  id: string
+  kind: ModelSourceKind
+  path: string
+}
+
+export interface ModelSourceStatus extends ModelSource {
+  roots: string[]
+  available: number
+  pending: number
+  incompatible: number
+  issues: string[]
+}
+
+export interface ModelSourcesView {
+  sources: ModelSourceStatus[]
+  suggestions: ModelSource[]
+}
+
 /** One file or diffusers folder found by a read-only directory scan. */
 export interface ScannedModel {
   path: string
@@ -158,6 +179,9 @@ export interface Settings {
   hfQueryHostId: string | null
   modelsRoot: string | null
   modelDirectories: ModelDirectories
+  modelSources?: ModelSource[]
+  onboardingModelId?: string | null
+  onboardingReusePending?: boolean
   pythonPath: string | null
   torchBackend: 'auto' | 'cpu' | 'cuda'
   torchIndex: string | null

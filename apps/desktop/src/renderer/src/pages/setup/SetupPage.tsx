@@ -1,5 +1,6 @@
 import { Check, ChevronRight, ExternalLink, Monitor, RefreshCw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import type { SlotKey } from '@shared/modelCombos'
 import { useNavigate } from 'react-router-dom'
 import { Ipc } from '@shared/channels'
 import type { ManagedHost, Settings } from '@shared/types'
@@ -7,13 +8,16 @@ import { call } from '../../lib/api'
 import { bytes } from '../../lib/format'
 import { timeLeftLabel, type Preparation } from '../../lib/preparation'
 import { useApp } from '../../store'
-import { Button, ProgressBar, Spinner, cn, useToast } from '../../components/ui'
+import { Button, Modal, ProgressBar, Spinner, cn, useToast } from '../../components/ui'
 import { pickFolder } from '../settings/fields'
 import { HostDialog } from '../settings/HostDialog'
 import { emptyHostForm, hostPathsPatch, hostSavePayload, type HostForm } from '../settings/hostForm'
 import type { PlanLine } from '../../lib/engineInstall'
 import { setupNeedLine, setupSpaceLabel, stepsToStart, type SetupStep } from './setupState'
 import { useSetup } from './useSetup'
+import { CombinationDialog } from '../models/CombinationDialog'
+import { ModelSources } from '../models/ModelSources'
+import { useModelLocation } from '../models/useModelLocation'
 
 /** The README section on which computers run MossStudio. */
 const WHICH_COMPUTERS_URL = 'https://github.com/ShallowElec/MossStudio#哪些电脑能用'
@@ -167,7 +171,21 @@ export function SetupPage(): React.JSX.Element {
   const toast = useToast()
   const settings = useApp((state) => state.settings)
   const saveSettings = useApp((state) => state.saveSettings)
-  const { view, progress, modelName, starting, start, redetect, redetecting, chooseModelFolder, usingFolder, info } = useSetup()
+  const { view, progress, modelName, starting, start, installEngine, redetect, redetecting, chooseModelFolder, usingFolder, info } =
+    useSetup()
+  const catalog = useApp((state) => state.catalog)
+  const engine = useApp((state) => state.engineReadiness)
+  const modelLocation = useModelLocation(null)
+  const [sharedOpen, setSharedOpen] = useState(false)
+  const [combining, setCombining] = useState(false)
+  const [selecting, setSelecting] = useState(false)
+  const reusePending = Boolean(settings?.onboardingReusePending)
+  const shared = catalog?.models.filter((model) => model.installed && model.tags.includes('shared-directory')) ?? []
+  const parts: Partial<Record<SlotKey, string>> = {
+    dit: shared.find((model) => model.role === 'dit')?.id,
+    textEncoder: shared.find((model) => model.role === 'text_encoder')?.id,
+    vae: shared.find((model) => model.role === 'vae')?.id,
+  }
   const [leaving, setLeaving] = useState(false)
   const [hostForm, setHostForm] = useState<HostForm | null>(null)
   const space = setupSpaceLabel(view)
@@ -213,15 +231,39 @@ export function SetupPage(): React.JSX.Element {
   // Picked up after a restart (the engine still installing, the model never started): carry on.
   const resumed = useRef(false)
   useEffect(() => {
-    if (!running || pending.length === 0 || starting || resumed.current) return
+    if (!running || pending.length === 0 || starting || resumed.current || sharedOpen || combining || reusePending) return
     resumed.current = true
     void start()
-  }, [running, pending.length, starting, start])
+  }, [running, pending.length, starting, start, sharedOpen, combining, reusePending])
 
   async function pickLocalFolder(): Promise<void> {
     try {
       const outcome = await chooseModelFolder()
-      if (outcome) toast.push(outcome.message, outcome.ready ? 'success' : 'info')
+      if (outcome) {
+        toast.push(outcome.message, outcome.ready ? 'success' : 'info')
+        if (outcome.ready) setSharedOpen(false)
+      }
+    } catch (error) {
+      toast.push(errorText(error), 'error')
+    }
+  }
+
+  async function selectSharedModel(id: string): Promise<void> {
+    setSelecting(true)
+    try {
+      await saveSettings({ onboardingModelId: id, onboardingReusePending: false })
+      setSharedOpen(false)
+      setCombining(false)
+    } finally {
+      setSelecting(false)
+    }
+  }
+
+  async function prepareEngineForSharedModels(): Promise<void> {
+    try {
+      await saveSettings({ onboardingModelId: null, onboardingReusePending: true })
+      resumed.current = true
+      await installEngine()
     } catch (error) {
       toast.push(errorText(error), 'error')
     }
@@ -331,7 +373,7 @@ export function SetupPage(): React.JSX.Element {
           <>
             <div className="flex flex-col gap-1.5">
               <h1 className="text-display font-semibold text-ink">准备开始创作</h1>
-              <p className="text-ui text-ink-2">先下载一次模型，之后都在本机运行。</p>
+              <p className="text-ui text-ink-2">准备好模型后，就可以在本机生成。</p>
             </div>
             {view.phase === 'checking' ? (
               <p className="flex items-center gap-2 text-ui text-ink-2">
@@ -343,6 +385,25 @@ export function SetupPage(): React.JSX.Element {
             )}
             <div className="flex flex-col gap-3 rounded-xl bg-surface px-5 py-4" data-setup-summary>
               <span className="tabular text-title font-semibold text-ink">{space ? `下载${space}` : '正在计算大小…'}</span>
+              {settings?.onboardingModelId || reusePending ? (
+                <div className="flex items-center gap-2 text-ui text-ink-2">
+                  <span className="min-w-0 flex-1 truncate" title={modelName}>
+                    {reusePending ? '请选择要使用的共享模型' : modelName}
+                  </span>
+                  <Button
+                    tone="ghost"
+                    size="sm"
+                    disabled={starting}
+                    onClick={() =>
+                      void saveSettings({ onboardingModelId: null, onboardingReusePending: false }).catch((error: unknown) =>
+                        toast.push(errorText(error), 'error'),
+                      )
+                    }
+                  >
+                    改用推荐模型
+                  </Button>
+                </div>
+              ) : null}
               {view.diskShort ? (
                 // Plain danger text in the card's own rhythm, not a Notice box (ui-rules §4).
                 <p className="text-ui text-danger" role="status" data-setup-disk>
@@ -365,9 +426,8 @@ export function SetupPage(): React.JSX.Element {
             </div>
             <div className="flex flex-wrap items-center gap-3">
               {modelStep && modelStep.state !== 'done' ? (
-                // Quiet: most people download; someone with the files already can point at them.
-                <Button tone="ghost" size="sm" disabled={usingFolder} onClick={() => void pickLocalFolder()}>
-                  {usingFolder ? <Spinner /> : null}已有模型文件…
+                <Button tone="ghost" size="sm" onClick={() => setSharedOpen(true)}>
+                  使用已有模型
                 </Button>
               ) : null}
               <span className="flex-1" />
@@ -378,7 +438,7 @@ export function SetupPage(): React.JSX.Element {
                 tone="primary"
                 size="lg"
                 // Not enough room in the chosen folder: 更改 is the way on.
-                disabled={starting || view.phase === 'checking' || Boolean(view.diskShort)}
+                disabled={starting || reusePending || view.phase === 'checking' || Boolean(view.diskShort)}
                 onClick={() => void start()}
               >
                 {starting ? <Spinner /> : null}
@@ -388,6 +448,54 @@ export function SetupPage(): React.JSX.Element {
           </>
         )}
       </div>
+      {sharedOpen ? (
+        <Modal open title="使用已有模型" onClose={() => setSharedOpen(false)} width="max-w-2xl">
+          <div className="flex flex-col gap-4">
+            <ModelSources reload={engine?.state} />
+            {shared
+              .filter((model) => model.role === 'full')
+              .map((model) => (
+                <Button
+                  key={model.id}
+                  tone="secondary"
+                  disabled={selecting}
+                  onClick={() => void selectSharedModel(model.id).catch((error: unknown) => toast.push(errorText(error), 'error'))}
+                >
+                  使用 {model.name}
+                </Button>
+              ))}
+            {Object.values(parts).some(Boolean) ? (
+              <Button
+                tone="secondary"
+                onClick={() => {
+                  setSharedOpen(false)
+                  setCombining(true)
+                }}
+              >
+                自己组合
+              </Button>
+            ) : null}
+            {engine?.state !== 'ready' ? (
+              <Button tone="secondary" disabled={running} onClick={() => void prepareEngineForSharedModels()}>
+                先准备引擎
+              </Button>
+            ) : null}
+            <Button tone="ghost" size="sm" disabled={usingFolder} onClick={() => void pickLocalFolder()}>
+              {usingFolder ? <Spinner /> : null}已有模型文件…
+            </Button>
+          </div>
+        </Modal>
+      ) : null}
+      {combining && catalog ? (
+        <CombinationDialog
+          open
+          catalog={catalog}
+          location={modelLocation}
+          initial={parts}
+          onClose={() => setCombining(false)}
+          onSaved={(combination) => selectSharedModel(combination.id)}
+        />
+      ) : null}
       <HostDialog open={hostForm !== null} initial={hostForm ?? emptyHostForm()} onClose={() => setHostForm(null)} onSave={saveHost} />
     </div>
   )

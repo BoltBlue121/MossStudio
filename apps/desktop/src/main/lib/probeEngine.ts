@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { extname } from 'node:path'
+import { createInterface } from 'node:readline'
 import { decodeEngineHello, ENGINE_PROTOCOL_VERSION, type EngineHello } from '@shared/engineProtocol'
 
 export function spawnEngineServer(
@@ -80,6 +81,64 @@ export async function probeEngine(
         // 进程可能已经退出。
       }
     }, 2000).unref()
+  }
+}
+
+export type EngineRequest = (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>
+
+/** 批量检查权重时复用一个 sidecar，避免为每个文件重复启动引擎。 */
+export async function withEngineRequests<T>(serverPath: string, task: (request: EngineRequest) => Promise<T>): Promise<T> {
+  const proc = spawnEngineServer(serverPath)
+  const lines = createInterface({ input: proc.stdout })
+  let sequence = 0
+  let failed: Error | null = null
+  let pending: { id: number; resolve: (value: Record<string, unknown>) => void; reject: (cause: Error) => void } | null = null
+  function fail(error: Error): void {
+    failed = error
+    pending?.reject(error)
+  }
+
+  lines.on('line', (line) => {
+    let message: Record<string, unknown>
+    try {
+      message = JSON.parse(line) as Record<string, unknown>
+    } catch {
+      return
+    }
+    if (!pending || message?.id !== pending.id) return
+    const error = message.error as { code?: string; message?: string } | undefined
+    if (error) pending.reject(new Error([error.code, error.message].filter(Boolean).join(': ')))
+    else pending.resolve((message.result ?? {}) as Record<string, unknown>)
+  })
+  proc.on('error', fail)
+  proc.stdin.on('error', fail)
+  proc.stderr.resume()
+  proc.on('close', (code) => fail(new Error('moss-server 已退出：' + String(code))))
+
+  const request: EngineRequest = async (method, params) => {
+    if (failed) throw failed
+    const id = ++sequence
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await new Promise<Record<string, unknown>>((resolve, reject) => {
+        pending = { id, resolve, reject }
+        timer = setTimeout(() => fail(new Error('moss-server 请求超时：' + method)), 8000)
+        proc.stdin.write(JSON.stringify({ id, method, params }) + '\n')
+      })
+    } finally {
+      clearTimeout(timer)
+      pending = null
+    }
+  }
+
+  try {
+    const hello = decodeEngineHello(await request('hello', { client: 'MossStudio', protocol_version: ENGINE_PROTOCOL_VERSION }))
+    if (hello.capabilities.inspect === false) throw new Error('请更新 MossInfer 后检查模型文件')
+    return await task(request)
+  } finally {
+    lines.close()
+    proc.stdin.end()
+    proc.kill()
   }
 }
 

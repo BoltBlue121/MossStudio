@@ -228,6 +228,17 @@ const cases = {
     rejects: { 'empty id': { id: '' }, 'overlong id': { id: long(161) } },
   },
 
+  modelSourcesAdd: {
+    valid: {},
+    accepts: { 配置文件: { config: true }, 已发现的位置: { path: 'D:/ComfyUI', kind: 'comfyui' } },
+    rejects: { 空路径: { path: ' ' }, 不识别的来源: { kind: 'other' } },
+  },
+
+  modelSourcesRemove: {
+    valid: { id: 'source-a' },
+    rejects: { 空编号: { id: '' } },
+  },
+
   modelsScan: {
     valid: {},
     accepts: { 'blank directory is allowed': { directory: '   ' } },

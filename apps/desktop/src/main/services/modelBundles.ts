@@ -1,3 +1,4 @@
+import { isSharedWeight, resolveSharedWeight } from './modelSources'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -45,6 +46,7 @@ export async function validateBinding(binding: ModelBinding, settings: Settings)
  */
 export interface PreparedModelSource {
   model: string
+  directFolder?: boolean
   ditFile?: string
   textEncoderFile?: string
   vaeFile?: string
@@ -76,6 +78,12 @@ export async function prepareModelSource(binding: ModelBinding, settings: Settin
   const catalog = await getCatalog(settings)
   const bundle = catalog.bundles.find((b) => b.id === binding.bundleId)
   if (!bundle) throw new Error('模型组合不存在，请重新选择')
+  const full = catalog.models.find((entry) => entry.id === bundle.id && entry.role === 'full' && isSharedWeight(entry.id))
+  if (full) {
+    const path = await resolveSharedWeight(full.id)
+    if (!path) throw new Error(`找不到「${full.name}」，请刷新共享模型目录`)
+    return { model: path, bundle, directFolder: true }
+  }
   const parts = SLOT_ROLES.map(([key, role]) => {
     const model = catalog.models.find((entry) => entry.id === binding[key])
     if (!model || model.role !== role) throw new Error('模型组合里的部件不对，请重新选择')
@@ -90,8 +98,9 @@ export async function prepareModelSource(binding: ModelBinding, settings: Settin
   for (const part of parts) {
     if (!isSingleFile(part)) files.push(undefined)
     else if (part.provider === 'local') {
-      if (!part.localPath) throw new Error(`找不到「${part.name}」的文件，请重新添加`)
-      files.push(part.localPath)
+      const path = isSharedWeight(part.id) ? await resolveSharedWeight(part.id) : part.localPath
+      if (!path) throw new Error(`找不到「${part.name}」的文件，请刷新共享模型目录或重新选择`)
+      files.push(path)
     } else files.push(await componentFile(part.id, settings))
   }
   const [ditFile, textEncoderFile, vaeFile] = files

@@ -27,6 +27,7 @@ export function useSetup(): {
   modelName: string
   starting: boolean
   start: () => Promise<void>
+  installEngine: () => Promise<void>
   gpu: ReturnType<typeof useGpuInventory>
   /** Detect the GPUs again (and re-plan). */
   redetect: () => Promise<void>
@@ -88,7 +89,7 @@ export function useSetup(): {
   }, [])
   useEffect(() => {
     void loadStatus()
-  }, [loadStatus, catalog, finished, engine?.state, settings?.modelsRoot])
+  }, [loadStatus, catalog, finished, engine?.state, settings?.modelsRoot, settings?.onboardingModelId, settings?.onboardingReusePending])
 
   // Free space where the missing model parts go. Read again when the folders change, a download ends,
   // the parts still missing change, or the window comes back (space freed in the file manager).
@@ -179,7 +180,7 @@ export function useSetup(): {
   const downloadModels = useCallback(async () => {
     const status = await loadStatus()
     const step = status?.steps.find((item) => item.id === 'model')
-    if (!status || !step || step.status === 'ok') return
+    if (!status || !step || step.status === 'ok' || useApp.getState().settings?.onboardingReusePending) return
     const active = new Set(
       modelDownloads(status, useApp.getState().downloads)
         .filter((task) => ['queued', 'running', 'verifying'].includes(task.state))
@@ -188,7 +189,7 @@ export function useSetup(): {
     const models = useApp.getState().catalog?.models ?? []
     const missing = (step.modelIds ?? []).filter((id) => !active.has(id) && !models.find((model) => model.id === id)?.installed)
     if (missing.length === 0 && (step.modelIds ?? []).length === 0) {
-      setModelError('没有找到可下载的推荐模型，请检查网络后重试')
+      setModelError(step.detail || '没有找到可下载的推荐模型，请检查网络后重试')
       return
     }
     for (const id of missing) await downloadModel(id)
@@ -215,6 +216,10 @@ export function useSetup(): {
     try {
       const result = await call<ImportFolderResult>(Ipc.modelsImportFolder)
       if (result.canceled) return null
+      const current = useApp.getState()
+      if (current.settings?.onboardingReusePending || current.settings?.onboardingModelId) {
+        await current.saveSettings({ onboardingReusePending: false, onboardingModelId: null })
+      }
       await refreshCatalog()
       const status = await loadStatus()
       const ready = status?.steps.find((step) => step.id === 'model')?.status === 'ok'
@@ -240,5 +245,5 @@ export function useSetup(): {
   }, [gpu, loadPlan])
 
   const modelName = onboarding?.bundleName ?? '推荐模型'
-  return { view, progress, modelName, starting, start, gpu, redetect, redetecting, chooseModelFolder, usingFolder, info }
+  return { view, progress, modelName, starting, start, installEngine, gpu, redetect, redetecting, chooseModelFolder, usingFolder, info }
 }

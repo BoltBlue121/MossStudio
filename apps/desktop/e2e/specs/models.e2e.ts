@@ -12,6 +12,32 @@ describe('models', () => {
   const app = useApp()
   const featured = (page: Page) => page.locator('[data-oobe="model"]')
 
+  it('connects, refreshes and removes a shared model directory', async () => {
+    const page = await app.open({
+      scenario: 'sharedModelDirectory',
+      route: '/models',
+      theme: 'dark',
+      settings: { onboardingState: 'dismissed' },
+    })
+    const section = page.locator('section').filter({ has: page.getByRole('heading', { name: '共享模型目录' }) })
+    await section.getByRole('button', { name: '接入' }).click()
+    await expect.poll(() => section.getByText('可用 3 项').isVisible()).toBe(true)
+    await app.screenshot('models-shared-sources-dark')
+    await page.evaluate(() => {
+      window.__mock.state.sharedModelDirectory!.available = false
+    })
+    await section.getByRole('button', { name: '刷新', exact: true }).click()
+    await expect.poll(() => section.getByText('读不到模型目录').isVisible()).toBe(true)
+    await page.evaluate(() => {
+      window.__mock.state.sharedModelDirectory!.available = true
+    })
+    await section.getByRole('button', { name: '刷新', exact: true }).click()
+    await expect.poll(() => section.getByText('可用 3 项').isVisible()).toBe(true)
+    await section.getByRole('button', { name: '移除来源' }).click()
+    await expect.poll(() => section.getByRole('button', { name: '接入' }).isVisible()).toBe(true)
+    expect(await app.calls('models:delete')).toEqual([])
+  })
+
   it('downloads the recommended model with one action and shows its progress', async () => {
     const page = await app.open({ scenario: 'engineInstalledModelMissing', route: '/models', theme: 'light' })
     const card = featured(page)

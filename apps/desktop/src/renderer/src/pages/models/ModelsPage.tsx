@@ -2,11 +2,11 @@ import { Download, FolderOpen, Package, Plus, RefreshCw } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { cliGpuUuids, generationGpus } from '@shared/bundleFit'
-import { Events, Ipc } from '@shared/channels'
+import { Ipc } from '@shared/channels'
 import type { SlotKey } from '@shared/modelCombos'
 import type { AppInfo, Catalog, ModelBundle } from '@shared/types'
 import { importFolderMessage, type UseFolderResult } from '../../lib/modelFolder'
-import { call, onEvent } from '../../lib/api'
+import { call } from '../../lib/api'
 import { useGpuInventory } from '../../lib/useGpuInventory'
 import { DownloadQueue } from '../../components/DownloadQueue'
 import { MenuItem, Popover } from '../../components/common/Popover'
@@ -32,6 +32,7 @@ import { AdvancedPanel } from './AdvancedPanel'
 import { CombinationDialog } from './CombinationDialog'
 import { ControlAdaptersSection } from './ControlAdaptersSection'
 import { LoraTab } from './LoraTab'
+import { ModelSources } from './ModelSources'
 import { DeleteModelDialog, FeaturedModel, ModelList } from './ModelEntries'
 import { bundleBlocker, bundleDeletePlan, bundleView, downloadGroups, modelSections, parseModelsQuery, type DownloadGroup } from './logic'
 import { useModelLocation, useSshHosts, type ModelLocation } from './useModelLocation'
@@ -88,10 +89,12 @@ function ModelsTab({
   catalog,
   location,
   preferredBundleId,
+  sourceRefresh,
 }: {
   catalog: Catalog
   location: ModelLocation
   preferredBundleId: string | null
+  sourceRefresh: number
 }): React.JSX.Element {
   const toast = useToast()
   const [deleting, setDeleting] = useState<ModelBundle | null>(null)
@@ -122,7 +125,8 @@ function ModelsTab({
   const featuredView = sections.featured
   const deletePlan = (bundle: ModelBundle) =>
     bundleDeletePlan(bundle, catalog.bundles, catalog.models, location.isModelInstalled, location.tasks)
-  const deletable = (bundle: ModelBundle): boolean => Boolean(bundle.custom) || deletePlan(bundle).ids.length > 0
+  const deletable = (bundle: ModelBundle): boolean =>
+    !bundle.id.startsWith('shared-') && (Boolean(bundle.custom) || deletePlan(bundle).ids.length > 0)
   const featuredCard = featuredView ? (
     <FeaturedModel
       view={featuredView}
@@ -200,6 +204,12 @@ function ModelsTab({
         >
           读不到 {location.host?.name ?? '远程主机'} 上的模型：{location.scanError}。检查这台主机是否在线，然后重试。
         </Notice>
+      ) : null}
+
+      {location.kind === 'local' ? (
+        <Section title="共享模型目录">
+          <ModelSources reload={sourceRefresh} />
+        </Section>
       ) : null}
 
       {!location.ready ? (
@@ -318,6 +328,7 @@ function DownloadsTab({ catalog, location }: { catalog: Catalog | null; location
 
 /** 模型: whole models first, LoRA and downloads in their own tabs, parts under 高级. */
 export function ModelsPage(): React.JSX.Element {
+  const toast = useToast()
   const routeLocation = useLocation()
   const catalog = useApp((state) => state.catalog)
   const settings = useApp((state) => state.settings)
@@ -328,6 +339,7 @@ export function ModelsPage(): React.JSX.Element {
   const [tab, setTab] = useState<Tab>('models')
   const [preferredBundleId, setPreferredBundleId] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [sourceRefresh, setSourceRefresh] = useState(0)
 
   // Deep links from first run and elsewhere: ?bundle=…&component=…&hostId=…&tab=…
   useEffect(() => {
@@ -340,7 +352,6 @@ export function ModelsPage(): React.JSX.Element {
 
   useEffect(() => {
     void refreshCatalog()
-    return onEvent(Events.modelsChanged, () => void refreshCatalog())
   }, [refreshCatalog])
 
   const host = remoteEnabled ? (hosts.find((item) => item.id === locationId) ?? null) : null
@@ -367,8 +378,14 @@ export function ModelsPage(): React.JSX.Element {
   async function refresh(): Promise<void> {
     setRefreshing(true)
     try {
+      if (location.kind === 'local') {
+        if (tab === 'models') setSourceRefresh((previous) => previous + 1)
+        else await call(Ipc.modelSourcesRefresh)
+      }
       await refreshCatalog()
       location.rescan()
+    } catch (error) {
+      toast.push(error instanceof Error ? error.message : String(error), 'error')
     } finally {
       setRefreshing(false)
     }
@@ -403,7 +420,7 @@ export function ModelsPage(): React.JSX.Element {
       {!catalog ? (
         <LoadingRow label="正在读取模型列表…" />
       ) : tab === 'models' ? (
-        <ModelsTab catalog={catalog} location={location} preferredBundleId={preferredBundleId} />
+        <ModelsTab catalog={catalog} location={location} preferredBundleId={preferredBundleId} sourceRefresh={sourceRefresh} />
       ) : tab === 'lora' ? (
         <LoraTab catalog={catalog} location={location} />
       ) : (

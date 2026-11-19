@@ -19,7 +19,7 @@
  * (the legacy UI-harness behaviour: `[]`, or `null` for appInfo/envScan).
  */
 import { bestBundleFor, cliGpuUuids, generationGpus, isFileBundle } from '@shared/bundleFit'
-import { Events, Ipc } from '@shared/channels'
+import { Events, Ipc, type EventChannel } from '@shared/channels'
 import { combinationBundle } from '@shared/modelCombos'
 import { MANGA_SCHEMA_VERSION, seriesSummary, type MangaSeries, type MangaSeriesSave } from '@shared/manga/model'
 import type { AiChatInput, AiConversationInfo, AiMessage } from '@shared/ai'
@@ -152,10 +152,15 @@ function onboardingStatus(state: MockBackendState, hostId: string): OnboardingSt
   const best = local
     ? bestBundleFor(usable, generationGpus(state.gpuInventory.devices, state.settings), cliGpuUuids(state.engineReadiness))?.bundle
     : undefined
-  const bundle = [...usable].sort(
-    (a, b) => Number(b.id === best?.id) - Number(a.id === best?.id) || Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)),
-  )[0]
-  const modelIds = bundle ? [...Object.values(bundle.components), bundle.support] : []
+  const choice = local ? state.settings.onboardingModelId : null
+  const bundle =
+    choice || (local && state.settings.onboardingReusePending)
+      ? usable.find((item) => item.id === choice)
+      : [...usable].sort(
+          (a, b) =>
+            Number(b.id === best?.id) - Number(a.id === best?.id) || Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)),
+        )[0]
+  const modelIds = bundle ? [...new Set([...Object.values(bundle.components), bundle.support])] : []
   const count = modelIds.filter((id) => installed.has(id)).length
   const partial = count > 0 || modelIds.some((id) => state.catalog.models.find((model) => model.id === id)?.installState === 'partial')
   const modelReady = modelIds.length > 0 && count === modelIds.length
@@ -376,6 +381,55 @@ function defaultHandlers(): Map<string, Handler> {
 
   // Models & downloads
   h.set(Ipc.modelsCatalog, (_, { state }) => state.catalog)
+  const suggestedSource = { id: 'suggested-comfy', kind: 'comfyui' as const, path: '/workspace/ComfyUI' }
+  const sourcesView = (state: MockBackendState) => ({
+    sources: (state.settings.modelSources ?? []).map((source) => ({
+      ...source,
+      roots: [source.path + '/models'],
+      available: state.sharedModelDirectory?.available ? 3 : 0,
+      pending: 0,
+      incompatible: 0,
+      issues: state.sharedModelDirectory?.available ? [] : ['读不到模型目录'],
+    })),
+    suggestions: state.sharedModelDirectory && !state.settings.modelSources?.length ? [suggestedSource] : [],
+  })
+  const syncSources = ({ state, emit }: { state: MockBackendState; emit: (event: EventChannel, data: unknown) => void }) => {
+    const models = state.catalog.models.filter((model) => !model.id.startsWith('shared-'))
+    if (state.settings.modelSources?.length && state.sharedModelDirectory?.available) {
+      for (const role of ['dit', 'text_encoder', 'vae'] as const) {
+        models.push({
+          id: 'shared-' + role,
+          name: '共享 ' + role,
+          provider: 'local',
+          repo: '/workspace/ComfyUI/' + role + '.safetensors',
+          revision: 'local',
+          role,
+          format: 'comfyui',
+          precision: 'bf16',
+          sizeBytes: 10,
+          installedBytes: 10,
+          license: 'local',
+          tags: ['shared-directory'],
+          installed: true,
+        })
+      }
+    }
+    state.catalog = { ...state.catalog, models }
+    emit(Events.modelsChanged, null)
+    return sourcesView(state)
+  }
+  h.set(Ipc.modelSourcesList, (_, { state }) => sourcesView(state))
+  h.set(Ipc.modelSourcesRefresh, (_, ctx) => syncSources(ctx))
+  h.set(Ipc.modelSourcesAdd, (_, ctx) => {
+    ctx.state.settings = { ...ctx.state.settings, modelSources: [suggestedSource] }
+    ctx.emit(Events.settingsChanged, ctx.state.settings)
+    return syncSources(ctx)
+  })
+  h.set(Ipc.modelSourcesRemove, (_, ctx) => {
+    ctx.state.settings = { ...ctx.state.settings, modelSources: [] }
+    ctx.emit(Events.settingsChanged, ctx.state.settings)
+    return syncSources(ctx)
+  })
   // 添加整个模型文件夹: like main with a MOSS-Image SFT diffusers folder picked
   // (state.localModelFolder; null = the dialog was canceled). Its bundle's components become ready.
   h.set(Ipc.modelsImportFolder, (_, { state }) => {

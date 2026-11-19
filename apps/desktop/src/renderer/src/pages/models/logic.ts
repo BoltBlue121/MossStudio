@@ -279,6 +279,7 @@ export function bundleDeletePlan(
   const localOnly = localFilesOnly(bundle, models)
   const present = bundleComponentIds(bundle)
     .filter(installed)
+    .filter((id) => !id.startsWith('shared-'))
     .filter((id) => !localOnly || models.find((model) => model.id === id)?.provider === 'local')
   const ids = present.filter((id) => !othersInUse.has(id))
   const kept = present.filter((id) => othersInUse.has(id))

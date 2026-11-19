@@ -7,7 +7,7 @@ import { schemas } from '@shared/schemas'
 import { trainingSchemas } from '@shared/training'
 import { resolveToolset, toolDefinitions } from '@shared/agent/registry'
 import type { AgentMode, AiToolCall, AiToolResult } from '@shared/ai'
-import type { IpcResult } from '@shared/types'
+import type { IpcResult, Settings } from '@shared/types'
 import { emit } from './lib/events'
 import { ensureDirs, paths } from './lib/paths'
 import { openDirectoryInFileManager, revealInFileManager } from './lib/fileManager'
@@ -95,6 +95,7 @@ import { addControlAdapter, listControlAdapters, removeControlAdapter } from './
 import { applyThemeSource, applyUiScale, controlWindow, openWindow } from './windows'
 import { getGpuInventory, listDevices, refreshGpuInventory } from './services/devices'
 import { getOnboardingStatus } from './services/onboarding'
+import { addModelSource, assertSharedStorage, modelSourcesView, refreshModelSources, removeModelSource } from './services/modelSources'
 import {
   createTrainerVersion,
   installTrainerRuntime,
@@ -201,6 +202,14 @@ function runToolInRenderer(event: Electron.IpcMainInvokeEvent, call: AiToolCall,
 }
 
 export function registerIpc(): void {
+  async function refreshSharedModels(settings: Settings, changed = false): Promise<void> {
+    await refreshModelSources(settings, changed)
+    invalidateCatalog()
+    emit(Events.modelsChanged, { reason: 'shared-sources' })
+  }
+  if (getSettings().modelSources?.length) {
+    void refreshSharedModels(getSettings()).catch((error: unknown) => console.warn('[model-sources]', error))
+  }
   // Keeps the engine on the newest release while settings.engineAutoUpdate is on.
   startEngineAutoUpdate()
   // Learn which GPUs this computer has (AMD / Intel via the small Vulkan probe) without blocking start-up.
@@ -550,6 +559,13 @@ export function registerIpc(): void {
       saveGithubToken(githubToken)
       clearLegacyGithubToken()
     }
+    if (settingsPatch.modelsRoot !== undefined || settingsPatch.modelDirectories !== undefined) {
+      await assertSharedStorage({
+        ...before,
+        ...settingsPatch,
+        modelDirectories: { ...before.modelDirectories, ...settingsPatch.modelDirectories },
+      })
+    }
     const settings = updateSettings(settingsPatch)
     // A GPU switched to another engine frees its old moss-server's memory now, not at its next job.
     releaseAfterSettingsChange(before, settings)
@@ -589,6 +605,9 @@ export function registerIpc(): void {
     const state = await installEnginePlan({ channel, releaseTag, cudaWheels, packages: packagesFromIds(packages), all })
     // Choosing an older release by hand pins it, so auto-update does not undo the rollback.
     if (state.phase === 'done' && channel === 'stable') await recordManualEngineInstall(releaseTag)
+    if (state.phase === 'done' && getSettings().modelSources?.length) {
+      void refreshSharedModels(getSettings()).catch((error: unknown) => console.warn('[model-sources]', error))
+    }
     return state
   })
 
@@ -713,6 +732,36 @@ export function registerIpc(): void {
   })
 
   handle(Ipc.modelsCatalog, null, () => getCatalog(getSettings(), true))
+  handle(Ipc.modelSourcesList, null, () => modelSourcesView(getSettings()))
+  handle(Ipc.modelSourcesRefresh, null, async () => {
+    await refreshSharedModels(getSettings())
+    return modelSourcesView(getSettings())
+  })
+  handle(Ipc.modelSourcesAdd, schemas.modelSourcesAdd, async ({ path, kind, id, config }) => {
+    if (!path) {
+      const picked = await dialog.showOpenDialog(
+        config
+          ? {
+              title: '选择 ComfyUI 模型配置',
+              properties: ['openFile'],
+              filters: [{ name: 'ComfyUI 配置', extensions: ['yaml', 'yml', 'json'] }],
+            }
+          : { title: '选择共享模型目录', properties: ['openDirectory'] },
+      )
+      if (picked.canceled || !picked.filePaths[0]) return modelSourcesView(getSettings())
+      path = picked.filePaths[0]
+    }
+    const settings = await addModelSource(path, config ? 'comfyui' : kind, id)
+    emit(Events.settingsChanged, settings)
+    await refreshSharedModels(settings, true)
+    return modelSourcesView(getSettings())
+  })
+  handle(Ipc.modelSourcesRemove, schemas.modelSourcesRemove, async ({ id }) => {
+    const settings = removeModelSource(id)
+    emit(Events.settingsChanged, settings)
+    await refreshSharedModels(settings, true)
+    return modelSourcesView(getSettings())
+  })
 
   handle(Ipc.modelsRemoteInventory, schemas.modelsRemoteInventory, async ({ hostId, modelsRoot }) => {
     const host = getTrainingHost(getSettings(), hostId)

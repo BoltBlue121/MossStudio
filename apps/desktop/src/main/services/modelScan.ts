@@ -1,5 +1,5 @@
 import { readdir, realpath, stat } from 'node:fs/promises'
-import { basename, extname, join, relative, resolve } from 'node:path'
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { ModelScanResult, ScannedModel } from '@shared/types'
 import { diffusersFolderName, inspectDiffusersFolder, type ImportedModelRole } from './modelImports'
 
@@ -112,8 +112,15 @@ function isDiffusersFolder(entries: string[]): boolean {
   return lower.includes('model_index.json') || lower.includes('transformer/config.json')
 }
 
-async function walk(root: string, result: ScanResult, directory = root, depth = 0): Promise<void> {
-  if (depth > maxDepth) return
+async function walk(
+  root: string,
+  result: ScanResult,
+  directory = root,
+  depth = 0,
+  shared?: { roots: string[]; visited: Set<string> },
+): Promise<void> {
+  if (depth > maxDepth || shared?.visited.has(directory)) return
+  shared?.visited.add(directory)
   let entries
   try {
     entries = await readdir(directory, { withFileTypes: true })
@@ -136,7 +143,7 @@ async function walk(root: string, result: ScanResult, directory = root, depth = 
         relativePath,
         name: diffusersFolderName(directory, folder?.flavor ?? null),
         size: folder?.size ?? 0,
-        mtimeMs: info.mtimeMs,
+        mtimeMs: folder?.mtimeMs ?? info.mtimeMs,
         role: 'full',
         layout: 'diffusers-folder',
         confidence: 'high',
@@ -146,14 +153,28 @@ async function walk(root: string, result: ScanResult, directory = root, depth = 
     return
   }
   for (const entry of entries) {
-    const absolute = join(directory, entry.name)
-    if (entry.isDirectory()) {
+    let absolute = join(directory, entry.name)
+    if (shared && entry.isSymbolicLink()) {
+      const target = await realpath(absolute).catch(() => null)
+      if (
+        !target ||
+        !shared.roots.some((base) => {
+          const path = relative(base, target)
+          return path !== '..' && !path.startsWith('..' + sep) && !isAbsolute(path)
+        })
+      )
+        continue
+      absolute = target
+    }
+    const linked = absolute !== join(directory, entry.name) ? await stat(absolute).catch(() => null) : null
+    if (entry.isDirectory() || linked?.isDirectory()) {
       const lower = entry.name.toLowerCase()
-      if (entry.name.startsWith('.') || skippedDirectories.has(lower)) continue
-      await walk(root, result, absolute, depth + 1)
+      if (entry.name.startsWith('.') || (skippedDirectories.has(lower) && !(shared && ['diffusers', 'controlnet'].includes(lower))))
+        continue
+      await walk(root, result, absolute, depth + 1, shared)
       continue
     }
-    if (!entry.isFile()) continue
+    if (!entry.isFile() && !linked?.isFile()) continue
     const extension = extname(entry.name).toLowerCase()
     if (!modelExtensions.has(extension)) continue
     if (result.files >= maxFiles) {
@@ -179,7 +200,7 @@ async function walk(root: string, result: ScanResult, directory = root, depth = 
   }
 }
 
-export async function scanModelDirectory(directory: string): Promise<ScanResult> {
+export async function scanModelDirectory(directory: string, sharedRoots?: string[]): Promise<ScanResult> {
   const root = await realpath(resolve(directory))
   const info = await stat(root)
   if (!info.isDirectory()) throw new Error('请选择模型文件夹')
@@ -190,7 +211,7 @@ export async function scanModelDirectory(directory: string): Promise<ScanResult>
     candidates: [],
     skipped: [],
   }
-  await walk(root, result)
+  await walk(root, result, root, 0, sharedRoots ? { roots: sharedRoots, visited: new Set() } : undefined)
   result.candidates.sort((a, b) => {
     if (a.role !== b.role) return a.role.localeCompare(b.role)
     return b.size - a.size

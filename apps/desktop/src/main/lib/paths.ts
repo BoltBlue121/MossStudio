@@ -86,6 +86,7 @@ export const paths = {
   downloads: () => join(root(), 'downloads'),
   outputs: () => join(root(), 'outputs'),
   cache: () => join(root(), 'cache'),
+  sharedModelIndex: () => join(root(), 'cache', 'shared-models.json'),
   mossinfer: () => engineRoot(),
   logs: () => join(root(), 'logs'),
   trainerRoot: (custom?: string | null) => (custom ? resolve(custom) : join(root(), 'trainer')),

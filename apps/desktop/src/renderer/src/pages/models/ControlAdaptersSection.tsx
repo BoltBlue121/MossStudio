@@ -79,7 +79,7 @@ export function ControlAdaptersSection(): React.JSX.Element | null {
               }
             >
               <SizeText bytes={entry.sizeBytes} />
-              <RemoveButton remove name={entry.name} onClick={() => setRemoving(entry)} />
+              {entry.id.startsWith('shared-') ? null : <RemoveButton remove name={entry.name} onClick={() => setRemoving(entry)} />}
             </Row>
           ))
         ) : (
