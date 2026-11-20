@@ -47,7 +47,7 @@ import { BoardMenu, type BoardMenuEntry } from './BoardMenu'
 import type { PortActions } from './SlotMenu'
 import { inputSlots, socketY } from './ports'
 import { WireChips, WireLayer } from './WireLayer'
-import { recipes, type Recipe } from './recipes'
+import { recipes, starterCanvas, type Recipe } from './recipes'
 import { upscaleProblem } from './nodes'
 import { plannedRegions } from './canvases'
 import {
@@ -59,7 +59,6 @@ import {
   givesPicture,
   isActiveRun,
   pictureLink,
-  runsOf,
   unpinRun,
   type StripItem,
 } from './runs'
@@ -72,7 +71,8 @@ const FIT_PADDING = { top: 116, side: 48 }
 
 export interface BoardHandle {
   fit: () => void
-  reveal: (canvasId: string) => void
+  /** Brings the cards into view (centred, or zoomed out when they do not fit); the view stays put when they are on screen. */
+  reveal: (canvasIds: string | readonly string[]) => void
   /** Moves a card just placed at the pointer back inside the view where it sticks out; the view stays put. */
   keepInView: (canvasId: string) => void
 }
@@ -403,20 +403,26 @@ export function Board(props: BoardProps): React.JSX.Element {
   }, [changeView])
 
   const reveal = useCallback(
-    (canvasId: string) => {
+    (canvasIds: string | readonly string[]) => {
       const list = latest.current.canvases
-      const found = list.find((item) => item.id === canvasId)
-      // A run in a filmstrip shows on its 画面.
-      const canvas = found && foldedRunIds(list).has(found.id) ? list.find((item) => item.id === found.sourceCanvasId) : found
+      const folded = foldedRunIds(list)
+      const shown = (typeof canvasIds === 'string' ? [canvasIds] : canvasIds).flatMap((id) => {
+        const found = list.find((item) => item.id === id)
+        // A run in a filmstrip shows on its 画面.
+        const canvas = found && folded.has(found.id) ? list.find((item) => item.id === found.sourceCanvasId) : found
+        return canvas ? [canvas] : []
+      })
       const size = viewportSize()
-      if (!canvas || !size.width) return
-      const rect = cardRect(canvas)
+      const rect = boundsOf(shown)
+      if (!rect || !size.width) return
       const current = viewRef.current
       const left = rect.x * current.zoom + current.pan.x
       const top = rect.y * current.zoom + current.pan.y
       const visible =
         left >= 0 && top >= FIT_PADDING.top - 24 && left + rect.w * current.zoom <= size.width && top + rect.h * current.zoom <= size.height
-      if (!visible) changeView(centerOn(size, rect, current.zoom))
+      if (visible) return
+      const fits = rect.w * current.zoom <= size.width && rect.h * current.zoom <= size.height - FIT_PADDING.top
+      changeView(fits ? centerOn(size, rect, current.zoom) : fitView(size, rect, FIT_PADDING))
     },
     [changeView],
   )
@@ -965,11 +971,8 @@ export function Board(props: BoardProps): React.JSX.Element {
   const selectedDrawn = selected ? (cards.find((canvas) => canvas.id === selected.id) ?? selected) : null
   const pickedBounds = multi && !boxPick && !connect.draft ? boundsOf(cards.filter((canvas) => selection.includes(canvas.id))) : null
   // An empty project: one blank 画面, with the ways to start from a picture under it.
-  const only = cards.length === 1 ? cards[0]! : null
-  const startFor =
-    only && only.kind === 'layout' && !only.inputs && !only.jobState && !only.outputs?.length && !runsOf(only, props.canvases).length
-      ? only
-      : null
+  const starter = starterCanvas(props.canvases)
+  const startFor = starter ? (cards.find((canvas) => canvas.id === starter.id) ?? null) : null
   const dragged = runDrag.drag
   // While a wire is out, cards that can take it show their sockets; their linked inputs' thumbnails and labels step aside.
   const offers = connect.draft?.offers
