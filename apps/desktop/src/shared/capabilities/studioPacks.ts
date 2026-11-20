@@ -420,7 +420,7 @@ export const STUDIO_CAPABILITY_PACKS: readonly BuiltinCapabilityPack[] = [
         legacyPack: 'canvas.write',
         title: '改写描述',
         description:
-          'Replace the description of the selected Canvas. Plain English prose, one paragraph. Writes immediately and is visible to the user.',
+          'Replace the description of the selected Canvas. Plain English descriptive prose (one or more paragraphs). Writes immediately and is visible to the user.',
         inputSchema: STUDIO_ACTION_SCHEMAS['studio.board.set_prompt'],
         target: 'renderer',
         scope: 'project',

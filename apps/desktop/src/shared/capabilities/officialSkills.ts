@@ -12,7 +12,7 @@ Default to cohesive English descriptive prose unless another language was reques
 Preserve intended visible words verbatim in their original language: punctuation, capitalization and requested line breaks (JSON \n). Distinguish quoted reference instructions from text actually intended to appear. Quote visible wording exactly in a Caption. Do not use placeholders such as “headline here”. Organize reading order, relative prominence, coherent groups, readable glyph sizes and negative space rather than forcing every design into a generic hero/title/footer template.
 
 ## MossStudio workflow
-Read studio.board.read_context first. Query models.catalog.list to inspect installed models and LoRA adapters before changing model or adapter selections.
+Read studio.board.read_context first. Query models.catalog.installed to inspect installed models and LoRA adapters before changing model or adapter selections.
 Write the positive Caption through studio.board.set_prompt using the actual tool schema. Caption prose may contain paragraphs; do not add Layout coordinates merely to look structured. For Layout, follow the companion Layout Design Skill and use the board region tools. Read back and diagnose before generation; writing a prompt does not itself authorize generation or publishing.
 `
 

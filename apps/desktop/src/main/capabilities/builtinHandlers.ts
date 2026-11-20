@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -254,12 +255,14 @@ export function createBuiltinMainHandlers(): Record<string, MainCapabilityHandle
         enabledPacks: enabledPacks as CapabilityId[] | undefined,
       })
       const activeTopic = topic ?? 'all'
+      const markdown = composeOfficialGuide(projected.skill.markdown, activeTopic)
       return {
         topic: activeTopic,
         profile: projected.profile,
         actionCount: projected.actions.length,
         ...projected.skill,
-        markdown: composeOfficialGuide(projected.skill.markdown, activeTopic),
+        markdown,
+        digest: createHash('sha256').update(markdown, 'utf8').digest('hex').slice(0, 16),
       }
     }),
   }
