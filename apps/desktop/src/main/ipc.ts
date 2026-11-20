@@ -7,7 +7,9 @@ import { schemas } from '@shared/schemas'
 import { trainingSchemas } from '@shared/training'
 import { resolveToolset, toolDefinitions } from '@shared/agent/registry'
 import type { AgentMode, AiToolCall, AiToolResult } from '@shared/ai'
+import type { CapabilityId } from '@shared/capabilities'
 import type { IpcResult } from '@shared/types'
+import { createBuiltinMainDispatcher, listCapabilityAudit } from './capabilities'
 import { emit } from './lib/events'
 import { ensureDirs, paths } from './lib/paths'
 import { openDirectoryInFileManager, revealInFileManager } from './lib/fileManager'
@@ -268,12 +270,54 @@ export function registerIpc(): void {
     answerAgentCard(conversationId, messageId, answer),
   )
 
+  const capabilities = createBuiltinMainDispatcher()
+
+  handle(Ipc.capabilitiesList, schemas.capabilitiesList, (input) =>
+    capabilities.list(
+      input
+        ? {
+            ...input,
+            enabledPacks: input.enabledPacks as CapabilityId[] | undefined,
+          }
+        : undefined,
+    ),
+  )
+
+  handle(Ipc.capabilitiesSkill, schemas.capabilitiesList, (input) =>
+    capabilities.skill(
+      input
+        ? {
+            ...input,
+            enabledPacks: input.enabledPacks as CapabilityId[] | undefined,
+          }
+        : undefined,
+    ),
+  )
+
+  handle(Ipc.capabilitiesExecute, schemas.capabilitiesExecute, (input, event) =>
+    capabilities.execute({
+      ...input,
+      runInRenderer: (call, mode, conversationId) => runToolInRenderer(event, call, mode, conversationId),
+    }),
+  )
+
+  handle(Ipc.capabilitiesAudit, schemas.capabilitiesAudit, (input) => listCapabilityAudit(input ?? {}))
+
   handle(Ipc.aiChat, schemas.aiChat, (input, event) =>
     chat(input, {
       emit: (payload) => {
         if (!event.sender.isDestroyed()) event.sender.send(Events.aiStream, payload)
       },
-      runTool: (call, mode, conversationId) => runToolInRenderer(event, call, mode, conversationId),
+      runTool: (call, mode, conversationId) =>
+        capabilities.execute({
+          callId: call.id,
+          name: call.name,
+          arguments: call.arguments,
+          mode,
+          source: 'assistant',
+          conversationId,
+          runInRenderer: (toolCall, callMode, convId) => runToolInRenderer(event, toolCall, callMode, convId),
+        }),
       tools: toolDefinitions(resolveToolset({ page: 'studio' })),
     }),
   )

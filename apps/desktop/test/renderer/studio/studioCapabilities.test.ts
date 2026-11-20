@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { createStudioCapabilityRegistry, CAPABILITY_PROTOCOL_VERSION } from '@shared/capabilities'
+import { CAPABILITY_PROTOCOL_VERSION, createBuiltinCapabilityRegistry } from '@shared/capabilities'
 import type { Catalog, EngineReadiness, JobRecord, ProjectCanvas } from '@shared/types'
 import { createRendererCapabilityHost } from '@renderer/lib/capabilities'
 import { removeCanvasFrom } from '@renderer/pages/studio/canvases'
@@ -90,7 +90,19 @@ function makeHarness(
         if (selectedId === id) selectedId = canvases[0]?.id ?? null
         return result.removedLinks
       },
+      openProject: vi.fn(async () => undefined),
+      newProject: vi.fn(async () => undefined),
+      rename: vi.fn(),
+      saveNow: vi.fn(async () => ({
+        schemaVersion: 3 as const,
+        id: 'proj-1',
+        name: '测试项目',
+        canvases,
+        createdAt: '2026-11-20T00:00:00.000Z',
+        updatedAt: '2026-11-20T00:00:00.000Z',
+      })),
     },
+    importImageFile: vi.fn(async (_projectId: string, path: string) => ({ path, width: 800, height: 600 })),
     generate,
     cancelJob,
     catalog,
@@ -125,7 +137,7 @@ function makeHarness(
     ...overrides,
   }
 
-  const registry = createStudioCapabilityRegistry()
+  const registry = createBuiltinCapabilityRegistry()
   const host = createRendererCapabilityHost(registry)
   registerStudioCapabilities(() => deps, host)
 
@@ -408,15 +420,15 @@ describe('studio capability packs', () => {
     const h = makeHarness([canvas({ id: 'c1' })], 'c1')
     h.host.registry.registerBuiltinPack({
       protocolVersion: CAPABILITY_PROTOCOL_VERSION,
-      id: 'library.assets',
-      title: '作品素材',
+      id: 'plugin.custom.metrics',
+      title: '自定义指标扩展',
       version: '1.0.0',
       requiresPacks: [],
       actions: [
         {
-          id: 'library.assets.count',
-          title: '统计作品数',
-          description: 'Return the total number of saved outputs in Library.',
+          id: 'plugin.custom.count',
+          title: '统计自定义项',
+          description: 'Return the total number of items from a dynamically registered future pack.',
           inputSchema: z.strictObject({}),
           target: 'renderer',
           scope: 'application',
@@ -424,22 +436,40 @@ describe('studio capability packs', () => {
           policyFloor: 'auto',
           requires: [],
           headless: 'supported',
-          summarize: () => '统计作品',
+          summarize: () => '统计自定义项',
         },
       ],
       contexts: [],
       skills: [],
     })
-    const dispose = h.host.registerPackHandlers('library.assets', {
-      'library.assets.count': () => ({ count: 42 }),
+    const dispose = h.host.registerPackHandlers('plugin.custom.metrics', {
+      'plugin.custom.count': () => ({ count: 42 }),
     })
 
-    const res = await h.run('library.assets.count', {})
+    const res = await h.run('plugin.custom.count', {})
     expect(res.ok).toBe(true)
     expect(res.body).toEqual({ count: 42 })
 
     dispose()
-    const afterDispose = await h.run('library.assets.count', {})
+    const afterDispose = await h.run('plugin.custom.count', {})
     expect(afterDispose.ok).toBe(false)
+  })
+
+  it('mounts a live renderer handler for every target=renderer action and supports project/image-import actions', async () => {
+    const h = makeHarness([canvas({ id: 'c1', prompt: 'base' })], 'c1')
+    const rendererActions = h.host.registry
+      .listActions({ enabledFlags: { gbcEnabled: true, trainingEnabled: true } })
+      .filter((action) => action.target === 'renderer')
+    for (const action of rendererActions) {
+      expect(h.host.hasHandler(action.id), `missing renderer handler for ${action.id}`).toBe(true)
+    }
+
+    const imported = await h.run('studio.projects.import_image', { path: '/library/sample.png' })
+    expect(imported.ok).toBe(true)
+    expect(h.canvases().some((item) => item.kind === 'image' && item.imagePath === '/library/sample.png')).toBe(true)
+
+    expect((await h.run('studio.projects.rename', { name: '新海报项目' })).ok).toBe(true)
+    expect((await h.run('studio.projects.save', {})).ok).toBe(true)
+    expect((await h.run('studio.projects.open', { id: 'proj-2' })).ok).toBe(true)
   })
 })

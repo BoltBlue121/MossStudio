@@ -917,6 +917,15 @@ function defaultHandlers(): Map<string, Handler> {
     return { reply: 'Fixture reply', conversation }
   })
   h.set(Ipc.aiToolResult, () => null)
+  h.set(Ipc.capabilitiesList, () => ({
+    profile: 'atomic',
+    actions: [],
+    tools: [],
+    skill: { markdown: '', fragmentIds: [], actionIds: [], digest: '' },
+  }))
+  h.set(Ipc.capabilitiesSkill, () => ({ markdown: '', fragmentIds: [], actionIds: [], digest: '' }))
+  h.set(Ipc.capabilitiesExecute, () => ({ ok: true, content: '{}' }))
+  h.set(Ipc.capabilitiesAudit, () => [])
   h.set(Ipc.aiCardAnswer, (payload, { state }) => {
     const { conversationId, messageId, answer } = p<{
       conversationId: string

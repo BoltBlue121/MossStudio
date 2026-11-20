@@ -1,7 +1,7 @@
 ---
 status: proposed
 date: 2026-11-20
-code: apps/desktop/src/shared/capabilities/, apps/desktop/src/shared/agent/registry.ts, apps/desktop/src/renderer/src/lib/capabilities/, apps/desktop/src/renderer/src/lib/agent/executor.ts, apps/desktop/src/renderer/src/pages/studio/studioCapabilities.ts
+code: apps/desktop/src/shared/capabilities/, apps/desktop/src/shared/agent/registry.ts, apps/desktop/src/main/capabilities/, apps/desktop/src/renderer/src/lib/capabilities/, apps/desktop/src/renderer/src/lib/agent/executor.ts, apps/desktop/src/renderer/src/pages/studio/studioCapabilities.ts
 ---
 
 # ADR-0016: Transport-independent capability protocol and unified tool layer
@@ -38,13 +38,17 @@ Chosen option: **2**.
 1. **Capability protocol and registry (`apps/desktop/src/shared/capabilities/`).**
    - `protocol.ts` defines transport-safe descriptors (`CapabilityPack`, `ActionDescriptor`, `ContextProviderDescriptor`, `SkillFragment`, `ExternalToolManifest`) with closed JSON Schemas (`additionalProperties: false`), `effects`, `policyFloor`, `target`, `scope`, `surface`, `headless`, `binding`, and deterministic SHA-256 schema digests (`schemaDigest`, pure TypeScript with no `node:crypto` dependency).
    - `registry.ts` provides `createCapabilityRegistry` supporting built-in packs, dynamic unregistering, verified `ExternalToolManifest` registration (rejecting digest mismatches and id/alias collisions), filtering by surface/feature flags/pack dependencies/effects/policy gates, input validation and deterministic `synthesizeSkill()`.
-   - `studioPacks.ts` defines seven built-in Studio packs (`studio.board.read`, `studio.ask`, `studio.board.cards`, `studio.board.regions`, `studio.board.sampling`, `studio.board.wires`, `studio.board.runs`) covering the 13 legacy `studio_*` aliases plus 25 pure-function Studio actions (cards, stable `layerId` region edits/reorder, wires/recipes, model/LoRA/hires sampling, filmstrip runs and full `deriveReadiness` diagnostics).
-2. **Backward-compatible legacy bridge (`apps/desktop/src/shared/agent/registry.ts`).**
+   - `studioPacks.ts` and `appPacks.ts` define fourteen built-in MossStudio packs covering **97 actions** across the whole app: seven Studio board packs (`studio.board.read`, `studio.ask`, `studio.board.cards`, `studio.board.regions`, `studio.board.sampling`, `studio.board.wires`, `studio.board.runs`) plus `studio.projects`, `studio.gbc.parse` (gated by `gbcEnabled`), `library.assets` (including `library.assets.read_image` for vision review), `models.catalog`, `manga.series`, `training.jobs` (gated by `trainingEnabled`), and `system.runtime` (engine/GPU/jobs/context/window focus/visual reviews/audit log).
+   - `profiles.ts` projects one registry into Tool Profiles (`atomic`, `proposal-only`, `custom`) with synchronized `SKILL.md` synthesis.
+2. **Unified Main dispatcher and append-only audit trail (`apps/desktop/src/main/capabilities/`).**
+   - `MainCapabilityDispatcher` executes `target: 'main'` actions directly against main services (headless safe), relays `target: 'renderer'` actions to the live `RendererCapabilityHost`, enforces live `Settings` feature flags and `policyFloor` approval gates, and records every invocation (including built-in `ai:chat` tool calls) in `<dataRoot>/logs/capabilities.jsonl` (`audit.ts`, queryable via `capabilities:audit` and `system.audit.recent`).
+   - Exposed cleanly over `Ipc.capabilitiesList`, `Ipc.capabilitiesSkill`, `Ipc.capabilitiesExecute` and `Ipc.capabilitiesAudit`.
+3. **Backward-compatible legacy bridge (`apps/desktop/src/shared/agent/registry.ts`).**
    - `AGENT_TOOLS`, `toolSchema` and `resolveToolset` derive directly from `BUILTIN_CAPABILITY_REGISTRY` in `LEGACY_TOOL_ORDER`, keeping one source of truth without changing existing assistant contracts.
-3. **Pack-scoped renderer host (`apps/desktop/src/renderer/src/lib/capabilities/host.ts` and `pages/studio/studioCapabilities.ts`).**
+4. **Pack-scoped renderer host (`apps/desktop/src/renderer/src/lib/capabilities/host.ts` and `pages/studio/studioCapabilities.ts`).**
    - `RendererCapabilityHost` mounts handlers per pack, supports both canonical dotted ids and legacy aliases, enforces `requires` (including `editable-or-style`, fixing the bug where `studio_set_prompt` on a `风格` card was rejected by `precheck`), defers mutating actions into `PlanStep`s under `advanced` mode, and runs `applyPlan`.
    - `StudioPage.tsx` delegates tool binding to `registerStudioCapabilities`, removing ~200 lines of inline tool glue and exposing stable `layer.id` in read snapshots.
-4. **Conversation stream isolation.**
+5. **Conversation stream isolation.**
    - `AiToolCallRequest` carries `conversationId`, `main/services/ai.ts` passes `conversation.id` to `runTool`, and `Assistant.tsx` filters `Events.aiStream` through `acceptStreamEvent` so concurrent or background sessions never bleed into another open chat.
 
 ### Consequences

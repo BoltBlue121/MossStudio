@@ -765,6 +765,40 @@ export const schemas = {
     title: z.string().min(1).max(120),
   }),
 
+  capabilitiesList: z
+    .object({
+      profile: z.enum(['atomic', 'proposal-only', 'custom']).optional(),
+      surface: z.enum(['/studio', '/manga', '/library', '/models', '/training']).optional(),
+      enabledPacks: z.array(z.string().min(1).max(120)).max(64).optional(),
+      headlessOnly: z.boolean().optional(),
+      includeExternal: z.boolean().optional(),
+      audience: z
+        .array(z.enum(['tools', 'resources', 'images', 'text-only']))
+        .max(4)
+        .optional(),
+      nameStyle: z.enum(['legacy-or-id', 'canonical']).optional(),
+    })
+    .optional(),
+
+  capabilitiesExecute: z.object({
+    callId: z.string().min(1).max(120).optional(),
+    name: z.string().min(1).max(160),
+    arguments: z.union([z.record(z.string(), z.unknown()), z.string().max(200_000)]).optional(),
+    mode: z.enum(['auto', 'advanced']).optional(),
+    source: z.enum(['assistant', 'ipc', 'external-agent', 'system']).optional(),
+    conversationId: z.string().min(1).max(120).optional(),
+    approved: z.boolean().optional(),
+  }),
+
+  capabilitiesAudit: z
+    .object({
+      limit: z.number().int().min(1).max(200).optional(),
+      conversationId: z.string().min(1).max(120).optional(),
+      packId: z.string().min(1).max(120).optional(),
+      actionId: z.string().min(1).max(160).optional(),
+    })
+    .optional(),
+
   projectId: z.object({ id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/) }),
 
   projectLayer: z.object({

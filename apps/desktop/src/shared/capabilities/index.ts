@@ -55,7 +55,29 @@ export {
   type StudioActionId,
 } from './studioPacks'
 
-import { createStudioCapabilityRegistry } from './studioPacks'
+export { APP_ACTION_SCHEMAS, APP_CAPABILITY_PACKS, type AppActionArgs, type AppActionId } from './appPacks'
+
+export {
+  projectCapabilities,
+  type CapabilityAuditEntry,
+  type CapabilityAuditQuery,
+  type CapabilityCallSource,
+  type ProjectedToolset,
+  type ToolProfileId,
+  type ToolProfileOptions,
+} from './profiles'
+
+import { APP_CAPABILITY_PACKS } from './appPacks'
+import { createCapabilityRegistry, type CapabilityRegistry } from './registry'
+import { STUDIO_CAPABILITY_PACKS } from './studioPacks'
+
+/** Every built-in MossStudio capability pack across Studio, GBC, Library, Models, Manga, Training and System. */
+export const ALL_CAPABILITY_PACKS = [...STUDIO_CAPABILITY_PACKS, ...APP_CAPABILITY_PACKS] as const
+
+/** Create a fresh registry pre-loaded with every built-in MossStudio capability pack. */
+export function createBuiltinCapabilityRegistry(): CapabilityRegistry {
+  return createCapabilityRegistry(ALL_CAPABILITY_PACKS)
+}
 
 /** Default shared registry containing every built-in MossStudio capability pack. */
-export const BUILTIN_CAPABILITY_REGISTRY = createStudioCapabilityRegistry()
+export const BUILTIN_CAPABILITY_REGISTRY = createBuiltinCapabilityRegistry()

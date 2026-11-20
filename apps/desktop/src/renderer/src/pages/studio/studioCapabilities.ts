@@ -15,14 +15,17 @@ import { normalizeCanvasAdapters } from '@shared/adapters'
 import { cliGpuUuids, generationGpus } from '@shared/bundleFit'
 import { activeCanvasBranchIds } from '@shared/canvasJobBranch'
 import { makeCard } from '@shared/agent/cards'
-import type { StudioActionArgs } from '@shared/capabilities'
+import type { AppActionArgs, StudioActionArgs } from '@shared/capabilities'
+import { Ipc } from '@shared/channels'
 import type { AddedLayer, LayerBox, StudioToolApi } from '../../lib/agentTools'
+import { call } from '../../lib/api'
 import { CapabilityFailure, RENDERER_CAPABILITY_HOST, type CapabilityHandler, type RendererCapabilityHost } from '../../lib/capabilities'
 import { clampBox } from '../../lib/layout'
 import {
   addRegion,
   canvasFromPicture,
   copyAsLayout,
+  createImageCanvas,
   createLayoutCanvas,
   defaultSettings,
   editLayer,
@@ -78,7 +81,9 @@ export interface StudioCapabilityDeps {
   project: Pick<
     StudioProject,
     'projectId' | 'projectName' | 'canvasesRef' | 'selectedRef' | 'setCanvases' | 'updateCanvas' | 'select' | 'removeCanvas'
-  >
+  > &
+    Partial<Pick<StudioProject, 'openProject' | 'newProject' | 'rename' | 'saveNow'>>
+  importImageFile?: (projectId: string, path: string) => Promise<{ path: string; width: number; height: number }>
   generate: (canvasId?: string) => Promise<{ queued: boolean; canvasId?: string; jobId?: string; error?: string }>
   cancelJob: (jobId: string) => Promise<unknown>
   catalog: Catalog | null
@@ -823,6 +828,56 @@ export function registerStudioCapabilities(
       },
       hostOptions,
     ),
+    host.registerPackHandlers(
+      'studio.projects',
+      {
+        'studio.projects.open': typedApp<'studio.projects.open'>(async ({ id }) => {
+          const { project } = getDeps()
+          if (!project.openProject) throw new CapabilityFailure('当前环境不支持切换项目')
+          await project.openProject(id)
+          return { opened: id }
+        }),
+        'studio.projects.create': typedApp<'studio.projects.create'>(async ({ name }) => {
+          const { project } = getDeps()
+          if (!project.newProject) throw new CapabilityFailure('当前环境不支持新建项目')
+          await project.newProject()
+          if (name && project.rename) project.rename(name)
+          return { created: true, name: name ?? project.projectName }
+        }),
+        'studio.projects.rename': typedApp<'studio.projects.rename'>(({ name }) => {
+          const { project } = getDeps()
+          if (!project.rename) throw new CapabilityFailure('当前环境不支持重命名项目')
+          project.rename(name)
+          return { renamed: name }
+        }),
+        'studio.projects.save': typedApp<'studio.projects.save'>(async () => {
+          const { project } = getDeps()
+          if (!project.saveNow) throw new CapabilityFailure('当前环境不支持立即保存')
+          const saved = await project.saveNow()
+          return { saved: Boolean(saved), id: saved?.id ?? project.projectId, updatedAt: saved?.updatedAt ?? null }
+        }),
+        'studio.projects.import_image': typedApp<'studio.projects.import_image'>(async ({ path, select = true }) => {
+          const deps = getDeps()
+          const { project } = deps
+          let projectId = project.projectId
+          if (!projectId && project.saveNow) {
+            const saved = await project.saveNow()
+            projectId = saved?.id ?? null
+          }
+          if (!projectId) throw new CapabilityFailure('项目还没保存好，图片暂时放不进来')
+          const importer =
+            deps.importImageFile ??
+            ((pid: string, sourcePath: string) =>
+              call<{ path: string; width: number; height: number }>(Ipc.studioImportImage, { projectId: pid, path: sourcePath }))
+          const imported = await importer(projectId, path)
+          const created = createImageCanvas(project.canvasesRef.current, imported)
+          project.setCanvases([...project.canvasesRef.current, created])
+          if (select) project.select(created.id)
+          return { id: created.id, title: created.title, path: imported.path, width: imported.width, height: imported.height }
+        }),
+      },
+      hostOptions,
+    ),
   ]
 
   return {
@@ -835,4 +890,12 @@ export function registerStudioCapabilities(
 
 type StudioActionArgsMap = {
   [K in import('@shared/capabilities').StudioActionId]: StudioActionArgs<K>
+}
+
+type AppActionArgsMap = {
+  [K in import('@shared/capabilities').AppActionId]: AppActionArgs<K>
+}
+
+function typedApp<Id extends keyof AppActionArgsMap>(fn: (args: AppActionArgs<Id>) => unknown | Promise<unknown>): CapabilityHandler {
+  return (args) => fn(args as AppActionArgs<Id>)
 }

@@ -139,6 +139,14 @@ export const Ipc = {
   aiComplete: 'ai:complete',
   aiToolResult: 'ai:tool-result',
   aiCardAnswer: 'ai:card-answer',
+  /** List active capability packs, actions and synchronized Skill for a profile. */
+  capabilitiesList: 'capabilities:list',
+  /** Synthesize active Markdown skill text + digest for the requested capability slice. */
+  capabilitiesSkill: 'capabilities:skill',
+  /** Execute any built-in or manifest capability through the unified main dispatcher. */
+  capabilitiesExecute: 'capabilities:execute',
+  /** Read recent capability execution audit entries (操作留痕). */
+  capabilitiesAudit: 'capabilities:audit',
   gbcStatus: 'gbc:status',
   gbcDoctor: 'gbc:doctor',
   gbcInstallEnv: 'gbc:install-env',

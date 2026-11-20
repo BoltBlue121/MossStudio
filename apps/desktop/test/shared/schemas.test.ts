@@ -1033,6 +1033,61 @@ const cases = {
       'uppercase scheme': { url: 'HTTPS://example.com' },
     },
   },
+
+  capabilitiesList: {
+    valid: {},
+    accepts: {
+      'profile and surface': {
+        profile: 'proposal-only',
+        surface: '/studio',
+        enabledPacks: ['studio.board.read'],
+        headlessOnly: true,
+        includeExternal: false,
+        audience: ['tools', 'resources'],
+        nameStyle: 'canonical',
+      },
+    },
+    rejects: {
+      'unknown profile': { profile: 'unlimited' },
+      'unknown surface': { surface: '/unknown' },
+      'empty pack id': { enabledPacks: [''] },
+    },
+  },
+
+  capabilitiesExecute: {
+    valid: { name: 'studio.board.read_context' },
+    accepts: {
+      'object arguments with approval': {
+        callId: 'c1',
+        name: 'studio.projects.delete',
+        arguments: { id: 'proj-1' },
+        mode: 'auto',
+        source: 'external-agent',
+        conversationId: 'conv-1',
+        approved: true,
+      },
+      'string arguments': {
+        name: 'studio_read_context',
+        arguments: '{}',
+      },
+    },
+    rejects: {
+      'empty name': { name: '' },
+      'unknown mode': { name: 'studio.board.read_context', mode: 'manual' },
+      'unknown source': { name: 'studio.board.read_context', source: 'cli' },
+    },
+  },
+
+  capabilitiesAudit: {
+    valid: {},
+    accepts: {
+      'filtered query': { limit: 20, conversationId: 'conv-1', packId: 'studio.projects', actionId: 'studio.projects.list' },
+    },
+    rejects: {
+      'limit 0': { limit: 0 },
+      'limit too large': { limit: 201 },
+    },
+  },
 } satisfies Record<keyof Schemas, SchemaCase>
 
 const schemaFor = (name: keyof Schemas) => schemas[name] as unknown as z.ZodType

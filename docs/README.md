@@ -59,7 +59,7 @@ Decisions are ADRs in [decisions/](decisions/README.md), one per choice, never e
 
 ## Records and history
 
-- [records/](records/) holds dated snapshots (audits, benchmarks, surveys). They are never updated; the newest one on a topic is the one to read. The MossInfer 1.0.0 performance report is [records/2026-10-31-mossinfer-1.0.0-performance.md](records/2026-10-31-mossinfer-1.0.0-performance.md).
+- [records/](records/) holds dated snapshots (audits, benchmarks, surveys). They are never updated; the newest one on a topic is the one to read. The MossInfer 1.0.0 performance report is [records/2026-10-31-mossinfer-1.0.0-performance.md](records/2026-10-31-mossinfer-1.0.0-performance.md); the capability tool-layer consolidation record is [records/2026-11-20-capability-tool-layer-consolidation.md](records/2026-11-20-capability-tool-layer-consolidation.md).
 - [archive/](archive/README.md) holds superseded docs. Nothing there describes the current app; its README says what replaced each file.
 
 ## Adding or changing a doc
