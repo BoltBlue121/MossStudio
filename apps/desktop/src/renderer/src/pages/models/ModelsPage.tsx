@@ -2,11 +2,12 @@ import { Download, FolderOpen, Package, Plus, RefreshCw } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { cliGpuUuids, generationGpus } from '@shared/bundleFit'
-import { Events, Ipc } from '@shared/channels'
+import { isSharedModelId } from '@shared/sharedModels'
+import { Ipc } from '@shared/channels'
 import type { SlotKey } from '@shared/modelCombos'
-import type { AppInfo, Catalog, ModelBundle } from '@shared/types'
+import type { AppInfo, Catalog, ModelBundle, ModelSourceFile, ModelSourceStatus } from '@shared/types'
 import { importFolderMessage, type UseFolderResult } from '../../lib/modelFolder'
-import { call, onEvent } from '../../lib/api'
+import { call } from '../../lib/api'
 import { useGpuInventory } from '../../lib/useGpuInventory'
 import { DownloadQueue } from '../../components/DownloadQueue'
 import { MenuItem, Popover } from '../../components/common/Popover'
@@ -32,7 +33,8 @@ import { AdvancedPanel } from './AdvancedPanel'
 import { CombinationDialog } from './CombinationDialog'
 import { ControlAdaptersSection } from './ControlAdaptersSection'
 import { LoraTab } from './LoraTab'
-import { DeleteModelDialog, FeaturedModel, ModelList } from './ModelEntries'
+import { ModelSources } from './ModelSources'
+import { DeleteModelDialog, FeaturedModel, ModelList, SizeText } from './ModelEntries'
 import { bundleBlocker, bundleDeletePlan, bundleView, downloadGroups, modelSections, parseModelsQuery, type DownloadGroup } from './logic'
 import { useModelLocation, useSshHosts, type ModelLocation } from './useModelLocation'
 
@@ -40,6 +42,16 @@ import { useModelLocation, useSshHosts, type ModelLocation } from './useModelLoc
 const EMPTY_CATALOG: Pick<Catalog, 'bundles' | 'models' | 'adapters'> = { bundles: [], models: [], adapters: [] }
 
 type Tab = 'models' | 'lora' | 'downloads'
+
+const sharedRoleLabels: Record<ModelSourceFile['role'], string> = {
+  full: '模型',
+  dit: '主模型',
+  text_encoder: '文本编码器',
+  vae: 'VAE',
+  support: '运行配置',
+  lora: 'LoRA',
+  control_adapter: '控制适配器',
+}
 
 function StorageRow({ location }: { location: ModelLocation }): React.JSX.Element {
   const navigate = useNavigate()
@@ -95,6 +107,8 @@ function ModelsTab({
 }): React.JSX.Element {
   const toast = useToast()
   const [deleting, setDeleting] = useState<ModelBundle | null>(null)
+  const [sources, setSources] = useState<ModelSourceStatus[]>([])
+  const [showIncompatible, setShowIncompatible] = useState(false)
   const settings = useApp((state) => state.settings)
   const { inventory } = useGpuInventory()
   const remote = location.kind === 'remote'
@@ -106,7 +120,7 @@ function ModelsTab({
     () =>
       catalog.bundles
         // Scanned local files and 自己组合 are built and run on this computer.
-        .filter((bundle) => !remote || (bundle.id !== 'local-files' && !bundle.custom))
+        .filter((bundle) => !isSharedModelId(bundle.id) && (!remote || (bundle.id !== 'local-files' && !bundle.custom)))
         .map((bundle) =>
           bundleView(
             bundle,
@@ -118,11 +132,20 @@ function ModelsTab({
         ),
     [catalog, location.tasks, location.isModelInstalled, remote, gpus, cliGpus],
   )
+  const sharedModels = catalog.models.filter((model) => model.tags.includes('shared-directory') && model.installed)
+  const sharedFiles = sources.flatMap((source) => source.files)
+  const availablePaths = new Set(sharedFiles.filter((file) => file.state === 'available').map((file) => file.path))
+  const incompatible = [
+    ...new Map(
+      sharedFiles.filter((file) => file.state === 'incompatible' && !availablePaths.has(file.path)).map((file) => [file.path, file]),
+    ).values(),
+  ]
   const sections = modelSections(views, catalog.models, { remote, gpus, cliGpus }, preferredBundleId)
   const featuredView = sections.featured
   const deletePlan = (bundle: ModelBundle) =>
     bundleDeletePlan(bundle, catalog.bundles, catalog.models, location.isModelInstalled, location.tasks)
-  const deletable = (bundle: ModelBundle): boolean => Boolean(bundle.custom) || deletePlan(bundle).ids.length > 0
+  const deletable = (bundle: ModelBundle): boolean =>
+    !isSharedModelId(bundle.id) && (Boolean(bundle.custom) || deletePlan(bundle).ids.length > 0)
   const featuredCard = featuredView ? (
     <FeaturedModel
       view={featuredView}
@@ -200,6 +223,50 @@ function ModelsTab({
         >
           读不到 {location.host?.name ?? '远程主机'} 上的模型：{location.scanError}。检查这台主机是否在线，然后重试。
         </Notice>
+      ) : null}
+
+      {location.kind === 'local' ? (
+        <>
+          <Section title="共享模型目录">
+            <ModelSources onSources={setSources} />
+          </Section>
+          {sources.length || sharedModels.length ? (
+            <Section title="可用模型">
+              {sharedModels.length ? (
+                <Group>
+                  {sharedModels.map((model) => (
+                    <Row key={model.id} title={model.name} description={sharedRoleLabels[model.role]}>
+                      <SizeText bytes={model.installedBytes || model.sizeBytes} />
+                    </Row>
+                  ))}
+                </Group>
+              ) : (
+                <EmptyState
+                  size="section"
+                  title={sources.some((source) => source.pending > 0) ? '模型文件还在等待检查' : '已接入的目录里没有能用的模型'}
+                />
+              )}
+              {incompatible.length ? (
+                <Advanced
+                  title="不兼容的模型和 LoRA"
+                  summary={incompatible.length + ' 项'}
+                  open={showIncompatible}
+                  onOpenChange={setShowIncompatible}
+                >
+                  {showIncompatible ? (
+                    <Group className="max-h-96 overflow-y-auto">
+                      {incompatible.map((file) => (
+                        <Row key={file.path} title={file.name} description={sharedRoleLabels[file.role]}>
+                          <SizeText bytes={file.size} />
+                        </Row>
+                      ))}
+                    </Group>
+                  ) : null}
+                </Advanced>
+              ) : null}
+            </Section>
+          ) : null}
+        </>
       ) : null}
 
       {!location.ready ? (
@@ -318,6 +385,7 @@ function DownloadsTab({ catalog, location }: { catalog: Catalog | null; location
 
 /** 模型: whole models first, LoRA and downloads in their own tabs, parts under 高级. */
 export function ModelsPage(): React.JSX.Element {
+  const toast = useToast()
   const routeLocation = useLocation()
   const catalog = useApp((state) => state.catalog)
   const settings = useApp((state) => state.settings)
@@ -340,7 +408,6 @@ export function ModelsPage(): React.JSX.Element {
 
   useEffect(() => {
     void refreshCatalog()
-    return onEvent(Events.modelsChanged, () => void refreshCatalog())
   }, [refreshCatalog])
 
   const host = remoteEnabled ? (hosts.find((item) => item.id === locationId) ?? null) : null
@@ -369,6 +436,8 @@ export function ModelsPage(): React.JSX.Element {
     try {
       await refreshCatalog()
       location.rescan()
+    } catch (error) {
+      toast.push(error instanceof Error ? error.message : String(error), 'error')
     } finally {
       setRefreshing(false)
     }
@@ -378,7 +447,7 @@ export function ModelsPage(): React.JSX.Element {
     <PageScroll>
       <PageHeader
         title="模型"
-        description="下载用来生成图片的模型和 LoRA。"
+        description="管理生成图片用的模型和 LoRA。"
         actions={
           <>
             {locationPicker}

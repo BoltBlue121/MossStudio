@@ -237,6 +237,26 @@ describe('store.init', () => {
   })
 
   describe('events that arrive while the startup snapshots are in flight', () => {
+    it('keeps a refreshed model catalog when the startup catalog has already read older data', async () => {
+      const { backend, store } = await loadStore('ready')
+      const readyCatalog = backend.state.catalog
+      backend.state.catalog = { ...readyCatalog, models: [], bundles: [] }
+      const held = backend.hold(Ipc.envScan)
+      const pending = store().init()
+      await held.called
+      await flush()
+      expect(backend.callsTo(Ipc.modelsCatalog)).toHaveLength(1)
+
+      backend.state.catalog = readyCatalog
+      backend.emit(Events.modelsChanged, null)
+      await flush()
+      expect(store().catalog?.bundles).toEqual(readyCatalog.bundles)
+
+      await held.release()
+      await pending
+      expect(store().catalog?.bundles).toEqual(readyCatalog.bundles)
+    })
+
     it('keeps an update event over the older update:state answer (a slow envScan holds every snapshot)', async () => {
       const { backend, store } = await loadStore(
         scenario('ready', { update: updateDownloadingFixture('1.0.4', 100, { autoDownload: false, phase: 'installing' }) }),

@@ -228,6 +228,17 @@ const cases = {
     rejects: { 'empty id': { id: '' }, 'overlong id': { id: long(161) } },
   },
 
+  modelSourcesAdd: {
+    valid: {},
+    accepts: { 'moving a source': { id: 'source-a' }, 'a discovered place': { path: 'D:/ComfyUI', kind: 'comfyui' } },
+    rejects: { 'blank path': { path: ' ' }, 'unknown kind of source': { kind: 'other' } },
+  },
+
+  modelSourcesRemove: {
+    valid: { id: 'source-a' },
+    rejects: { 'empty id': { id: '' } },
+  },
+
   modelsScan: {
     valid: {},
     accepts: { 'blank directory is allowed': { directory: '   ' } },

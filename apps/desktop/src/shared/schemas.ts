@@ -356,6 +356,8 @@ export const schemas = {
       sidebarCollapsed: z.boolean(),
       onboardingState: z.enum(['pending', 'active', 'dismissed', 'completed']),
       onboardingHostId: z.string().min(1).max(80),
+      onboardingModelId: z.string().min(1).max(120).nullable(),
+      onboardingReusePending: z.boolean(),
       galleryRoots: z.array(z.string().max(4096)).max(20),
       homeBackground: z.string().max(4096).nullable(),
       trainerRoot: z.string().max(4096).nullable(),
@@ -459,6 +461,13 @@ export const schemas = {
   }),
 
   modelBundle: z.object({ id: z.string().min(1).max(160) }),
+
+  modelSourcesAdd: z.object({
+    path: z.string().trim().min(1).max(4096).optional(),
+    kind: z.enum(['comfyui', 'webui', 'forge', 'custom']).optional(),
+    id: z.string().min(1).max(80).optional(),
+  }),
+  modelSourcesRemove: z.object({ id: z.string().min(1).max(80) }),
 
   modelsScan: z.object({
     directory: z.string().trim().max(4096).optional(),

@@ -192,7 +192,7 @@ export const useApp = create<AppStore>((set, get) => {
    */
   const startupJobs = new Map<string, JobRecord>()
   const startupDiagnostics = new Map<string, Diagnostic>()
-  const eventCounts = { update: 0, mossInferDownload: 0 }
+  const eventCounts = { update: 0, mossInferDownload: 0, catalog: 0 }
   /** Versions, steps and announcement ids already surfaced, so repeated pushes stay quiet. */
   const announced = new Set<string>()
   const announcedAnnouncements = new Set<string>()
@@ -281,6 +281,7 @@ export const useApp = create<AppStore>((set, get) => {
       eventCounts.update += 1
       setUpdate(state)
     })
+    onEvent(Events.modelsChanged, () => void get().refreshCatalog())
     onEvent<DownloadTask>(Events.download, (task) => {
       if (!get().ready) startupDownloads.set(task.id, task)
       const previous = get().downloads.find((item) => item.id === task.id)
@@ -506,7 +507,7 @@ export const useApp = create<AppStore>((set, get) => {
         set({
           env: env.status === 'fulfilled' ? env.value : null,
           update: updateState,
-          catalog: catalog.status === 'fulfilled' ? catalog.value : null,
+          catalog: eventCounts.catalog !== before.catalog ? current.catalog : catalog.status === 'fulfilled' ? catalog.value : null,
           downloads: mergeDownloadSnapshot(downloads.status === 'fulfilled' ? downloads.value : []),
           jobs: jobList,
           diagnostics: mergeStartup(diagnostics.status === 'fulfilled' ? diagnostics.value : [], startupDiagnostics, upsertDiagnostic),
@@ -549,6 +550,7 @@ export const useApp = create<AppStore>((set, get) => {
     async refreshCatalog() {
       try {
         const catalog = await call<Catalog>(Ipc.modelsCatalog)
+        eventCounts.catalog += 1
         set({ catalog })
       } catch {
         // keep previous

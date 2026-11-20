@@ -19,6 +19,9 @@ export const DEFAULT_SETTINGS: Settings = {
   modelDownloadConcurrency: 4,
   hfQueryHostId: null,
   modelsRoot: null,
+  modelSources: [],
+  onboardingModelId: null,
+  onboardingReusePending: false,
   modelDirectories: {
     dit: null,
     textEncoder: null,
@@ -103,6 +106,15 @@ export function getSettings(): Settings {
       ...DEFAULT_SETTINGS,
       ...parsed,
       modelDirectories: { ...DEFAULT_SETTINGS.modelDirectories, ...parsed.modelDirectories },
+      modelSources: Array.isArray(parsed.modelSources)
+        ? parsed.modelSources.filter(
+            (source) =>
+              source &&
+              typeof source.id === 'string' &&
+              typeof source.path === 'string' &&
+              ['comfyui', 'webui', 'forge', 'custom'].includes(source.kind),
+          )
+        : [],
       gpuProfileOverrides: parsed.gpuProfileOverrides ?? DEFAULT_SETTINGS.gpuProfileOverrides,
     }
     if (

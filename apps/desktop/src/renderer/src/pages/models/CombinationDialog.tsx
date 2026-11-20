@@ -51,6 +51,7 @@ export function CombinationDialog({
   location,
   initial,
   onClose,
+  onSaved,
 }: {
   open: boolean
   catalog: Catalog
@@ -58,6 +59,7 @@ export function CombinationDialog({
   /** Slots filled from a folder the person picked. */
   initial?: Partial<Record<SlotKey, string | null>>
   onClose: () => void
+  onSaved?: (combination: ModelCombination) => Promise<void>
 }): React.JSX.Element {
   const toast = useToast()
   const [values, setValues] = useState<SlotValues>(() => defaults(catalog, location, initial))
@@ -101,7 +103,8 @@ export function CombinationDialog({
         name: shownName.trim() || suggested,
         components: values,
       })
-      if (need > 0) {
+      if (onSaved) await onSaved(combination)
+      else if (need > 0) {
         await location.downloadBundle(combinationBundle(combination, catalog.models))
         toast.push(`已开始下载「${combination.name}」`, 'success')
       } else {
@@ -131,7 +134,7 @@ export function CombinationDialog({
           </Button>
           <Button tone="primary" size="md" disabled={busy || !complete} onClick={() => void save()}>
             {busy ? <Spinner /> : null}
-            {need > 0 ? '下载并保存' : '保存'}
+            {need > 0 && !onSaved ? '下载并保存' : '保存'}
           </Button>
         </>
       }

@@ -12,6 +12,85 @@ describe('models', () => {
   const app = useApp()
   const featured = (page: Page) => page.locator('[data-oobe="model"]')
 
+  it('connects, refreshes and removes a shared model directory', async () => {
+    const page = await app.open({
+      scenario: 'sharedModelDirectory',
+      route: '/models',
+      theme: 'dark',
+      settings: { onboardingState: 'dismissed' },
+    })
+    const section = page.locator('section').filter({ has: page.getByRole('heading', { name: '共享模型目录' }) })
+    await expect.poll(() => section.getByRole('button', { name: '接入' }).isVisible()).toBe(true)
+    expect(await app.calls('models:sources-refresh')).toEqual([])
+    await section.getByRole('button', { name: '自动扫描' }).click()
+    await expect.poll(() => section.getByText('ComfyUI 正在运行', { exact: true }).isVisible()).toBe(true)
+    await section.getByRole('button', { name: '接入' }).click()
+    await section.getByRole('button', { name: '添加来源' }).click()
+    const choices = section.getByRole('menu', { name: '添加来源' })
+    await expect.poll(() => choices.getByRole('menuitem').count()).toBe(4)
+    await choices.getByRole('menuitem', { name: 'ComfyUI', exact: true }).click()
+    await expect.poll(() => section.getByRole('button', { name: '更换路径' }).count()).toBe(2)
+    expect(await section.getByText('/workspace/ComfyUI', { exact: true }).isVisible()).toBe(true)
+    expect(await section.getByText('/workspace/comfyui-manual-1', { exact: true }).isVisible()).toBe(true)
+    expect(await section.getByRole('button', { name: '选择 ComfyUI 配置' }).count()).toBe(0)
+    expect(await section.getByText('查看扫描结果', { exact: false }).count()).toBe(0)
+    const installed = page.locator('section').filter({ has: page.getByRole('heading', { name: '可用模型' }) })
+    await expect.poll(() => installed.getByText('共享 dit', { exact: true }).count()).toBe(1)
+    const incompatible = installed.getByRole('button', { name: /不兼容的模型和 LoRA/ })
+    expect(await incompatible.getAttribute('aria-expanded')).toBe('false')
+    expect(await installed.getByText('style.safetensors', { exact: true }).isVisible()).toBe(false)
+    await incompatible.click()
+    expect(await installed.getByText('style.safetensors', { exact: true }).count()).toBe(1)
+    await app.screenshot('models-shared-sources-dark')
+    await page.getByRole('tab', { name: 'LoRA' }).click()
+    const loras = page.locator('section').filter({ has: page.getByRole('heading', { name: '已安装' }) })
+    await expect.poll(() => loras.getByText('ready-lora.safetensors', { exact: true }).isVisible()).toBe(true)
+    expect(await page.getByText('style.safetensors', { exact: true }).count()).toBe(0)
+    await page.getByRole('tab', { name: '模型', exact: true }).click()
+    await expect.poll(() => section.getByRole('button', { name: '更换路径' }).count()).toBe(2)
+    expect(await app.calls('models:sources-refresh')).toHaveLength(1)
+    await page.evaluate(() => {
+      window.__mock.state.sharedModelDirectory!.available = false
+    })
+    await section.getByRole('button', { name: '自动扫描' }).click()
+    await expect.poll(() => section.getByText('读不到模型目录').count()).toBe(2)
+    await page.evaluate(() => {
+      window.__mock.state.sharedModelDirectory!.available = true
+    })
+    await section.getByRole('button', { name: '自动扫描' }).click()
+    await expect.poll(() => installed.getByText('共享 dit', { exact: true }).isVisible()).toBe(true)
+    await section.getByRole('button', { name: '移除来源' }).first().click()
+    await expect.poll(() => section.getByRole('button', { name: '更换路径' }).count()).toBe(1)
+    expect(await installed.getByText('共享 dit', { exact: true }).isVisible()).toBe(true)
+    await expect.poll(() => section.getByRole('button', { name: '接入' }).isVisible()).toBe(true)
+    expect(await app.calls('models:delete')).toEqual([])
+  })
+
+  it('says when no model folder is connected, and retries a scan that failed', async () => {
+    const page = await app.open({
+      scenario: 'engineInstalledModelMissing',
+      route: '/models',
+      theme: 'light',
+      settings: { onboardingState: 'dismissed' },
+    })
+    const section = page.locator('section').filter({ has: page.getByRole('heading', { name: '共享模型目录' }) })
+    await expect.poll(() => section.getByText('还没有接入模型目录', { exact: true }).isVisible()).toBe(true)
+    await page.evaluate(() => {
+      window.__mock.state.sharedModelDirectory = { available: true, failRefresh: true }
+    })
+    await section.getByRole('button', { name: '自动扫描' }).click()
+    const failed = section.locator('[data-notice="danger"]')
+    await expect.poll(() => failed.getByText('扫描模型目录时出错，请稍后重试').isVisible()).toBe(true)
+    await page.evaluate(() => {
+      window.__mock.state.sharedModelDirectory!.failRefresh = false
+    })
+    await failed.getByRole('button', { name: '重试' }).click()
+    await expect.poll(() => section.getByText('ComfyUI 正在运行', { exact: true }).isVisible()).toBe(true)
+    expect(await section.locator('[data-notice="danger"]').count()).toBe(0)
+    expect(await app.calls('models:sources-refresh')).toHaveLength(2)
+    await app.screenshot('models-shared-sources-retry-light')
+  })
+
   it('downloads the recommended model with one action and shows its progress', async () => {
     const page = await app.open({ scenario: 'engineInstalledModelMissing', route: '/models', theme: 'light' })
     const card = featured(page)

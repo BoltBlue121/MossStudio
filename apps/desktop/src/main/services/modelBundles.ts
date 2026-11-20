@@ -2,10 +2,12 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isSingleFile, RUNTIME_CONFIG_ID } from '@shared/modelCombos'
+import { isSharedModelId } from '@shared/sharedModels'
 import type { ModelBinding, ModelBundle, Settings } from '@shared/types'
 import { paths } from '../lib/paths'
 import { componentSnapshot, getCatalog } from './models'
 import { fileSize, linkInPlace, materialize, safePath } from './modelFiles'
+import { requireSharedWeight } from './modelSources'
 
 export function bundleBinding(bundle: ModelBundle): ModelBinding {
   return { bundleId: bundle.id, ...bundle.components }
@@ -45,6 +47,7 @@ export async function validateBinding(binding: ModelBinding, settings: Settings)
  */
 export interface PreparedModelSource {
   model: string
+  directFolder?: boolean
   ditFile?: string
   textEncoderFile?: string
   vaeFile?: string
@@ -76,6 +79,9 @@ export async function prepareModelSource(binding: ModelBinding, settings: Settin
   const catalog = await getCatalog(settings)
   const bundle = catalog.bundles.find((b) => b.id === binding.bundleId)
   if (!bundle) throw new Error('模型组合不存在，请重新选择')
+  // A shared diffusers folder is already the whole model the engine loads; nothing is prepared or linked.
+  const full = catalog.models.find((entry) => entry.id === bundle.id && entry.role === 'full' && isSharedModelId(entry.id))
+  if (full) return { model: await requireSharedWeight(full.id, full.name), bundle, directFolder: true }
   const parts = SLOT_ROLES.map(([key, role]) => {
     const model = catalog.models.find((entry) => entry.id === binding[key])
     if (!model || model.role !== role) throw new Error('模型组合里的部件不对，请重新选择')
@@ -90,8 +96,9 @@ export async function prepareModelSource(binding: ModelBinding, settings: Settin
   for (const part of parts) {
     if (!isSingleFile(part)) files.push(undefined)
     else if (part.provider === 'local') {
-      if (!part.localPath) throw new Error(`找不到「${part.name}」的文件，请重新添加`)
-      files.push(part.localPath)
+      const path = isSharedModelId(part.id) ? await requireSharedWeight(part.id, part.name) : part.localPath
+      if (!path) throw new Error(`找不到「${part.name}」的文件，请重新添加`)
+      files.push(path)
     } else files.push(await componentFile(part.id, settings))
   }
   const [ditFile, textEncoderFile, vaeFile] = files

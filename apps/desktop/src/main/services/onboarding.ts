@@ -1,9 +1,11 @@
 import { join } from 'node:path'
+import { isSharedModelId } from '@shared/sharedModels'
 import type { OnboardingStatus, OnboardingStep, Settings } from '@shared/types'
 import { paths } from '../lib/paths'
 import { cachedGpuInventory, listDevices } from './devices'
 import { getCatalog, modelMissingBytes } from './models'
 import { legacyModelReady } from './modelReadiness'
+import { resolveSharedWeight } from './modelSources'
 import { engineReadiness } from './engineReadiness'
 import { describeEngineReadiness } from '@shared/engineReadiness'
 import { getTrainingHost } from './trainingHosts'
@@ -12,7 +14,7 @@ import { scanRemoteModels } from './remoteModels'
 import { localEngineKinds, resolveDeviceEngine } from './engineInstalls'
 import { cliBundleProblem, type CliEngineKind } from '@shared/cliEngine'
 import { isCliEngine } from '@shared/enginePackages'
-import { bestBundleFor, bundleWeightProblem, generationGpus, isFileBundle, isFp16Dit } from '@shared/bundleFit'
+import { bestBundleFor, bundleWeightProblem, generationGpus, isFp16Dit, isLocalOnlyBundle } from '@shared/bundleFit'
 
 export async function getOnboardingStatus(settings: Settings, hostId = 'local'): Promise<OnboardingStatus> {
   const catalog = await getCatalog(settings, true)
@@ -46,6 +48,7 @@ export async function getOnboardingStatus(settings: Settings, hostId = 'local'):
         // A registered FP16-fixed folder is a whole model the engine refuses (isFp16Dit).
         (model) =>
           model.role === 'full' &&
+          !isSharedModelId(model.id) &&
           model.installed &&
           model.format !== 'comfyui' &&
           !isFp16Dit(model) &&
@@ -64,7 +67,10 @@ export async function getOnboardingStatus(settings: Settings, hostId = 'local'):
     installed = new Set(inventory?.models.filter((model) => model.installed).map((model) => model.id) ?? [])
   }
 
-  const ids = (bundle: (typeof catalog.bundles)[number]): string[] => [...Object.values(bundle.components), bundle.support]
+  const ids = (bundle: (typeof catalog.bundles)[number]): string[] => [...new Set([...Object.values(bundle.components), bundle.support])]
+  const choice = hostId === 'local' ? settings.onboardingModelId : null
+  const choosing = hostId === 'local' && settings.onboardingReusePending && !choice
+  if (choice || choosing) fullModelReady = false
   const score = (bundle: (typeof catalog.bundles)[number]): number =>
     ids(bundle).reduce(
       (total, id) =>
@@ -79,28 +85,33 @@ export async function getOnboardingStatus(settings: Settings, hostId = 'local'):
     : hostId === 'local'
       ? loadable
       : // Another computer runs a model folder; single files load only on this one.
-        loadable.filter((item) => !isFileBundle(item, catalog.models))
+        loadable.filter((item) => !isLocalOnlyBundle(item, catalog.models))
   // With nothing downloaded yet, the model that suits this computer's GPU comes first (as on the 模型 page).
   const gpus = hostId === 'local' ? generationGpus(cachedGpuInventory()?.devices, settings) : []
   const cliGpus = new Set(
     gpus.filter((device) => isCliEngine(resolveDeviceEngine(device.uuid)?.package ?? 'cuda')).map((device) => device.uuid),
   )
   const best = hostId === 'local' ? bestBundleFor(usable, gpus, cliGpus)?.bundle : undefined
-  const bundle = [...usable].sort(
-    (a, b) =>
-      score(b) - score(a) ||
-      Number(b.id === best?.id) - Number(a.id === best?.id) ||
-      Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)),
-  )[0]
+  const bundle =
+    choice || choosing
+      ? usable.find((item) => item.id === choice)
+      : [...usable].sort(
+          (a, b) =>
+            score(b) - score(a) ||
+            Number(b.id === best?.id) - Number(a.id === best?.id) ||
+            Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)),
+        )[0]
   // Downloaded single files count through the single-file bundle they belong to
   // (score above), so the checklist names a model the Studio can actually run.
   const modelIds = bundle ? ids(bundle) : []
   const bundleName = bundle?.name
+  const shared = modelIds.filter(isSharedModelId)
+  const gone = choice && (!bundle || (await Promise.all(shared.map(resolveSharedWeight))).some((path) => !path))
   const modelCount = fullModelReady ? modelIds.length : modelIds.filter((id) => installed.has(id)).length
-  const modelReady = fullModelReady || (modelIds.length > 0 && modelCount === modelIds.length)
+  const modelReady = !gone && (fullModelReady || (modelIds.length > 0 && modelCount === modelIds.length))
   // What is still to download, counted like the check before each download starts (a partial download counts its .part files).
   // Only this computer has the files to count.
-  const missingParts = catalog.models.filter((model) => modelIds.includes(model.id) && !installed.has(model.id))
+  const missingParts = gone ? [] : catalog.models.filter((model) => modelIds.includes(model.id) && !installed.has(model.id))
   const sizeBytes =
     hostId === 'local'
       ? (await Promise.all(missingParts.map((model) => modelMissingBytes(settings, model)))).reduce((total, bytes) => total + bytes, 0)
@@ -115,11 +126,15 @@ export async function getOnboardingStatus(settings: Settings, hostId = 'local'):
       id: 'model',
       title: '模型',
       action: 'models',
-      modelIds,
-      status: modelReady ? 'ok' : partialModel ? 'partial' : 'missing',
-      detail: modelReady
-        ? `${bundleName ?? '完整模型'} 已就绪`
-        : `${bundleName ?? 'MOSS-Image'} · ${modelCount}/${modelIds.length || 4} 个组件已就绪，需准备主模型、文本编码器、VAE 与配置`,
+      modelIds: gone ? [] : modelIds,
+      status: gone ? 'missing' : modelReady ? 'ok' : partialModel ? 'partial' : 'missing',
+      detail: choosing
+        ? '请选择要使用的共享模型'
+        : gone
+          ? '选用的模型已不可用，请刷新共享目录或重新选择'
+          : modelReady
+            ? `${bundleName ?? '完整模型'} 已就绪`
+            : `${bundleName ?? 'MOSS-Image'} · ${modelCount}/${modelIds.length || 4} 个组件已就绪，需准备主模型、文本编码器、VAE 与配置`,
       sizeBytes,
     },
   ]

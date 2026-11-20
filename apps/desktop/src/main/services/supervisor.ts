@@ -33,7 +33,7 @@ import {
   type ResolvedGpuProfile,
   type WeightPrecisions,
 } from '@shared/gpuProfile'
-import { bundleGpuProblem, bundleWeightProblem, isFileBundle, profileForBundle } from '@shared/bundleFit'
+import { bundleGpuProblem, bundleWeightProblem, isFileBundle, isLocalOnlyBundle, profileForBundle } from '@shared/bundleFit'
 import { probeLocalEngineGpuCompatibility } from './engines'
 import { getTrainingHost } from './trainingHosts'
 import { cancelRemoteEngineJob, runRemoteEngineJob } from './remoteEngine'
@@ -976,7 +976,7 @@ async function startEngineJobNow(input: StartEngineJobInput, queuedJob?: JobReco
     // Another computer runs the model folder at its remote path; single files load only here.
     const catalog = await getCatalog(settings)
     const bundle = catalog.bundles.find((item) => item.id === input.modelBinding!.bundleId)
-    if (bundle && isFileBundle(bundle, catalog.models)) {
+    if (bundle && isLocalOnlyBundle(bundle, catalog.models)) {
       throw codedError('E_MODEL', `「${bundle.name}」只能在这台电脑上运行，在其他电脑上请用官方模型`)
     }
   }
@@ -996,7 +996,9 @@ async function startEngineJobNow(input: StartEngineJobInput, queuedJob?: JobReco
       const source = await prepareModelSource(input.modelBinding, settings)
       modelPath = source.model
       modelBundle = source.bundle
-      const manifest = JSON.parse(await readFile(join(modelPath, 'clover_model.json'), 'utf8')) as Record<string, unknown>
+      const manifest = source.directFolder
+        ? { bundleId: source.bundle.id, model: modelPath }
+        : (JSON.parse(await readFile(join(modelPath, 'clover_model.json'), 'utf8')) as Record<string, unknown>)
       const files = Object.fromEntries(
         Object.entries({ ditFile: source.ditFile, textEncoderFile: source.textEncoderFile, vaeFile: source.vaeFile }).filter(
           ([, path]) => path,

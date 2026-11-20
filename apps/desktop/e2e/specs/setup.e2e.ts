@@ -182,6 +182,7 @@ describe('first run', () => {
       }
     })
     await app.start()
+    await page.getByRole('button', { name: '使用已有模型', exact: true }).click()
     await page.getByRole('button', { name: '已有模型文件…' }).click()
     await expect.poll(() => app.calls('models:import-folder').then((calls) => calls.length)).toBe(1)
     await expect.poll(() => page.getByText(/已在原位置使用 MOSS-Image SFT（sft），不用再下载模型/).isVisible()).toBe(true)
@@ -199,9 +200,32 @@ describe('first run', () => {
       window.__mock.state.localModelFolder = { path: '/data/my-finetune', name: 'my-finetune', bundleId: 'none' }
     })
     await app.start()
+    await page.getByRole('button', { name: '使用已有模型', exact: true }).click()
     await page.getByRole('button', { name: '已有模型文件…' }).click()
     await expect.poll(() => page.getByText(/不是可以直接使用的 MOSS-Image 模型/).isVisible()).toBe(true)
     expect(await page.getByRole('button', { name: '已有模型文件…' }).count()).toBe(1)
+  })
+
+  it('keeps setup in reuse mode when the engine is being prepared before choosing weights', async () => {
+    const page = await app.open({ scenario: 'engineInstalling', route: '/setup', settings: { onboardingReusePending: true } })
+    await expect.poll(() => page.getByRole('heading', { name: '正在准备' }).isVisible()).toBe(true)
+    expect(await app.calls('models:download')).toEqual([])
+  })
+
+  it('uses the shared combination and requests only its missing runtime files', async () => {
+    const page = await app.open({ scenario: 'sharedModelDirectory', route: '/setup', theme: 'light' })
+    await page.getByRole('button', { name: '使用已有模型', exact: true }).click()
+    await page.getByRole('button', { name: '接入', exact: true }).click()
+    await page.getByRole('button', { name: '自己组合', exact: true }).click()
+    expect(await page.locator('#combination-dit').inputValue()).toBe('shared-dit')
+    expect(await page.locator('#combination-textEncoder').inputValue()).toBe('shared-text_encoder')
+    expect(await page.locator('#combination-vae').inputValue()).toBe('shared-vae')
+    await app.screenshot('setup-shared-models-light')
+    await page.getByRole('button', { name: '保存', exact: true }).click()
+    await expect.poll(() => page.evaluate(() => window.__mock.state.settings.onboardingModelId)).toBeTruthy()
+    expect(await app.calls('models:download')).toEqual([])
+    await page.getByRole('button', { name: '开始下载' }).click()
+    await expect.poll(() => app.calls('models:download')).toEqual([{ kind: 'model', id: 'moss-runtime-config' }])
   })
 
   it('稍后 leaves setup and never comes back on its own', async () => {

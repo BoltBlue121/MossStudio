@@ -9,6 +9,7 @@ import { paths } from '../lib/paths'
 import { requestEngineOnce } from '../lib/probeEngine'
 import { requestRunningEngine } from './mossInfer'
 import { localServerPath } from './engineInstalls'
+import { sharedControlAdapters } from './modelSources'
 
 /**
  * Control adapter files the person registered (模型 › 控制). Each file is
@@ -34,13 +35,18 @@ function isEntry(value: unknown): value is ControlAdapterEntry {
   )
 }
 
-export function listControlAdapters(): ControlAdapterEntry[] {
+function registeredControlAdapters(): ControlAdapterEntry[] {
   try {
     const raw = JSON.parse(readFileSync(registryFile(), 'utf8')) as unknown
     return Array.isArray(raw) ? raw.filter(isEntry) : []
   } catch {
     return []
   }
+}
+
+export function listControlAdapters(): ControlAdapterEntry[] {
+  const registered = registeredControlAdapters()
+  return [...registered, ...sharedControlAdapters().filter((entry) => !registered.some((item) => item.path === entry.path))]
 }
 
 function writeRegistry(entries: ControlAdapterEntry[]): void {
@@ -110,7 +116,7 @@ export async function addControlAdapter(input: { path: string }): Promise<Contro
     ? (report['control_kinds'] as unknown[]).filter((item): item is string => typeof item === 'string' && item.length > 0)
     : []
   const baseModel = typeof report['base_model'] === 'string' && report['base_model'].trim() ? report['base_model'].trim() : undefined
-  const existing = listControlAdapters()
+  const existing = registeredControlAdapters()
   const previous = existing.find((entry) => entry.path === path)
   const entry: ControlAdapterEntry = {
     id: previous?.id ?? `control-${createHash('sha1').update(path).digest('hex').slice(0, 12)}`,
@@ -127,7 +133,7 @@ export async function addControlAdapter(input: { path: string }): Promise<Contro
 }
 
 export function removeControlAdapter(input: { id: string }): null {
-  const existing = listControlAdapters()
+  const existing = registeredControlAdapters()
   const next = existing.filter((entry) => entry.id !== input.id)
   if (next.length !== existing.length) {
     writeRegistry(next)

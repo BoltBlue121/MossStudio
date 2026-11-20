@@ -147,7 +147,8 @@ export function StudioPage(): React.JSX.Element {
   const project = useStudioProject({ jobs, onError: notifyError, active: shown })
   const selected = project.selectedCanvas
 
-  const [preferredBundleId, setPreferredBundleId] = useState<string | null>(() => readStorage(BUNDLE_KEY))
+  const [savedBundleId, setPreferredBundleId] = useState<string | null>(() => readStorage(BUNDLE_KEY))
+  const preferredBundleId = savedBundleId ?? settings?.onboardingModelId ?? null
   const [gpuInventory, setGpuInventory] = useState<GpuInventorySnapshot | null>(null)
   const [hosts, setHosts] = useState<ManagedHost[]>([])
   const [remoteHostId, setRemoteHostId] = useState(() => readStorage(HOST_KEY) ?? '')

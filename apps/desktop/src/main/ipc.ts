@@ -7,7 +7,7 @@ import { schemas } from '@shared/schemas'
 import { trainingSchemas } from '@shared/training'
 import { resolveToolset, toolDefinitions } from '@shared/agent/registry'
 import type { AgentMode, AiToolCall, AiToolResult } from '@shared/ai'
-import type { IpcResult } from '@shared/types'
+import type { IpcResult, Settings } from '@shared/types'
 import { emit } from './lib/events'
 import { ensureDirs, paths } from './lib/paths'
 import { openDirectoryInFileManager, revealInFileManager } from './lib/fileManager'
@@ -95,6 +95,7 @@ import { addControlAdapter, listControlAdapters, removeControlAdapter } from './
 import { applyThemeSource, applyUiScale, controlWindow, openWindow } from './windows'
 import { getGpuInventory, listDevices, refreshGpuInventory } from './services/devices'
 import { getOnboardingStatus } from './services/onboarding'
+import { addModelSource, modelSourcesView, refreshModelSources, removeModelSource, restoreModelSources } from './services/modelSources'
 import {
   createTrainerVersion,
   installTrainerRuntime,
@@ -201,8 +202,28 @@ function runToolInRenderer(event: Electron.IpcMainInvokeEvent, call: AiToolCall,
 }
 
 export function registerIpc(): void {
-  // Keeps the engine on the newest release while settings.engineAutoUpdate is on.
-  startEngineAutoUpdate()
+  async function refreshSharedModels(settings: Settings, changed = false): Promise<void> {
+    await refreshModelSources(settings, changed)
+    invalidateCatalog()
+    emit(Events.modelsChanged, { reason: 'shared-sources' })
+  }
+  /** Rescans the shared folders without making anyone wait; the catalog event tells the windows when it is done. */
+  function refreshSharedModelsInBackground(changed = false): void {
+    if (!getSettings().modelSources?.length) return
+    void refreshSharedModels(getSettings(), changed).catch((error: unknown) => console.warn('[model-sources]', error))
+  }
+  const startupSettings = getSettings()
+  // Only the cached inventory is read before the first catalog; any rescan runs in the background.
+  const startupModelSources = startupSettings.modelSources?.length
+    ? restoreModelSources(startupSettings)
+        .then((stale) => {
+          invalidateCatalog()
+          if (stale) refreshSharedModelsInBackground()
+        })
+        .catch((error: unknown) => console.warn('[model-sources]', error))
+    : undefined
+  // Keeps the engine on the newest release while settings.engineAutoUpdate is on. A new engine checks the shared files again.
+  startEngineAutoUpdate(() => refreshSharedModelsInBackground())
   // Learn which GPUs this computer has (AMD / Intel via the small Vulkan probe) without blocking start-up.
   void startupEnginePlan().catch((error: unknown) => console.warn('[engine-plan]', error instanceof Error ? error.message : error))
 
@@ -565,7 +586,11 @@ export function registerIpc(): void {
     const modelDirsChanged =
       before.modelsRoot !== settings.modelsRoot || JSON.stringify(before.modelDirectories) !== JSON.stringify(settings.modelDirectories)
     emit(Events.settingsChanged, settings)
-    if (modelDirsChanged) emit(Events.modelsChanged, { reason: 'settings' })
+    if (modelDirsChanged) {
+      emit(Events.modelsChanged, { reason: 'settings' })
+      // Download folders inside a shared tree are left out of its scan, so the split is redone.
+      refreshSharedModelsInBackground(true)
+    }
     return settings
   })
 
@@ -589,6 +614,7 @@ export function registerIpc(): void {
     const state = await installEnginePlan({ channel, releaseTag, cudaWheels, packages: packagesFromIds(packages), all })
     // Choosing an older release by hand pins it, so auto-update does not undo the rollback.
     if (state.phase === 'done' && channel === 'stable') await recordManualEngineInstall(releaseTag)
+    if (state.phase === 'done') refreshSharedModelsInBackground()
     return state
   })
 
@@ -712,7 +738,42 @@ export function registerIpc(): void {
     return writeChapterPages(result.filePaths[0], input)
   })
 
-  handle(Ipc.modelsCatalog, null, () => getCatalog(getSettings(), true))
+  handle(Ipc.modelsCatalog, null, async () => {
+    await startupModelSources
+    return getCatalog(getSettings(), true)
+  })
+  handle(Ipc.modelSourcesList, null, async () => {
+    await startupModelSources
+    return modelSourcesView(getSettings())
+  })
+  handle(Ipc.modelSourcesRefresh, null, async () => {
+    await startupModelSources
+    await refreshSharedModels(getSettings())
+    return modelSourcesView(getSettings(), 'scan')
+  })
+  handle(Ipc.modelSourcesAdd, schemas.modelSourcesAdd, async ({ path, kind, id }) => {
+    await startupModelSources
+    const picked = !path
+    if (!path) {
+      const result = await dialog.showOpenDialog({
+        title: kind === 'custom' ? '选择自定义模型目录' : '选择安装目录或模型目录',
+        properties: ['openDirectory'],
+      })
+      if (result.canceled || !result.filePaths[0]) return modelSourcesView(getSettings())
+      path = result.filePaths[0]
+    }
+    const settings = await addModelSource(path, kind, id, { picked })
+    emit(Events.settingsChanged, settings)
+    await refreshSharedModels(settings, true)
+    return modelSourcesView(getSettings())
+  })
+  handle(Ipc.modelSourcesRemove, schemas.modelSourcesRemove, async ({ id }) => {
+    await startupModelSources
+    const settings = removeModelSource(id)
+    emit(Events.settingsChanged, settings)
+    await refreshSharedModels(settings, true)
+    return modelSourcesView(getSettings())
+  })
 
   handle(Ipc.modelsRemoteInventory, schemas.modelsRemoteInventory, async ({ hostId, modelsRoot }) => {
     const host = getTrainingHost(getSettings(), hostId)
