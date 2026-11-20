@@ -109,6 +109,8 @@ export interface AiToolCallRequest {
   arguments: string
   /** Advanced mode turns a write into a plan step instead of changing anything. */
   mode?: AgentMode
+  /** Conversation that triggered this call, used to keep concurrent sessions isolated. */
+  conversationId?: string
 }
 
 export const AI_PROVIDER_PRESETS: Array<{

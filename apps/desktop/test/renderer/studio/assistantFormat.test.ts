@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { toolDetail, toolLabel, traceHeadline } from '@renderer/pages/studio/assistant/format'
+import { acceptStreamEvent, toolDetail, toolLabel, traceHeadline } from '@renderer/pages/studio/assistant/format'
 
 describe('studio/assistant format', () => {
-  it('names tools in plain words', () => {
+  it('names legacy tools and canonical capabilities in plain words', () => {
     expect(toolLabel('studio_add_layer')).toBe('添加区域')
     expect(toolLabel('studio_add_text_layer')).toBe('添加文字')
     expect(toolLabel('studio_ask_approval')).toBe('等你确认')
+    expect(toolLabel('studio.cards.create')).toBe('新建画面')
+    expect(toolLabel('studio.wires.connect')).toBe('连接端口')
     expect(toolLabel('other_tool')).toBe('other_tool')
   })
 
@@ -49,5 +51,43 @@ describe('studio/assistant format', () => {
       '查看画面、改写描述、添加区域等 4 步',
     )
     expect(traceHeadline([])).toBe('执行中')
+  })
+
+  it('isolates stream events by conversationId so concurrent chats never cross-talk', () => {
+    const idleState = { activeConversationId: 'chat-a', boundStreamId: null, awaitingNewStream: false }
+    // Foreign conversation events are ignored.
+    expect(acceptStreamEvent({ type: 'delta', conversationId: 'chat-b', messageId: 'm1', text: 'leak' }, idleState)).toEqual({
+      accept: false,
+      nextBoundStreamId: null,
+    })
+    // Matching conversation start binds the stream and done clears it.
+    const started = acceptStreamEvent({ type: 'start', conversationId: 'chat-a', messageId: 'm1' }, idleState)
+    expect(started).toEqual({ accept: true, nextBoundStreamId: 'chat-a' })
+    expect(
+      acceptStreamEvent(
+        { type: 'delta', conversationId: 'chat-b', messageId: 'm2', text: 'leak' },
+        { activeConversationId: 'chat-a', boundStreamId: 'chat-a', awaitingNewStream: false },
+      ),
+    ).toEqual({ accept: false, nextBoundStreamId: 'chat-a' })
+    expect(
+      acceptStreamEvent(
+        { type: 'error', conversationId: 'chat-a', message: 'boom' },
+        { activeConversationId: 'chat-a', boundStreamId: 'chat-a', awaitingNewStream: false },
+      ),
+    ).toEqual({ accept: true, nextBoundStreamId: null })
+
+    // A brand-new chat binds only to the first start while awaitingNewStream is true.
+    expect(
+      acceptStreamEvent(
+        { type: 'start', conversationId: 'chat-bg', messageId: 'm3' },
+        { activeConversationId: null, boundStreamId: null, awaitingNewStream: false },
+      ),
+    ).toEqual({ accept: false, nextBoundStreamId: null })
+    expect(
+      acceptStreamEvent(
+        { type: 'start', conversationId: 'chat-new', messageId: 'm4' },
+        { activeConversationId: null, boundStreamId: null, awaitingNewStream: true },
+      ),
+    ).toEqual({ accept: true, nextBoundStreamId: 'chat-new' })
   })
 })

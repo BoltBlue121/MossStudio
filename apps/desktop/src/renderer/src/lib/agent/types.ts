@@ -58,8 +58,8 @@ export interface SceneDraft {
  * captured when the API was registered.
  */
 export interface StudioToolApi {
-  /** Whether anything is selected, and whether it can be edited at all. */
-  state(): { hasSelection: boolean; editable: boolean }
+  /** Whether anything is selected, whether it can be edited as a layout, and its canvas kind. */
+  state(): { hasSelection: boolean; editable: boolean; selectedKind?: ProjectCanvas['kind'] }
   readContext(): unknown
   /** Plain snapshot of the selected canvas, or null when none is selected. */
   snapshot(): StudioSnapshot | null

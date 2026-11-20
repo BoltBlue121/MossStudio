@@ -7,8 +7,8 @@ import type { StudioSnapshot, StudioToolApi } from './agent/types'
 export type { AddedLayer, LayerBox, LayerPatch, StudioSnapshot, StudioToolApi } from './agent/types'
 export { applyPlan, executeStudioTool }
 
-export function registerStudioTools(next: StudioToolApi | null): void {
-  setStudioApi(next)
+export function registerStudioTools(next: StudioToolApi | null, options?: { mountLegacyPacks?: boolean }): void {
+  setStudioApi(next, options)
 }
 
 /** The selected canvas as it is right now (not when a chat message was typed). */
@@ -61,13 +61,16 @@ export function formatStudioContext(snapshot: StudioSnapshot | null): string | u
 
 /** Subscribe once; resolves every tool call the main process asks for. */
 export function installStudioToolBridge(): () => void {
-  return onEvent<{ callId: string; name: string; arguments: string; mode?: AgentMode }>(Events.aiToolCall, (request) => {
-    void (async () => {
-      const result = await executeStudioTool(
-        { id: request.callId, name: request.name, arguments: request.arguments },
-        { mode: request.mode },
-      )
-      await call(Ipc.aiToolResult, { callId: request.callId, result }).catch(() => undefined)
-    })()
-  })
+  return onEvent<{ callId: string; name: string; arguments: string; mode?: AgentMode; conversationId?: string }>(
+    Events.aiToolCall,
+    (request) => {
+      void (async () => {
+        const result = await executeStudioTool(
+          { id: request.callId, name: request.name, arguments: request.arguments },
+          { mode: request.mode, conversationId: request.conversationId },
+        )
+        await call(Ipc.aiToolResult, { callId: request.callId, result }).catch(() => undefined)
+      })()
+    },
+  )
 }

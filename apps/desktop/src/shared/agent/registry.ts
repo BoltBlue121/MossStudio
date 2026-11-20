@@ -1,27 +1,35 @@
-import { z } from 'zod'
 import type { AgentMode, AiToolDefinition } from '../ai'
-import { TOOL_SCHEMAS, type ToolName } from './schemas'
+import {
+  BUILTIN_CAPABILITY_REGISTRY,
+  LEGACY_TOOL_ORDER,
+  type ActionDescriptor,
+  type ActionRequirement,
+  type LegacyAgentPack,
+} from '../capabilities'
+import type { ToolName } from './schemas'
 
 export type { AgentMode }
 
 /**
- * The tool rack: one entry per tool, and the only place that says what a tool
- * is called, which pack it belongs to, how risky it is and how to summarise it
- * in the chat. The provider's JSON Schema is generated from the zod schema of
- * the same name, and the renderer's handler table is typed from it, so the
- * three can no longer drift apart.
+ * Legacy Studio assistant tool rack, derived from `BUILTIN_CAPABILITY_REGISTRY`.
+ *
+ * The canonical capability packs live in `shared/capabilities/`; this module
+ * preserves the exact 13 `studio_*` view, JSON Schema projection and prompt
+ * rules expected by the built-in Studio assistant.
  */
 
-export type AgentPack = 'canvas.read' | 'canvas.write' | 'ask' | 'storyboard' | 'library'
+export type AgentPack = LegacyAgentPack
 
 /** read: only looks. write: changes the canvas. run: starts a job. ask: asks the user. */
 export type ToolRisk = 'read' | 'write' | 'run' | 'ask'
 
 /** What must be true before a tool can run; checked once, in the executor. */
-export type ToolRequirement = 'selection' | 'editable' | 'engine'
+export type ToolRequirement = 'selection' | 'editable' | 'editable-or-style' | 'engine'
 
 export interface AgentTool {
   name: ToolName
+  /** Canonical capability id behind this legacy tool name. */
+  capabilityId: ActionDescriptor['id']
   /** Short Chinese name, used on the tool line in the chat. */
   title: string
   pack: AgentPack
@@ -33,163 +41,38 @@ export interface AgentTool {
   summarize(args: Record<string, unknown>): string
 }
 
-function text(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : ''
+function riskOf(descriptor: ActionDescriptor): ToolRisk {
+  if (descriptor.effects.includes('interact')) return 'ask'
+  if (descriptor.effects.includes('run')) return 'run'
+  if (descriptor.effects.some((effect) => ['write', 'delete', 'export', 'install', 'configure'].includes(effect))) {
+    return 'write'
+  }
+  return 'read'
 }
 
-function short(value: string, limit = 20): string {
-  return value.length > limit ? `${value.slice(0, limit)}…` : value
+function requirementsOf(requires: readonly ActionRequirement[]): ToolRequirement[] {
+  return requires.filter(
+    (item): item is ToolRequirement => item === 'selection' || item === 'editable' || item === 'editable-or-style' || item === 'engine',
+  )
 }
 
-function number(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-export const AGENT_TOOLS: AgentTool[] = [
-  {
-    name: 'studio_read_context',
-    title: '查看画面',
-    pack: 'canvas.read',
-    risk: 'read',
-    requires: [],
-    description:
-      'Read the workbench: the selected Canvas (size, sampler values, description) and every region with its 1-based index, kind, caption, text and box. Call it before changing anything you have not just seen.',
-    summarize: () => '当前画面',
-  },
-  {
-    name: 'studio_select_canvas',
-    title: '切换画面',
-    pack: 'canvas.read',
-    risk: 'read',
-    requires: [],
-    description:
-      'Make another Canvas of the project the selected one. Every tool that edits "the selected Canvas" works on it afterwards. Only the selection changes, never the picture.',
-    summarize: (args) => `切到 ${short(text(args.id), 16)}`,
-  },
-  {
-    name: 'studio_read_canvas',
-    title: '读取画面',
-    pack: 'canvas.read',
-    risk: 'read',
-    requires: [],
-    description:
-      'Read one Canvas by id without selecting it: the same detail studio_read_context gives for the selected one, plus whether it is the one selected. Use it to compare the pictures of a set, or to look at one you are not on.',
-    summarize: (args) => `读 ${short(text(args.id), 16)}`,
-  },
-  {
-    name: 'studio_ask_user',
-    title: '问你一句',
-    pack: 'ask',
-    risk: 'ask',
-    requires: [],
-    description:
-      'Ask the user one question and show it as a card with 2-5 choices (single or multiple). Use it when the answer decides the picture and you cannot read it from the canvas: composition, character details, sizes, wording. After calling it, stop your turn: the user answers on the card and the next turn continues.',
-    summarize: (args) => `问：${short(text(args.question), 24)}`,
-  },
-  {
-    name: 'studio_ask_approval',
-    title: '等你确认',
-    pack: 'ask',
-    risk: 'ask',
-    requires: [],
-    description:
-      'Ask the user to approve or reject one concrete next step: starting a generation, a batch of pictures, anything that spends GPU time or cannot be undone. Shows a card with approve, reject and "change it" buttons. Use it instead of asking "要开始吗" in prose. After calling it, stop your turn.',
-    summarize: (args) => `等你确认：${short(text(args.question), 22)}`,
-  },
-  {
-    name: 'studio_set_prompt',
-    title: '改写描述',
-    pack: 'canvas.write',
-    risk: 'write',
-    requires: ['editable'],
-    description:
-      'Replace the description of the selected Canvas. Plain English prose, one paragraph. Writes immediately and is visible to the user.',
-    summarize: (args) => `描述改为「${short(text(args.prompt))}」`,
-  },
-  {
-    name: 'studio_set_sampler',
-    title: '调整参数',
-    pack: 'canvas.write',
-    risk: 'write',
-    requires: ['editable'],
-    description:
-      'Update sampler values on the selected Canvas. Pass only the fields you want to change; the result reports the values actually used, which may be snapped to a preset.',
-    summarize: (args) => {
-      const size =
-        number(args.width) !== undefined || number(args.height) !== undefined
-          ? `${number(args.width) ?? '?'}×${number(args.height) ?? '?'}`
-          : ''
-      const steps = number(args.steps) !== undefined ? `${number(args.steps)} 步` : ''
-      const cfg = number(args.cfg) !== undefined ? `CFG ${number(args.cfg)}` : ''
-      const seed = number(args.seed) !== undefined ? `种子 ${number(args.seed)}` : ''
-      const parts = [size, steps, cfg, seed].filter(Boolean)
-      return parts.length ? `参数 ${parts.join(' · ')}` : '参数'
-    },
-  },
-  {
-    name: 'studio_add_layer',
-    title: '添加区域',
-    pack: 'canvas.write',
-    risk: 'write',
-    requires: ['editable'],
-    description:
-      'Add one object or character region to the selected Canvas. Words in the picture are not regions of this kind: use studio_add_text_layer. Regions are what MOSS-Image uses for layout control.',
-    summarize: (args) => `${args.label === 'character' ? '人物' : '物体'}「${short(text(args.caption))}」`,
-  },
-  {
-    name: 'studio_add_text_layer',
-    title: '添加文字',
-    pack: 'canvas.write',
-    risk: 'write',
-    requires: ['editable'],
-    description:
-      'Add one text region: caption says how the lettering looks and where it sits, text is exactly what should be rendered. Use this for titles, signs, labels and any other words in the picture, and only after you know the exact words.',
-    summarize: (args) => `文字「${short(text(args.text))}」`,
-  },
-  {
-    name: 'studio_update_layer',
-    title: '修改区域',
-    pack: 'canvas.write',
-    risk: 'write',
-    requires: ['editable'],
-    description:
-      'Change one region of the selected Canvas by its 1-based index from studio_read_context. Use it to fix or refine a region instead of adding a second one.',
-    summarize: (args) => `第 ${number(args.index) ?? '?'} 个区域`,
-  },
-  {
-    name: 'studio_remove_layer',
-    title: '删除区域',
-    pack: 'canvas.write',
-    risk: 'write',
-    requires: ['editable'],
-    description: 'Delete one region of the selected Canvas by its 1-based index from studio_read_context.',
-    summarize: (args) => `第 ${number(args.index) ?? '?'} 个区域`,
-  },
-  {
-    name: 'studio_generate',
-    title: '开始生成',
-    pack: 'canvas.write',
-    risk: 'run',
-    requires: ['editable'],
-    description:
-      'Start generating from the selected Canvas exactly as it is now. Returns immediately with a job id; call it once per request and do not wait for the picture. Generation fails while the Canvas still has problems.',
-    summarize: () => '按当前画面生成',
-  },
-  {
-    name: 'studio_create_scenes',
-    title: '建一套画面',
-    pack: 'storyboard',
-    risk: 'write',
-    requires: [],
-    description:
-      'Build a set of layout Canvases in one go, one per scene, each with its description, regions and words. Use it when the user wants a series, a storyboard or several pictures at once: plan every scene first, then call this once. The result lists the new ids; select one with studio_select_canvas to refine it.',
-    summarize: (args) => {
-      const scenes = Array.isArray(args.scenes) ? (args.scenes as Array<{ title?: unknown }>) : []
-      const titles = scenes.map((scene) => text(scene?.title)).filter(Boolean)
-      return titles.length ? `新建 ${scenes.length} 个画面：${short(titles.slice(0, 3).join('、'), 48)}` : `新建 ${scenes.length} 个画面`
-    },
-  },
-]
+export const AGENT_TOOLS: AgentTool[] = LEGACY_TOOL_ORDER.map((name) => {
+  const registered = BUILTIN_CAPABILITY_REGISTRY.getAction(name)
+  if (!registered || !registered.legacyPack) {
+    throw new Error(`Built-in capability registry is missing legacy tool: ${name}`)
+  }
+  const { descriptor } = registered
+  return {
+    name,
+    capabilityId: descriptor.id,
+    title: descriptor.title,
+    pack: registered.legacyPack,
+    description: descriptor.description,
+    risk: riskOf(descriptor),
+    requires: requirementsOf(descriptor.requires),
+    summarize: (args) => BUILTIN_CAPABILITY_REGISTRY.summarizeAction(name, args),
+  }
+})
 
 export const AGENT_TOOL_NAMES: readonly ToolName[] = AGENT_TOOLS.map((tool) => tool.name)
 
@@ -199,8 +82,9 @@ export function toolByName(name: string): AgentTool | undefined {
 
 /** JSON Schema for one tool, without the `$schema` key some providers reject. */
 export function toolSchema(name: ToolName): Record<string, unknown> {
-  const { $schema: _ignored, ...schema } = z.toJSONSchema(TOOL_SCHEMAS[name]) as Record<string, unknown>
-  return schema
+  const registered = BUILTIN_CAPABILITY_REGISTRY.getAction(name)
+  if (!registered) throw new Error(`Unknown agent tool: ${name}`)
+  return { ...registered.descriptor.input }
 }
 
 /** The tool list a provider receives. */
@@ -219,8 +103,7 @@ export interface ToolsetInput {
 /**
  * Which packs are mounted right now. Both modes mount the same canvas and ask
  * tools; the mode changes how a write is applied (at once, or through a plan
- * card the user confirms), not what the model can see. The storyboard pack
- * lands in P4 and mounts on the Studio only.
+ * card the user confirms), not what the model can see.
  */
 export function resolveToolset(input: ToolsetInput = {}): AgentTool[] {
   if (input.toolsSupported === false) return []

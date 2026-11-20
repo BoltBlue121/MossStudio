@@ -54,6 +54,7 @@ Decisions are ADRs in [decisions/](decisions/README.md), one per choice, never e
 | Rail navigation and the node board | [0011](decisions/0011-rail-navigation-and-node-board.md), which supersedes [0008](decisions/0008-studio-window-and-dock.md) |
 | Own installer, launcher and signed updates | [0010](decisions/0010-own-installer-and-signed-updates.md), amended by [0014](decisions/0014-nightly-update-channel.md) (nightly channel) |
 | The Trainer stays an external Python tool; training runs in the main window | [0002](decisions/0002-trainer-backend.md), amended by [0015](decisions/0015-training-in-the-main-window.md) (no trainer window) |
+| Transport-independent capability protocol and unified tool layer | [0016](decisions/0016-capability-protocol-and-tool-layer.md) |
 | How these docs are organised | [0013](decisions/0013-documentation-structure-and-language.md) |
 
 ## Records and history

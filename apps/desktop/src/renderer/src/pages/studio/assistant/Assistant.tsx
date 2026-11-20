@@ -30,7 +30,7 @@ import { ConfirmCard } from './ConfirmCard'
 import { PlanCard } from './PlanCard'
 import { ProviderDialog } from './ProviderDialog'
 import { ToolTrace, type TraceEntry } from './ToolTrace'
-import { toolDetail } from './format'
+import { acceptStreamEvent, toolDetail } from './format'
 
 /** Survives unmounts so the chat never loses its place. */
 const CONVERSATION_KEY = 'mossstudio.agentConversationId'
@@ -123,6 +123,9 @@ export function Assistant(): React.JSX.Element {
   const [busy, setBusy] = useState(false)
   const [answering, setAnswering] = useState(false)
   const sending = useRef(false)
+  const activeConversationIdRef = useRef<string | null>(null)
+  const boundStreamIdRef = useRef<string | null>(null)
+  activeConversationIdRef.current = conversation?.id ?? null
   const [failedText, setFailedText] = useState<string | null>(null)
   const [streaming, setStreaming] = useState(false)
   const [streamText, setStreamText] = useState('')
@@ -180,6 +183,13 @@ export function Assistant(): React.JSX.Element {
   useEffect(
     () =>
       onEvent<AiStreamEvent>(Events.aiStream, (event) => {
+        const decision = acceptStreamEvent(event, {
+          activeConversationId: activeConversationIdRef.current,
+          boundStreamId: boundStreamIdRef.current,
+          awaitingNewStream: sending.current && activeConversationIdRef.current === null,
+        })
+        if (!decision.accept) return
+        boundStreamIdRef.current = decision.nextBoundStreamId
         if (event.type === 'start') {
           setStreaming(true)
           setStreamText('')
@@ -269,6 +279,7 @@ export function Assistant(): React.JSX.Element {
 
   function newChat(): void {
     if (sending.current) return
+    boundStreamIdRef.current = null
     writeStored(null)
     setConversation(null)
     setMessages([])

@@ -10,34 +10,22 @@ import { Button, ConfirmDialog, useToast } from '../../components/ui'
 import { TitlebarPortal } from '../../components/shell/Titlebar'
 import { AdapterPicker } from '../../components/studio/AdapterPicker'
 import { StudioSidebar } from '../../components/studio/StudioSidebar'
-import { installStudioToolBridge, registerStudioTools, type AddedLayer, type LayerBox, type StudioToolApi } from '../../lib/agentTools'
+import { installStudioToolBridge, registerStudioTools } from '../../lib/agentTools'
 import { call, onEvent } from '../../lib/api'
-import { clampBox } from '../../lib/layout'
 import { useShell } from '../../lib/shell'
 import { useApp } from '../../store'
 import { Assistant } from './assistant/Assistant'
 import { Board, type BoardHandle } from './Board'
-import {
-  addRegion,
-  canvasFromPicture,
-  canvasFromReuse,
-  createLayoutCanvas,
-  defaultSettings,
-  editLayer,
-  removedWith,
-  resizeCanvas,
-  sceneCanvas,
-  settingsFrom,
-  type RegionInput,
-} from './canvases'
-import { clampDimension, isSeedLocked, nearestQuality, qualityPreset, samplingForBundle, SEED_MAX } from './defaults'
+import { canvasFromPicture, canvasFromReuse, createLayoutCanvas, defaultSettings, removedWith, settingsFrom } from './canvases'
+import { samplingForBundle } from './defaults'
 import { InspectorPanel } from './InspectorPanel'
 import type { InputsWiring } from './InputsSection'
 import { ACTIVE_JOB_STATES } from './jobStatus'
 import { OutputViewer } from './OutputViewer'
 import { ParamsPanel } from './ParamsPanel'
 import { ProjectSwitcher } from './ProjectSwitcher'
-import { canvasDescription, compileCanvasPrompt, withDescription } from './prompt'
+import { withDescription } from './prompt'
+import { registerStudioCapabilities, type StudioCapabilityDeps } from './studioCapabilities'
 import type { BoardTool } from './RegionLayer'
 import { GbcPanel } from './GbcPanel'
 import { sizeLike, withParsedRegions } from './pictureRegions'
@@ -574,210 +562,47 @@ export function StudioPage(): React.JSX.Element {
     void run(selected.id)
   }
 
-  // The assistant drives the canvas through these; every call reads live state.
-  const live = useRef({ project, generate })
-  live.current = { project, generate }
+  // Capabilities read live Studio state at call time; every pack mounts through the shared host.
+  const live = useRef<StudioCapabilityDeps>({
+    project,
+    generate,
+    cancelJob,
+    catalog,
+    preferredBundleId,
+    engineReadiness,
+    settings,
+    update,
+    remoteHost,
+    boardFeatures,
+    controlAdapters,
+    controlAdaptersLoaded,
+    gpuInventory,
+    jobs,
+  })
+  live.current = {
+    project,
+    generate,
+    cancelJob,
+    catalog,
+    preferredBundleId,
+    engineReadiness,
+    settings,
+    update,
+    remoteHost,
+    boardFeatures,
+    controlAdapters,
+    controlAdaptersLoaded,
+    gpuInventory,
+    jobs,
+  }
   useEffect(() => installStudioToolBridge(), [])
   useEffect(() => {
-    const current = (): ProjectCanvas | null => {
-      const { project: p } = live.current
-      return p.canvasesRef.current.find((canvas) => canvas.id === p.selectedRef.current) ?? null
+    const { api, dispose } = registerStudioCapabilities(() => live.current)
+    registerStudioTools(api, { mountLegacyPacks: false })
+    return () => {
+      registerStudioTools(null)
+      dispose()
     }
-    const editable = (): ProjectCanvas => {
-      const canvas = current()
-      if (!canvas) throw new Error('先在画布上选中一个画面')
-      if (canvas.kind === 'style') throw new Error('选中的是风格，只能改它的描述')
-      if (canvas.kind !== 'layout') throw new Error('选中的是生成结果，不能修改；请先复制成新画面')
-      return canvas
-    }
-    /** Normalised tool box to canvas pixels; edited boxes are clamped here, not invented. */
-    const pixelsOf = (value: LayerBox, canvas: ProjectCanvas): [number, number, number, number] =>
-      clampBox(
-        [value.x * canvas.width, value.y * canvas.height, (value.x + value.w) * canvas.width, (value.y + value.h) * canvas.height],
-        canvas.width,
-        canvas.height,
-      )
-    const layerAt = (canvas: ProjectCanvas, index: number): ProjectLayer => {
-      const layer = canvas.layers[index - 1]
-      if (!layer) throw new Error(`没有第 ${index} 个区域；先用 studio_read_context 看一遍画面`)
-      return layer
-    }
-    const addOne = (input: RegionInput): AddedLayer => {
-      const canvas = editable()
-      if (canvas.upscale) throw new Error('放大按原图重画，没有区域')
-      const { canvas: next, region } = addRegion(canvas, input)
-      live.current.project.updateCanvas(canvas.id, () => next)
-      return { added: region.id, bbox: region.bbox, index: canvas.layers.length + 1 }
-    }
-    /** One canvas in the shape the tools read, whichever canvas it is. */
-    const viewOf = (canvas: ProjectCanvas) => ({
-      id: canvas.id,
-      kind: canvas.kind,
-      title: canvas.title,
-      width: canvas.width,
-      height: canvas.height,
-      steps: canvas.steps,
-      cfg: canvas.cfg,
-      seed: isSeedLocked(canvas) ? canvas.seed : 'random',
-      prompt: canvasDescription(canvas),
-      negative: canvas.negative,
-      layers: canvas.layers.map((layer, index) => ({
-        index: index + 1,
-        label: layer.kind,
-        caption: layer.caption,
-        text: layer.text,
-        bbox: layer.bbox.map((value) => Math.round(value)),
-        visible: layer.visible !== false,
-      })),
-    })
-    const api: StudioToolApi = {
-      state: () => {
-        const canvas = current()
-        return { hasSelection: canvas !== null, editable: canvas?.kind === 'layout' }
-      },
-      readContext: () => {
-        const { project: p } = live.current
-        const canvas = current()
-        return {
-          project: { id: p.projectId, name: p.projectName },
-          canvases: p.canvasesRef.current.map((item) => ({
-            id: item.id,
-            kind: item.kind,
-            title: item.title,
-            width: item.width,
-            height: item.height,
-            jobState: item.jobState ?? 'idle',
-            outputs: item.outputs?.length ?? 0,
-          })),
-          selected: canvas ? viewOf(canvas) : null,
-          notes:
-            'prompt is the overall description; the final prompt is compiled from it plus the visible regions. bbox is [x1,y1,x2,y2] in canvas pixels; the tools take normalised 0-1 x/y/w/h. steps snap to 8 (fast), 20 (standard) or 50 (fine). A text region needs both strings: caption is the lettering style, text is exactly what is rendered.',
-        }
-      },
-      readCanvas: (id) => {
-        const { project: p } = live.current
-        const canvas = p.canvasesRef.current.find((item) => item.id === id)
-        if (!canvas) throw new Error(`没有这个画面：${id}`)
-        return { ...viewOf(canvas), selected: p.selectedRef.current === id }
-      },
-      snapshot: () => {
-        const canvas = current()
-        if (!canvas) return null
-        const { project: p } = live.current
-        return {
-          title: canvas.title,
-          description: canvasDescription(canvas),
-          width: canvas.width,
-          height: canvas.height,
-          regions: canvas.layers.map((layer) => ({
-            kind: layer.kind,
-            caption: layer.caption,
-            text: layer.text,
-            visible: layer.visible !== false,
-          })),
-          project: {
-            name: p.projectName,
-            selectedId: canvas.id,
-            canvases: p.canvasesRef.current.map((item) => ({
-              id: item.id,
-              title: item.title,
-              kind: item.kind,
-              width: item.width,
-              height: item.height,
-              jobState: item.jobState ?? 'idle',
-            })),
-          },
-        }
-      },
-      setPrompt: (value) => {
-        // A 风格's description is written the same way.
-        const selectedStyle = current()
-        const canvas = selectedStyle?.kind === 'style' ? selectedStyle : editable()
-        live.current.project.updateCanvas(canvas.id, (item) => withDescription(item, value))
-        return { written: value.length }
-      },
-      setSampler: (patch) => {
-        const canvas = editable()
-        // The running job already took these values; changing them here would make
-        // the canvas describe a different picture than the one being drawn.
-        if (canvas.jobState && ACTIVE_JOB_STATES.has(canvas.jobState)) {
-          throw new Error('这张画面正在生成，尺寸和采样先别改；等它跑完，或者先取消')
-        }
-        if (canvas.upscale && (patch.width !== undefined || patch.height !== undefined))
-          throw new Error('放大的尺寸跟着原图走，只能改放大倍数')
-        let next = canvas
-        if (patch.width !== undefined || patch.height !== undefined) {
-          next = resizeCanvas(
-            next,
-            clampDimension(patch.width ?? next.width, next.width),
-            clampDimension(patch.height ?? next.height, next.height),
-          )
-        }
-        if (patch.steps !== undefined) {
-          const preset = qualityPreset(nearestQuality(patch.steps))
-          next = { ...next, steps: preset.steps, cfg: patch.cfg === undefined ? preset.cfg : next.cfg }
-        }
-        if (patch.cfg !== undefined) next = { ...next, cfg: Math.min(20, Math.max(0, patch.cfg)) }
-        if (patch.seed !== undefined) next = { ...next, seed: Math.min(SEED_MAX, Math.max(0, Math.round(patch.seed))), seedLocked: true }
-        live.current.project.updateCanvas(canvas.id, () => next)
-        return { width: next.width, height: next.height, steps: next.steps, cfg: next.cfg, seed: isSeedLocked(next) ? next.seed : 'random' }
-      },
-      addLayer: ({ label, caption, bbox }) => addOne({ kind: label, caption, bbox }),
-      addTextLayer: ({ caption, text, bbox }) => addOne({ kind: 'text', caption, text, bbox }),
-      updateLayer: ({ index, patch }) => {
-        const canvas = editable()
-        const layer = layerAt(canvas, index)
-        const next = editLayer(layer, { ...patch, bbox: patch.bbox ? pixelsOf(patch.bbox, canvas) : undefined }, canvas)
-        live.current.project.updateCanvas(canvas.id, (item) => ({
-          ...item,
-          layers: item.layers.map((entry) => (entry.id === layer.id ? next : entry)),
-        }))
-        return { updated: layer.id, index }
-      },
-      removeLayer: (index) => {
-        const canvas = editable()
-        const layer = layerAt(canvas, index)
-        live.current.project.updateCanvas(canvas.id, (item) => ({
-          ...item,
-          layers: item.layers.filter((entry) => entry.id !== layer.id),
-        }))
-        return { removed: layer.id, index }
-      },
-      createScenes: (scenes) => {
-        const { project: p } = live.current
-        const base = settingsFrom(current())
-        const made: ProjectCanvas[] = []
-        for (const scene of scenes) {
-          made.push(sceneCanvas(scene, [...p.canvasesRef.current, ...made], base))
-        }
-        p.setCanvases([...p.canvasesRef.current, ...made])
-        const last = made[made.length - 1]
-        if (last) p.select(last.id)
-        return { created: made.map((item) => ({ id: item.id, title: item.title })) }
-      },
-      selectCanvas: (id) => {
-        const { project: p } = live.current
-        const canvas = p.canvasesRef.current.find((item) => item.id === id)
-        if (!canvas) throw new Error(`没有这个画面：${id}`)
-        p.select(id)
-        return { selected: id, title: canvas.title }
-      },
-      generate: async (value) => {
-        const canvas = editable()
-        if (value?.trim()) live.current.project.updateCanvas(canvas.id, (item) => withDescription(item, value))
-        const result = await live.current.generate(canvas.id)
-        if (!result.queued) throw new Error(result.error ?? '没有开始生成')
-        return result
-      },
-      problems: () => {
-        const canvas = current()
-        if (!canvas) return []
-        const compiled = compileCanvasPrompt(canvas)
-        return compiled.ok ? [] : compiled.errors
-      },
-    }
-    registerStudioTools(api)
-    return () => registerStudioTools(null)
   }, [])
 
   // Keyboard: Ctrl+Enter generates; V / H / M pick tools; Delete removes a region.

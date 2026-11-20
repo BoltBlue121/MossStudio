@@ -48,15 +48,17 @@ function run(
 ) {
   const events: AiStreamEvent[] = []
   const calls: AiToolCall[] = []
+  const callConversationIds: Array<string | undefined> = []
   const promise = api.chat(input, {
     emit: (event) => events.push(event),
-    runTool: async (call) => {
+    runTool: async (call, _mode, conversationId) => {
       calls.push(call)
+      callConversationIds.push(conversationId)
       return typeof toolResult === 'function' ? toolResult(call) : toolResult
     },
     tools,
   })
-  return { promise, events, calls }
+  return { promise, events, calls, callConversationIds }
 }
 
 describe('providers', () => {
@@ -283,9 +285,10 @@ describe('chat with an OpenAI-compatible provider', () => {
         }),
       )
     }
-    const { promise, calls } = run(api, { providerId: id, message: 'loop' })
-    await promise
+    const { promise, calls, callConversationIds } = run(api, { providerId: id, message: 'loop' })
+    const result = await promise
     expect(calls).toHaveLength(4)
+    expect(callConversationIds).toEqual(Array(4).fill(result.conversation.id))
     expect(requests).toHaveLength(4)
   })
 

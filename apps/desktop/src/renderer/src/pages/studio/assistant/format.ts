@@ -1,8 +1,40 @@
-import { toolByName } from '@shared/agent/registry'
+import type { AiStreamEvent } from '@shared/ai'
+import { BUILTIN_CAPABILITY_REGISTRY } from '@shared/capabilities'
 
-/** Plain-language name of a tool, from the one place that defines it. */
+/** Plain-language name of a tool or capability, from the one registry that defines it. */
 export function toolLabel(name: string): string {
-  return toolByName(name)?.title ?? name
+  return BUILTIN_CAPABILITY_REGISTRY.getAction(name)?.descriptor.title ?? name
+}
+
+export interface StreamFilterState {
+  activeConversationId: string | null
+  boundStreamId: string | null
+  awaitingNewStream: boolean
+}
+
+/**
+ * Decide whether an incoming `Events.aiStream` payload belongs to the currently
+ * displayed conversation. Prevents concurrent or background streams from
+ * bleeding into another open chat.
+ */
+export function acceptStreamEvent(event: AiStreamEvent, state: StreamFilterState): { accept: boolean; nextBoundStreamId: string | null } {
+  const clearsStream = event.type === 'done' || event.type === 'error'
+  if (state.boundStreamId) {
+    if (event.conversationId !== state.boundStreamId) {
+      return { accept: false, nextBoundStreamId: state.boundStreamId }
+    }
+    return { accept: true, nextBoundStreamId: clearsStream ? null : state.boundStreamId }
+  }
+  if (state.activeConversationId) {
+    if (event.conversationId !== state.activeConversationId) {
+      return { accept: false, nextBoundStreamId: null }
+    }
+    return { accept: true, nextBoundStreamId: clearsStream ? null : event.conversationId }
+  }
+  if (state.awaitingNewStream && event.type === 'start') {
+    return { accept: true, nextBoundStreamId: event.conversationId }
+  }
+  return { accept: false, nextBoundStreamId: null }
 }
 
 /** Long tool payloads (a whole canvas list) are summarised, never dumped. */
