@@ -300,6 +300,7 @@ describe('first run', () => {
     await page.getByRole('button', { name: '使用已有模型', exact: true }).click()
     const idle = page.getByRole('dialog', { name: '导入模型' })
     await expect.poll(() => idle.isVisible()).toBe(true)
+    await expect.poll(() => page.evaluate(() => document.activeElement?.textContent?.trim())).toBe('选择文件…')
     await idle.getByRole('button', { name: '选择文件夹…' }).click()
     // A model folder is read without the engine, so it is recognised before one is installed.
     const done = page.getByRole('dialog', { name: '可以用了：MOSS-Image SFT' })
@@ -341,7 +342,7 @@ describe('first run', () => {
     await app.start()
     await page.getByRole('button', { name: '使用已有模型', exact: true }).click()
     await page.getByRole('dialog', { name: '导入模型' }).getByRole('button', { name: '选择文件…' }).click()
-    const waiting = page.getByRole('dialog', { name: '正在识别 1 个文件…' })
+    const waiting = page.getByRole('dialog', { name: '1 个文件等引擎来识别' })
     await expect.poll(() => waiting.getByText('装好引擎后才能认出这些文件').isVisible()).toBe(true)
     await app.screenshot('setup-import-waiting-engine-light')
     await waiting.getByRole('button', { name: '装引擎' }).click()
