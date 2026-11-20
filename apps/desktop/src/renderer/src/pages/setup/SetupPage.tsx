@@ -9,7 +9,9 @@ import { bytes } from '../../lib/format'
 import { preparationAmount, timeLeftLabel, type Preparation } from '../../lib/preparation'
 import { useApp } from '../../store'
 import { Notice } from '../../components/common/Notice'
-import { Button, Modal, ProgressBar, Spinner, cn, useToast } from '../../components/ui'
+import { Button, ProgressBar, Spinner, cn, useToast } from '../../components/ui'
+import { ModelDropOverlay, ModelImportSheet } from '../../components/ModelImport'
+import { useModelImport } from '../../lib/modelImport'
 import { pickFolder } from '../settings/fields'
 import { HostDialog } from '../settings/HostDialog'
 import { emptyHostForm, hostPathsPatch, hostSavePayload, type HostForm } from '../settings/hostForm'
@@ -174,12 +176,13 @@ export function SetupPage(): React.JSX.Element {
   const toast = useToast()
   const settings = useApp((state) => state.settings)
   const saveSettings = useApp((state) => state.saveSettings)
-  const { view, progress, modelName, starting, start, installEngine, redetect, redetecting, chooseModelFolder, usingFolder, info } =
-    useSetup()
+  const { view, progress, modelName, starting, start, installEngine, redetect, redetecting, info } = useSetup()
   const catalog = useApp((state) => state.catalog)
   const engine = useApp((state) => state.engineReadiness)
   const modelLocation = useModelLocation(null)
-  const [sharedOpen, setSharedOpen] = useState(false)
+  // 使用已有模型 is the import sheet, with the shared model folders under its two buttons.
+  const sharedOpen = useModelImport((state) => state.open)
+  const closeImport = useModelImport((state) => state.close)
   const [combining, setCombining] = useState(false)
   const [selecting, setSelecting] = useState(false)
   const reusePending = Boolean(settings?.onboardingReusePending)
@@ -243,23 +246,11 @@ export function SetupPage(): React.JSX.Element {
     void start(waiting)
   }, [running, waiting, starting, start, sharedOpen, combining, reusePending])
 
-  async function pickLocalFolder(): Promise<void> {
-    try {
-      const outcome = await chooseModelFolder()
-      if (outcome) {
-        toast.push(outcome.message, outcome.ready ? 'success' : 'info')
-        if (outcome.ready) setSharedOpen(false)
-      }
-    } catch (error) {
-      toast.push(errorText(error), 'error')
-    }
-  }
-
   async function selectSharedModel(id: string): Promise<void> {
     setSelecting(true)
     try {
       await saveSettings({ onboardingModelId: id, onboardingReusePending: false })
-      setSharedOpen(false)
+      closeImport()
       setCombining(false)
     } finally {
       setSelecting(false)
@@ -460,7 +451,7 @@ export function SetupPage(): React.JSX.Element {
             </div>
             <div className="flex flex-wrap items-center gap-3">
               {modelStep && modelStep.state !== 'done' ? (
-                <Button tone="ghost" size="sm" onClick={() => setSharedOpen(true)}>
+                <Button tone="ghost" size="sm" onClick={() => useModelImport.getState().show()}>
                   使用已有模型
                 </Button>
               ) : null}
@@ -482,8 +473,12 @@ export function SetupPage(): React.JSX.Element {
           </>
         )}
       </div>
-      {sharedOpen ? (
-        <Modal open title="使用已有模型" onClose={() => setSharedOpen(false)} width="max-w-2xl">
+      <ModelDropOverlay />
+      <ModelImportSheet
+        useLabel="用这个模型"
+        onUse={(id) => void selectSharedModel(id).catch((error: unknown) => toast.push(errorText(error), 'error'))}
+        onInstallEngine={() => void prepareEngineForSharedModels()}
+        extra={
           <div className="flex flex-col gap-4">
             <ModelSources reload={engine?.state} />
             {shared
@@ -502,7 +497,7 @@ export function SetupPage(): React.JSX.Element {
               <Button
                 tone="secondary"
                 onClick={() => {
-                  setSharedOpen(false)
+                  closeImport()
                   setCombining(true)
                 }}
               >
@@ -514,12 +509,9 @@ export function SetupPage(): React.JSX.Element {
                 先准备引擎
               </Button>
             ) : null}
-            <Button tone="ghost" size="sm" disabled={usingFolder} onClick={() => void pickLocalFolder()}>
-              {usingFolder ? <Spinner /> : null}已有模型文件…
-            </Button>
           </div>
-        </Modal>
-      ) : null}
+        }
+      />
       {combining && catalog ? (
         <CombinationDialog
           open
