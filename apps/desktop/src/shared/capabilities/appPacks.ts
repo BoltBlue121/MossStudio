@@ -246,6 +246,18 @@ export const APP_ACTION_SCHEMAS = {
     packId: z.string().trim().max(120).optional().describe('Optional capability pack id filter.'),
     actionId: z.string().trim().max(120).optional().describe('Optional capability action id filter.'),
   }),
+  'system.guide.read': z.strictObject({
+    topic: z
+      .enum(['all', 'tools', 'promptcraft', 'layout'])
+      .optional()
+      .describe('Which guide to read: tools, promptcraft, layout, or all (default).'),
+    profile: z.enum(['atomic', 'proposal-only', 'custom']).optional().describe('Optional Tool Profile to synthesize the Skill guide for.'),
+    enabledPacks: z
+      .array(z.string().trim().min(1).max(120))
+      .max(64)
+      .optional()
+      .describe('Optional explicit pack allowlist when profile is custom.'),
+  }),
 } as const
 
 export type AppActionId = keyof typeof APP_ACTION_SCHEMAS
@@ -1202,6 +1214,20 @@ export const APP_CAPABILITY_PACKS: readonly BuiltinCapabilityPack[] = [
         requires: [],
         headless: 'supported',
         summarize: () => '查看操作留痕记录',
+      },
+      {
+        id: 'system.guide.read',
+        title: '读取操作与提示词指南（Skill）',
+        description:
+          'Return the dynamically synthesized Workbench Tool Skill together with the official MOSS-Image Promptcraft and Layout Design Skills.',
+        inputSchema: APP_ACTION_SCHEMAS['system.guide.read'],
+        target: 'main',
+        scope: 'application',
+        effects: ['read'],
+        policyFloor: 'auto',
+        requires: [],
+        headless: 'supported',
+        summarize: (args) => `读取 ${text(args.topic) || '全部'} 指南`,
       },
     ],
     contexts: [],

@@ -1,6 +1,12 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { AppActionArgs } from '@shared/capabilities'
+import {
+  BUILTIN_CAPABILITY_REGISTRY,
+  composeOfficialGuide,
+  projectCapabilities,
+  type AppActionArgs,
+  type CapabilityId,
+} from '@shared/capabilities'
 import { writeFileAtomic } from '../lib/atomicWrite'
 import { paths } from '../lib/paths'
 import { listControlAdapters } from '../services/controlAdapters'
@@ -236,6 +242,26 @@ export function createBuiltinMainHandlers(): Record<string, MainCapabilityHandle
       return JSON.parse(readFileSync(file, 'utf8')) as unknown
     }),
     'system.audit.recent': typed<'system.audit.recent'>((query) => ({ entries: listCapabilityAudit(query) })),
+    'system.guide.read': typed<'system.guide.read'>(({ topic, profile, enabledPacks }) => {
+      const settings = getSettings()
+      const projected = projectCapabilities(BUILTIN_CAPABILITY_REGISTRY, {
+        profile: profile ?? 'atomic',
+        enabledFlags: {
+          gbcEnabled: settings.gbcEnabled === true,
+          trainingEnabled: settings.trainingEnabled === true,
+          remoteHostsEnabled: settings.remoteHostsEnabled === true,
+        },
+        enabledPacks: enabledPacks as CapabilityId[] | undefined,
+      })
+      const activeTopic = topic ?? 'all'
+      return {
+        topic: activeTopic,
+        profile: projected.profile,
+        actionCount: projected.actions.length,
+        ...projected.skill,
+        markdown: composeOfficialGuide(projected.skill.markdown, activeTopic),
+      }
+    }),
   }
 }
 
