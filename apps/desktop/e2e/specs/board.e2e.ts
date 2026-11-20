@@ -512,7 +512,7 @@ describe('studio board', () => {
     }
   })
 
-  it('draws a box on the empty board to pick cards; they move together, 排整齐 lines them up, 删除 asks once', async () => {
+  it('draws a box on the empty board to pick cards; they move together, 排整齐 lines them up, 删除 takes them and 撤销 brings them back', async () => {
     const page = await openBoard(app)
     const saved = (id: string): Promise<{ x: number; y: number } | undefined> =>
       page.evaluate((cardId) => {
@@ -556,16 +556,20 @@ describe('studio board', () => {
     expect((await saved('img-2'))!.x).toBeGreaterThan((await saved('img-1'))!.x)
     await app.screenshot('board-picked-light')
 
+    // 删除 takes both at once, without asking: the toast's 撤销 brings them back where they were.
+    const tidied = { a: (await saved('img-1'))!, b: (await saved('img-2'))! }
     await bar.getByRole('button', { name: '删除' }).click()
-    const dialog = page.getByRole('dialog', { name: '删除这 2 张卡片？' })
-    await dialog.waitFor()
-    await dialog.getByRole('button', { name: '删除' }).click()
     await expect.poll(() => page.locator('article[data-canvas-card]').count()).toBe(1)
+    expect(await page.getByRole('dialog').count()).toBe(0)
     expect(await page.locator('article[data-canvas-card="canvas-1"]').count()).toBe(1)
     expect(await bar.count()).toBe(0)
+    const toast = page.getByRole('status').filter({ hasText: '已删除 2 张卡片' })
+    await toast.getByRole('button', { name: '撤销' }).click()
+    await expect.poll(() => page.locator('article[data-canvas-card]').count()).toBe(3)
+    await expect.poll(async () => [await saved('img-1'), await saved('img-2')], { timeout: 10_000 }).toEqual([tidied.a, tidied.b])
   })
 
-  it('Shift-click adds a card, Esc keeps only the selected one, Ctrl+A picks all, Delete asks once', async () => {
+  it('Shift-click adds a card, Esc keeps only the selected one, Ctrl+A picks all, Delete takes them and Ctrl+Z brings them back', async () => {
     const page = await openBoard(app)
     const bar = page.locator('[data-selection-bar]')
     await page
@@ -590,11 +594,12 @@ describe('studio board', () => {
 
     await page.keyboard.press('Control+a')
     await expect.poll(() => bar.getAttribute('aria-label')).toBe('已选 3 张')
+    // Delete takes them all without asking; Ctrl+Z brings all three back.
     await page.keyboard.press('Delete')
-    const dialog = page.getByRole('dialog', { name: '删除这 3 张卡片？' })
-    await dialog.waitFor()
-    await dialog.getByRole('button', { name: '取消' }).click()
-    expect(await page.locator('article[data-canvas-card]').count()).toBe(3)
+    await expect.poll(() => page.locator('article[data-canvas-card]').count()).toBe(0)
+    expect(await page.getByRole('dialog').count()).toBe(0)
+    await page.keyboard.press('Control+z')
+    await expect.poll(() => page.locator('article[data-canvas-card]').count()).toBe(3)
 
     // A plain click on one card picks it alone.
     await page.locator('article[data-canvas-card="canvas-1"] header button').first().click()
@@ -790,17 +795,28 @@ describe('studio board', () => {
     await expect.poll(() => savedInputs(page).then((inputs) => inputs?.mask ?? null), { timeout: 10_000 }).toBeNull()
   })
 
-  it('a new stroke replaces the mask file it painted over (so old masks do not pile up)', async () => {
+  it('a new stroke keeps the mask it painted over on disk while undo can bring it back', async () => {
     const page = await openBoard(app, { inputs: { init: { link: { canvasId: 'img-1' }, strength: 0.6 } } })
+    const masks = '/fixture/projects/project-1/assets'
     await page.getByRole('button', { name: '遮罩', exact: true }).click()
     await paintStroke(page)
-    await expect.poll(() => savedInputs(page).then((inputs) => inputs?.mask?.path ?? null), { timeout: 10_000 }).not.toBeNull()
-    const first = await page.evaluate(() => window.__mock.callsTo('studio:save-mask')[0] as { replaces?: string })
-    expect(first.replaces).toBeUndefined()
+    await expect
+      .poll(() => savedInputs(page).then((inputs) => inputs?.mask?.path ?? null), { timeout: 10_000 })
+      .toBe(`${masks}/mask-canvas-1.png`)
     await paintStroke(page)
-    await expect.poll(() => app.calls('studio:save-mask').then((calls) => calls.length), { timeout: 5_000 }).toBe(2)
-    const second = await page.evaluate(() => window.__mock.callsTo('studio:save-mask')[1] as { replaces?: string })
-    expect(second.replaces).toBe('/fixture/projects/project-1/assets/mask-canvas-1.png')
+    await expect
+      .poll(() => savedInputs(page).then((inputs) => inputs?.mask?.path ?? null), { timeout: 10_000 })
+      .toBe(`${masks}/mask-canvas-1-2.png`)
+    // Nothing is deleted at once: the save tells main the painted-over mask is still held by undo.
+    const saves = await page.evaluate(() => window.__mock.callsTo('studio:save-mask') as Array<{ replaces?: string }>)
+    expect(saves.map((call) => call.replaces)).toEqual([undefined, undefined])
+    await expect
+      .poll(() => app.calls<{ keepMasks?: string[] }>('projects:save').then((calls) => calls.at(-1)?.keepMasks ?? []))
+      .toContain(`${masks}/mask-canvas-1.png`)
+    await page.getByRole('toolbar', { name: '画布工具' }).getByRole('button', { name: '撤销' }).click()
+    await expect
+      .poll(() => savedInputs(page).then((inputs) => inputs?.mask?.path ?? null), { timeout: 10_000 })
+      .toBe(`${masks}/mask-canvas-1.png`)
   })
 
   it('turns the mask tool off with a reason until a start picture is linked', async () => {

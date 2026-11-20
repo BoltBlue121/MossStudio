@@ -2,6 +2,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JobRecord, ProjectCanvas, ProjectDocument, ProjectSummary } from '@shared/types'
 import { electronStudioClient, type StudioClient } from '../../lib/studioClient'
 import { applyJobs, copyAsLayout, createLayoutCanvas, migrateCanvases, removeCanvasFrom, settingsFrom } from './canvases'
+import {
+  applyStep,
+  createHistory,
+  diffCanvases,
+  heldMasks,
+  isEmptyStep,
+  isTurnStep,
+  liveSteps,
+  mergeChanges,
+  record,
+  removesRunning,
+  stepLabel,
+  turnState,
+  type CanvasChange,
+  type HistoryStep,
+  type TurnState,
+} from './history'
 import { foldedRunIds, withoutUnstartedRuns } from './runs'
 import { UNTITLED_PROJECT, nextProjectName } from './defaults'
 import { useLiveState } from './useLiveState'
@@ -14,6 +31,49 @@ function snapshotOf(name: string, canvases: readonly ProjectCanvas[], selectedCa
 }
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+
+type CanvasesUpdate = ProjectCanvas[] | ((previous: ProjectCanvas[]) => ProjectCanvas[])
+
+/** A change the history should treat as one step, whenever it lands: an assistant turn. */
+export interface StepGroup {
+  key: string
+  label: string
+  /** The assistant tool call that makes this change. */
+  call?: string
+}
+
+/**
+ * What an undo or redo did: the step's name and id, `'running'` when it would
+ * take off a card whose run is still going (nothing changed), or null when
+ * there was nothing to do.
+ */
+export type StepOutcome = { label: string; id: number } | 'running' | null
+
+/** Undo and redo of the board's canvases (see history.ts). */
+export interface StudioHistory {
+  canUndo: boolean
+  canRedo: boolean
+  /** Bumped whenever the steps change shape, so views that read `turn` render again. */
+  version: number
+  /** Takes back the latest step; with `only`, just while that step is the latest. */
+  undo: (only?: number) => StepOutcome
+  redo: (only?: number) => StepOutcome
+  /** The id of the step undo (or redo) would take now, to tie a toast's button to it. */
+  top: (direction: 'undo' | 'redo') => number | null
+  /** Edits made while `run` runs (its synchronous part) join one step with the other edits of `group.key`. */
+  within: <T>(group: StepGroup, run: () => T) => T
+  /** Edits made while `run` runs join step `id`, if it is still the latest (the second half of an action that awaited). */
+  join: <T>(id: number | null, run: () => T) => T
+  /** Where the changes of an assistant turn, known by its tool calls, stand. */
+  turn: (calls: readonly string[]) => TurnState | null
+  /** Undo (or redo) exactly that turn's steps; null when other steps are in the way. */
+  undoTurn: (calls: readonly string[]) => StepOutcome
+  redoTurn: (calls: readonly string[]) => StepOutcome
+}
+
+function isFormField(element: Element | null): boolean {
+  return Boolean(element?.closest('input, textarea, select, [contenteditable="true"]'))
+}
 
 export interface StudioProject {
   loaded: boolean
@@ -29,8 +89,11 @@ export interface StudioProject {
   selectedCanvas: ProjectCanvas | null
   saveStatus: SaveStatus
   saveError: string | null
-  setCanvases: (next: ProjectCanvas[] | ((previous: ProjectCanvas[]) => ProjectCanvas[])) => void
-  updateCanvas: (id: string, patch: Partial<ProjectCanvas> | ((canvas: ProjectCanvas) => ProjectCanvas)) => void
+  /** A user edit: saved, and one step of undo. `label` names the step when the change alone would not say it. */
+  setCanvases: (next: CanvasesUpdate, label?: string) => void
+  /** What a run writes (its result card, job id, seed): saved, but never a step of undo. */
+  setRunCanvases: (next: CanvasesUpdate) => void
+  updateCanvas: (id: string, patch: Partial<ProjectCanvas> | ((canvas: ProjectCanvas) => ProjectCanvas), label?: string) => void
   select: (id: string | null) => void
   addCanvas: (source?: ProjectCanvas) => ProjectCanvas
   /** Removes the canvas and every link that pointed at it; returns how many links went. */
@@ -40,6 +103,7 @@ export interface StudioProject {
   newProject: () => Promise<void>
   rename: (name: string) => void
   deleteProject: (id: string) => Promise<void>
+  history: StudioHistory
 }
 
 /**
@@ -89,6 +153,102 @@ export function useStudioProject(options: {
   const knownUpdatedAt = useRef<string | null>(null)
   const loadedRef = useRef(false)
   loadedRef.current = loaded
+  const jobsRef = useRef(options.jobs)
+  jobsRef.current = options.jobs
+
+  const history = useRef(createHistory())
+  const [historyShape, setHistoryShape] = useState({ canUndo: false, canRedo: false, version: 0 })
+  const reshape = useCallback(() => {
+    const { undo, redo } = history.current
+    setHistoryShape((shape) => ({
+      canUndo: liveSteps(undo).length > 0,
+      canRedo: liveSteps(redo).length > 0,
+      version: shape.version + 1,
+    }))
+  }, [])
+  /** The assistant turn whose edits are being made right now. */
+  const group = useRef<StepGroup | null>(null)
+  /** Set while edits join an earlier step (`join`): that step's token. */
+  const joining = useRef<string | null>(null)
+  /** A pointer gesture's edits, held back until the pointer is let go: a drag records nothing while it moves. */
+  const gesture = useRef<{ token: string; selected: string | null; changes: Map<string, CanvasChange> } | null>(null)
+  const flushGesture = (): void => {
+    const held = gesture.current
+    gesture.current = null
+    if (held && record(history.current, [...held.changes.values()], { token: held.token, selected: held.selected })) reshape()
+  }
+  const flushGestureRef = useRef(flushGesture)
+  flushGestureRef.current = flushGesture
+  /**
+   * What makes edits one step when no turn groups them: one pointer gesture
+   * (a box dragged or resized, a slider pulled), one visit to a form field
+   * (typing a description is one step per focus, not per key), else one task
+   * (a group of cards moved or deleted together).
+   */
+  const moment = useRef({ tick: 0, tickPending: false, gesture: 0, pressed: false, focus: 0, focused: null as EventTarget | null })
+  useEffect(() => {
+    const now = moment.current
+    const down = (): void => {
+      now.gesture += 1
+      now.pressed = true
+    }
+    const up = (): void => {
+      now.pressed = false
+      flushGestureRef.current()
+    }
+    const focus = (event: FocusEvent): void => {
+      // Coming back from another window focuses the same field again: still the same visit.
+      if (event.target === now.focused) return
+      now.focused = event.target
+      now.focus += 1
+    }
+    window.addEventListener('pointerdown', down, true)
+    window.addEventListener('pointerup', up, true)
+    window.addEventListener('pointercancel', up, true)
+    window.addEventListener('blur', up)
+    window.addEventListener('focusin', focus, true)
+    return () => {
+      window.removeEventListener('pointerdown', down, true)
+      window.removeEventListener('pointerup', up, true)
+      window.removeEventListener('pointercancel', up, true)
+      window.removeEventListener('blur', up)
+      window.removeEventListener('focusin', focus, true)
+    }
+  }, [])
+  const tokenNow = (): string => {
+    const now = moment.current
+    if (group.current) return `group:${group.current.key}`
+    if (joining.current) return joining.current
+    if (now.pressed) return `pointer:${now.gesture}`
+    if (isFormField(document.activeElement)) return `field:${now.focus}`
+    if (!now.tickPending) {
+      now.tickPending = true
+      queueMicrotask(() => {
+        now.tick += 1
+        now.tickPending = false
+      })
+    }
+    return `tick:${now.tick}`
+  }
+  const note = (previous: ProjectCanvas[], next: ProjectCanvas[], label?: string): void => {
+    const changes = diffCanvases(previous, next)
+    if (!changes.length) return
+    const turn = group.current
+    const token = tokenNow()
+    if (token.startsWith('pointer:') && !label) {
+      if (gesture.current?.token !== token) {
+        flushGesture()
+        gesture.current = { token, selected: selectedRef.current, changes: new Map() }
+      }
+      mergeChanges(gesture.current.changes, changes)
+      return
+    }
+    flushGesture()
+    const options = { token, label: turn?.label ?? label, call: turn?.call, selected: selectedRef.current }
+    if (record(history.current, changes, options)) reshape()
+  }
+  const noteRef = useRef(note)
+  noteRef.current = note
 
   const snapshot = useMemo(() => snapshotOf(projectName, canvases, selectedCanvasId), [projectName, canvases, selectedCanvasId])
   const liveSnapshot = (): string => snapshotOf(projectNameRef.current, canvasesRef.current, selectedRef.current)
@@ -118,6 +278,7 @@ export function useStudioProject(options: {
         const editsIncluded = edits.current
         setSaving((count) => count + 1)
         try {
+          const held = heldMasks(history.current)
           const saved = await client.saveProject({
             id: id ?? undefined,
             name,
@@ -125,10 +286,15 @@ export function useStudioProject(options: {
             selectedCanvasId: selected ?? undefined,
             seriesId: meta.current.seriesId,
             page: meta.current.page,
+            ...(held.length ? { keepMasks: held } : {}),
           })
           if (token.current === startedIn) {
             setProjectId(saved.id)
             setSaveError(null)
+            // Changed while the save was on its way (an undo back to what was saved before
+            // sets no autosave timer, as it matches the old copy): write again.
+            const live = snapshotOf(projectNameRef.current, canvasesRef.current, selectedRef.current)
+            if (live !== sent) queueMicrotask(() => void saveAgain.current())
             lastSaved.current = sent
             savedEdits.current = Math.max(savedEdits.current, editsIncluded)
             knownUpdatedAt.current = saved.updatedAt ?? null
@@ -165,6 +331,8 @@ export function useStudioProject(options: {
     },
     [client, refreshProjects, setCanvases, setProjectId, canvasesRef, projectIdRef, projectNameRef, selectedRef],
   )
+  const saveAgain = useRef(saveNow)
+  saveAgain.current = saveNow
 
   /** Apply a loaded document (or a fresh one) as the open project. */
   const adopt = useCallback(
@@ -192,6 +360,10 @@ export function useStudioProject(options: {
       // Loading is not an edit; a document that still needs writing (an empty
       // project given its first canvas) counts as one.
       savedEdits.current = savedState || !doc.id ? edits.current : edits.current - 1
+      // Another project's steps would write into this one.
+      history.current = createHistory()
+      gesture.current = null
+      reshape()
       setProjectId(doc.id)
       setProjectName(doc.name)
       setCanvases(list)
@@ -200,7 +372,7 @@ export function useStudioProject(options: {
       // A fresh project counts as saved until the user changes something.
       lastSaved.current = savedState || !doc.id ? snapshotOf(doc.name, list, selected?.id ?? null) : ''
     },
-    [setCanvases, setProjectId, setProjectName, setSelected],
+    [setCanvases, setProjectId, setProjectName, setSelected, reshape],
   )
 
   const blankProject = useCallback(
@@ -310,7 +482,16 @@ export function useStudioProject(options: {
 
   /** setCanvases / select for callers: these are local edits. */
   const editCanvases = useCallback(
-    (next: ProjectCanvas[] | ((previous: ProjectCanvas[]) => ProjectCanvas[])) => {
+    (next: CanvasesUpdate, label?: string) => {
+      edits.current += 1
+      const previous = canvasesRef.current
+      setCanvases(next)
+      noteRef.current(previous, canvasesRef.current, label)
+    },
+    [setCanvases, canvasesRef],
+  )
+  const setRunCanvases = useCallback(
+    (next: CanvasesUpdate) => {
       edits.current += 1
       setCanvases(next)
     },
@@ -325,12 +506,14 @@ export function useStudioProject(options: {
   )
 
   const updateCanvas = useCallback(
-    (id: string, patch: Partial<ProjectCanvas> | ((canvas: ProjectCanvas) => ProjectCanvas)) => {
-      editCanvases((previous) =>
-        previous.map((canvas) => {
-          if (canvas.id !== id) return canvas
-          return typeof patch === 'function' ? patch(canvas) : { ...canvas, ...patch }
-        }),
+    (id: string, patch: Partial<ProjectCanvas> | ((canvas: ProjectCanvas) => ProjectCanvas), label?: string) => {
+      editCanvases(
+        (previous) =>
+          previous.map((canvas) => {
+            if (canvas.id !== id) return canvas
+            return typeof patch === 'function' ? patch(canvas) : { ...canvas, ...patch }
+          }),
+        label,
       )
     },
     [editCanvases],
@@ -362,6 +545,102 @@ export function useStudioProject(options: {
     },
     [canvasesRef, selectedRef, editCanvases, select],
   )
+
+  /**
+   * After an undo or redo, the card the step was made on is selected (one it
+   * brought back first), so the panel shows what changed.
+   */
+  const selectAfter = useCallback(
+    (preferred: string | null, restored: readonly string[]) => {
+      const list = canvasesRef.current
+      const has = (id: string | null): id is string => id !== null && list.some((canvas) => canvas.id === id)
+      const back =
+        preferred && restored.includes(preferred)
+          ? preferred
+          : restored.find((id) => list.find((canvas) => canvas.id === id)?.kind !== 'result')
+      const target = back ?? (has(preferred) ? preferred : null)
+      if (target) {
+        if (target !== selectedRef.current) select(target)
+      } else if (!has(selectedRef.current)) {
+        select((list.find((canvas) => canvas.kind === 'layout') ?? list[0])?.id ?? null)
+      }
+    },
+    [canvasesRef, selectedRef, select],
+  )
+
+  /** Apply the step on top of one stack, when `accept` takes it. Empty steps on top are dropped first. */
+  const step = useCallback(
+    (direction: 'undo' | 'redo', accept: (taken: HistoryStep) => boolean = () => true): StepOutcome => {
+      flushGestureRef.current()
+      const steps = history.current
+      const from = direction === 'undo' ? steps.undo : steps.redo
+      const to = direction === 'undo' ? steps.redo : steps.undo
+      while (from.length && isEmptyStep(from.at(-1)!)) from.pop()
+      const taken = from.at(-1)
+      if (!taken || !accept(taken)) {
+        reshape()
+        return null
+      }
+      // Like deleting it by hand: a card whose run is waiting or going is not taken off the board.
+      if (removesRunning(canvasesRef.current, taken, direction, jobsRef.current)) return 'running'
+      from.pop()
+      if (direction === 'undo') taken.selectedAfter = selectedRef.current
+      const { canvases: next, restored } = applyStep(canvasesRef.current, taken, direction)
+      edits.current += 1
+      // A card brought back may have a job that moved on while it was gone.
+      setCanvases(applyJobs(next, jobsRef.current))
+      to.push(taken)
+      steps.sealed = true
+      selectAfter(direction === 'undo' ? taken.selectedBefore : taken.selectedAfter, restored)
+      reshape()
+      return { label: stepLabel(taken), id: taken.id }
+    },
+    [canvasesRef, selectedRef, setCanvases, selectAfter, reshape],
+  )
+  const undo = useCallback((only?: number) => step('undo', (taken) => only === undefined || taken.id === only), [step])
+  const redo = useCallback((only?: number) => step('redo', (taken) => only === undefined || taken.id === only), [step])
+  const top = useCallback((direction: 'undo' | 'redo') => {
+    flushGestureRef.current()
+    const { undo: back, redo: forward } = history.current
+    return liveSteps(direction === 'undo' ? back : forward).at(-1)?.id ?? null
+  }, [])
+  const within = useCallback(<T>(next: StepGroup, run: () => T): T => {
+    const outer = group.current
+    group.current = next
+    try {
+      return run()
+    } finally {
+      group.current = outer
+    }
+  }, [])
+  const join = useCallback(<T>(id: number | null, run: () => T): T => {
+    const latest = history.current.undo.at(-1)
+    if (id === null || !latest || latest.id !== id || history.current.sealed) return run()
+    const outer = joining.current
+    joining.current = latest.token
+    try {
+      return run()
+    } finally {
+      joining.current = outer
+    }
+  }, [])
+  const turn = useCallback((calls: readonly string[]) => turnState(history.current, calls), [])
+  const turnStep = useCallback(
+    (calls: readonly string[], direction: 'undo' | 'redo'): StepOutcome => {
+      if (turnState(history.current, calls) !== (direction === 'undo' ? 'latest' : 'redo')) return null
+      // Only the turn's own steps: once the next one on top is not the turn's, stop.
+      let outcome: StepOutcome = null
+      for (;;) {
+        const done = step(direction, (taken) => isTurnStep(taken, calls))
+        if (done === 'running') return outcome ?? 'running'
+        if (!done) return outcome
+        outcome = done
+      }
+    },
+    [step],
+  )
+  const undoTurn = useCallback((calls: readonly string[]) => turnStep(calls, 'undo'), [turnStep])
+  const redoTurn = useCallback((calls: readonly string[]) => turnStep(calls, 'redo'), [turnStep])
 
   /**
    * Before leaving the open project, write its pending edits. False when that
@@ -454,6 +733,7 @@ export function useStudioProject(options: {
     saveStatus,
     saveError,
     setCanvases: editCanvases,
+    setRunCanvases,
     updateCanvas,
     select,
     addCanvas,
@@ -463,5 +743,6 @@ export function useStudioProject(options: {
     newProject,
     rename,
     deleteProject,
+    history: { ...historyShape, undo, redo, top, within, join, turn, undoTurn, redoTurn },
   }
 }

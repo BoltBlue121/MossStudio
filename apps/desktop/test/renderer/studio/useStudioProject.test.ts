@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { JobRecord, ProjectDocument, ProjectSummary } from '@shared/types'
 import type { StudioClient, StudioProjectInput } from '@renderer/lib/studioClient'
-import { useStudioProject, type StudioProject } from '@renderer/pages/studio/useStudioProject'
+import { useStudioProject, type StepOutcome, type StudioProject } from '@renderer/pages/studio/useStudioProject'
 import { canvas } from './fixtures'
 
 beforeAll(() => {
@@ -27,7 +27,7 @@ function fakeClient(initial: ProjectDocument[]) {
   const projects = new Map(initial.map((item) => [item.id, item]))
   const log: string[] = []
   let next = 1
-  const control = { fail: false, hold: null as null | Promise<void> }
+  const control = { fail: false, hold: null as null | Promise<void>, sent: [] as StudioProjectInput[] }
   const client: StudioClient = {
     listProjects: async () =>
       [...projects.values()].map((item): ProjectSummary => ({
@@ -41,6 +41,7 @@ function fakeClient(initial: ProjectDocument[]) {
     getProject: async (id) => projects.get(id) ?? null,
     saveProject: async (input: StudioProjectInput) => {
       log.push(`save:${input.id ?? 'new'}`)
+      control.sent.push(input)
       if (control.hold) await control.hold
       if (control.fail) throw new Error('disk full')
       const id = input.id && projects.has(input.id) ? input.id : `project-new-${next++}`
@@ -230,5 +231,306 @@ describe('useStudioProject', () => {
     await unmountAndSettle(unmount)
     expect(fake.log.filter((entry) => entry.startsWith('save'))).toEqual([])
     expect(fake.projects.get('a')).toBe(newer)
+  })
+})
+
+describe('useStudioProject history', () => {
+  const labelOf = (outcome: StepOutcome): string | null => (outcome && outcome !== 'running' ? outcome.label : null)
+  /** Let the task end, so the next edit is a new moment. */
+  const nextTask = (): Promise<void> => act(async () => new Promise((resolve) => setTimeout(resolve, 0)))
+  const two = (): ProjectDocument =>
+    doc('a', { canvases: [canvas({ id: 'a-c', title: '画面 1' }), canvas({ id: 'b-c', title: '画面 2', x: 400 })] })
+
+  it('makes the edits of one moment one step, and undo and redo walk the steps', async () => {
+    const { get } = await mount(fakeClient([two()]).client)
+    expect([get().history.canUndo, get().history.canRedo]).toEqual([false, false])
+    await act(async () => {
+      // A group of cards let go together.
+      get().updateCanvas('a-c', { x: 50 })
+      get().updateCanvas('b-c', { x: 450 })
+    })
+    await nextTask()
+    await act(async () => get().updateCanvas('a-c', { prompt: '一只猫' }))
+    expect(get().history.canUndo).toBe(true)
+
+    let label: string | null = null
+    await act(async () => {
+      label = labelOf(get().history.undo())
+    })
+    expect(label).toBe('改描述 · 画面 1')
+    expect(get().canvases[0]!.prompt).toBe('')
+    await act(async () => {
+      label = labelOf(get().history.undo())
+    })
+    expect(label).toBe('移动 2 张卡片')
+    expect(get().canvases.map((item) => item.x)).toEqual([0, 400])
+    expect([get().history.canUndo, get().history.canRedo]).toEqual([false, true])
+    await act(async () => {
+      label = labelOf(get().history.redo())
+    })
+    expect(label).toBe('移动 2 张卡片')
+    expect(get().canvases.map((item) => item.x)).toEqual([50, 450])
+  })
+
+  it('typing in a field is one step for as long as the field keeps focus', async () => {
+    const { get } = await mount(fakeClient([two()]).client)
+    const field = document.body.appendChild(document.createElement('textarea'))
+    const button = document.body.appendChild(document.createElement('button'))
+    try {
+      field.focus()
+      for (const text of ['一', '一只', '一只猫']) {
+        await act(async () => get().updateCanvas('a-c', { prompt: text }))
+        await nextTask()
+      }
+      button.focus()
+      field.focus()
+      await act(async () => get().updateCanvas('a-c', { prompt: '一只猫，坐着' }))
+      button.focus()
+      await act(async () => {
+        get().history.undo()
+      })
+      expect(get().canvases[0]!.prompt).toBe('一只猫')
+      await act(async () => {
+        get().history.undo()
+      })
+      expect(get().canvases[0]!.prompt).toBe('')
+      expect(get().history.canUndo).toBe(false)
+    } finally {
+      field.remove()
+      button.remove()
+    }
+  })
+
+  it('a box dragged with the pointer held is one step, however many moves it takes', async () => {
+    const { get } = await mount(fakeClient([two()]).client)
+    window.dispatchEvent(new Event('pointerdown'))
+    for (const x of [10, 20, 30, 40]) {
+      await act(async () =>
+        get().updateCanvas('a-c', {
+          layers: [{ id: 'r', kind: 'object', caption: '', bbox: [x, 0, x + 100, 100], visible: true, locked: false, opacity: 1 }],
+        }),
+      )
+      await nextTask()
+    }
+    window.dispatchEvent(new Event('pointerup'))
+    await act(async () => {
+      get().history.undo()
+    })
+    expect(get().canvases[0]!.layers).toEqual([])
+    expect(get().history.canUndo).toBe(false)
+  })
+
+  it("keeps a run's own writes and a job finishing out of the steps", async () => {
+    const result = canvas({ id: 'r', title: '结果', kind: 'result', sourceCanvasId: 'a-c', pinned: true, jobId: 'j1', jobState: 'running' })
+    const { get, setJobs } = await mount(fakeClient([doc('a', { canvases: [canvas({ id: 'a-c' }), result] })]).client)
+    await act(async () => get().updateCanvas('r', { x: 300 }))
+    await nextTask()
+    // A run starting writes the seed and its job id: not a step.
+    await act(async () => get().setRunCanvases((list) => list.map((item) => (item.id === 'a-c' ? { ...item, seed: 99 } : item))))
+    await setJobs([{ id: 'j1', state: 'succeeded', outputs: [{ path: '/out/r.png', width: 1024, height: 1024, seed: 1 }] } as JobRecord])
+    let label: string | null = null
+    await act(async () => {
+      label = labelOf(get().history.undo())
+    })
+    expect(label).toBe('移动结果')
+    const after = get().canvases.find((item) => item.id === 'r')!
+    expect(after.x).toBe(0)
+    expect(after.jobState).toBe('succeeded')
+    expect(after.outputs).toHaveLength(1)
+    expect(get().canvases[0]!.seed).toBe(99)
+    expect(get().history.canUndo).toBe(false)
+  })
+
+  it('brings a deleted card back selected, with the run it took along', async () => {
+    const fake = fakeClient([
+      doc('a', {
+        canvases: [
+          canvas({ id: 'a-c' }),
+          canvas({ id: 'b-c', title: '画面 2' }),
+          canvas({ id: 'run', kind: 'result', sourceCanvasId: 'b-c', outputs: [{ path: '/out/1.png', width: 1, height: 1, seed: 1 }] }),
+        ],
+        selectedCanvasId: 'a-c',
+      }),
+    ])
+    const { get } = await mount(fake.client)
+    await act(async () => {
+      get().removeCanvas('b-c')
+    })
+    expect(get().canvases.map((item) => item.id)).toEqual(['a-c'])
+    await act(async () => {
+      get().history.undo()
+    })
+    expect(get().canvases.map((item) => item.id)).toEqual(['a-c', 'b-c', 'run'])
+    expect(get().canvases[2]!.outputs?.[0]?.path).toBe('/out/1.png')
+    expect(get().selectedCanvasId).toBe('b-c')
+  })
+
+  it('groups an assistant turn across tasks and names it 助手的修改', async () => {
+    const { get } = await mount(fakeClient([two()]).client)
+    const turn = { key: 'turn:1', label: '助手的修改' }
+    await act(async () => get().history.within({ ...turn, call: 'c1' }, () => get().updateCanvas('a-c', { prompt: '猫' })))
+    await nextTask()
+    await act(async () => get().history.within({ ...turn, call: 'c2' }, () => get().updateCanvas('b-c', { prompt: '狗' })))
+    expect(get().history.turn(['c1', 'c2'])).toBe('latest')
+    let label: string | null = null
+    await act(async () => {
+      label = labelOf(get().history.undoTurn(['c1', 'c2']))
+    })
+    expect(label).toBe('助手的修改')
+    expect(get().canvases.map((item) => item.prompt)).toEqual(['', ''])
+    expect(get().history.turn(['c1', 'c2'])).toBe('redo')
+    await act(async () => {
+      get().history.redoTurn(['c1', 'c2'])
+    })
+    expect(get().canvases.map((item) => item.prompt)).toEqual(['猫', '狗'])
+  })
+
+  it("撤销这一步 takes back only the turn's own steps, never the person's edit under them", async () => {
+    const { get } = await mount(fakeClient([two()]).client)
+    await act(async () => get().updateCanvas('a-c', { prompt: '我写的描述' }))
+    await nextTask()
+    const turn = { key: 'turn:1', label: '助手的修改' }
+    // The turn moves a card away and back: nothing changed, so no step.
+    await act(async () => get().history.within({ ...turn, call: 'c1' }, () => get().updateCanvas('b-c', { x: 999 })))
+    await nextTask()
+    await act(async () => get().history.within({ ...turn, call: 'c2' }, () => get().updateCanvas('b-c', { x: 400 })))
+    expect(get().history.turn(['c1', 'c2'])).toBeNull()
+    await act(async () => {
+      expect(get().history.undoTurn(['c1', 'c2'])).toBeNull()
+    })
+    expect(get().canvases[0]!.prompt).toBe('我写的描述')
+    expect(get().history.canUndo).toBe(true)
+  })
+
+  it('will not undo a new 画面 while its run is waiting, and keeps the step', async () => {
+    const { get, setJobs } = await mount(fakeClient([two()]).client)
+    let added = ''
+    await act(async () => {
+      added = get().addCanvas().id
+    })
+    await act(async () =>
+      get().setRunCanvases((list) => [
+        ...list,
+        canvas({ id: 'run', kind: 'result', sourceCanvasId: added, jobId: 'j1', jobState: 'queued' }),
+      ]),
+    )
+    await setJobs([{ id: 'j1', state: 'queued' } as JobRecord])
+    await act(async () => {
+      expect(get().history.undo()).toBe('running')
+    })
+    expect(get().canvases.map((item) => item.id)).toContain(added)
+    expect(get().history.canUndo).toBe(true)
+    await setJobs([{ id: 'j1', state: 'canceled' } as JobRecord])
+    await act(async () => {
+      expect(get().history.undo()).toMatchObject({ label: expect.stringContaining('新建') })
+    })
+    // The 画面 went, and its stopped run with it.
+    expect(get().canvases.map((item) => item.id)).toEqual(['a-c', 'b-c'])
+  })
+
+  it('undoes a step only while it is the latest, when asked for that step', async () => {
+    const { get } = await mount(fakeClient([two()]).client)
+    let deleted: number | null = null
+    await act(async () => {
+      get().removeCanvas('b-c')
+      deleted = get().history.top('undo')
+    })
+    await nextTask()
+    await act(async () => get().updateCanvas('a-c', { x: 12 }))
+    await act(async () => {
+      expect(get().history.undo(deleted!)).toBeNull()
+    })
+    expect(get().canvases.map((item) => [item.id, item.x])).toEqual([['a-c', 12]])
+  })
+
+  it('records a pointer gesture only once the pointer is let go', async () => {
+    const { get } = await mount(fakeClient([two()]).client)
+    window.dispatchEvent(new Event('pointerdown'))
+    await act(async () => get().updateCanvas('a-c', { x: 30 }))
+    await nextTask()
+    expect(get().history.canUndo).toBe(false)
+    await act(async () => {
+      window.dispatchEvent(new Event('pointerup'))
+    })
+    expect(get().history.canUndo).toBe(true)
+  })
+
+  it('joins the second half of an action that awaited into its first step', async () => {
+    const { get } = await mount(fakeClient([two()]).client)
+    await act(async () => get().setCanvases((list) => [...list, canvas({ id: 'img', kind: 'image', title: '小猫' })]))
+    await nextTask()
+    await act(async () => get().history.join(get().history.top('undo'), () => get().updateCanvas('img', { x: 300 })))
+    let outcome: unknown = null
+    await act(async () => {
+      outcome = get().history.undo()
+    })
+    expect(outcome).toMatchObject({ label: '添加小猫' })
+    expect(get().canvases.map((item) => item.id)).toEqual(['a-c', 'b-c'])
+    expect(get().history.canUndo).toBe(false)
+  })
+
+  it('a field focused again after another window keeps the same typing visit', async () => {
+    const { get } = await mount(fakeClient([two()]).client)
+    const field = document.body.appendChild(document.createElement('textarea'))
+    try {
+      field.focus()
+      await act(async () => get().updateCanvas('a-c', { prompt: '一只' }))
+      await nextTask()
+      // Leaving the app and coming back focuses the same field again.
+      field.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+      await act(async () => get().updateCanvas('a-c', { prompt: '一只猫' }))
+      field.blur()
+      await act(async () => {
+        get().history.undo()
+      })
+      expect(get().canvases[0]!.prompt).toBe('')
+    } finally {
+      field.remove()
+    }
+  })
+
+  it('keeps a painted-over mask on disk while undo can bring it back', async () => {
+    const masked = (path: string) => canvas({ id: 'a-c', inputs: { init: { link: { canvasId: 'b-c' }, strength: 0.6 }, mask: { path } } })
+    const fake = fakeClient([doc('a', { canvases: [masked('/p/assets/mask-a-1.png'), canvas({ id: 'b-c' })] })])
+    const { get } = await mount(fake.client)
+    await act(async () => get().updateCanvas('a-c', { inputs: masked('/p/assets/mask-a-2.png').inputs }))
+    await act(async () => {
+      await get().saveNow()
+    })
+    expect(fake.control.sent.at(-1)?.keepMasks?.sort()).toEqual(['/p/assets/mask-a-1.png', '/p/assets/mask-a-2.png'])
+  })
+
+  it('writes again when an undo lands while a save is on its way', async () => {
+    const fake = fakeClient([two()])
+    const { get } = await mount(fake.client)
+    await act(async () => get().updateCanvas('a-c', { prompt: 'edit' }))
+    let release!: () => void
+    fake.control.hold = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let saving!: Promise<unknown>
+    await act(async () => {
+      saving = get().saveNow()
+      // Back to what is on disk already: no autosave timer starts for it.
+      get().history.undo()
+    })
+    fake.control.hold = null
+    await act(async () => {
+      release()
+      await saving
+    })
+    for (let tick = 0; tick < 5; tick += 1) await nextTask()
+    expect(fake.projects.get('a')!.canvases[0]!.prompt).toBe('')
+  })
+
+  it('starts empty in every project it opens', async () => {
+    const { get } = await mount(fakeClient([doc('a'), doc('b')]).client)
+    const openId = get().projectId!
+    await act(async () => get().updateCanvas(`${openId}-c`, { x: 77 }))
+    expect(get().history.canUndo).toBe(true)
+    await act(async () => {
+      await get().openProject(openId === 'a' ? 'b' : 'a')
+    })
+    expect([get().history.canUndo, get().history.canRedo]).toEqual([false, false])
   })
 })

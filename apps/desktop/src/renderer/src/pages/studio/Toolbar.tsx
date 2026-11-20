@@ -1,5 +1,19 @@
-import { Brush, Eraser, FlipHorizontal2, Hand, Map as MapIcon, Maximize2, Minus, MousePointer2, Plus, Trash2 } from 'lucide-react'
+import {
+  Brush,
+  Eraser,
+  FlipHorizontal2,
+  Hand,
+  Map as MapIcon,
+  Maximize2,
+  Minus,
+  MousePointer2,
+  Plus,
+  Redo2,
+  Trash2,
+  Undo2,
+} from 'lucide-react'
 import { IconButton, cn } from '../../components/ui'
+import { platform } from '../../lib/api'
 import { BRUSH_MAX, BRUSH_MIN } from './mask'
 import type { MaskBrush } from './MaskLayer'
 import type { BoardTool } from './RegionLayer'
@@ -9,6 +23,19 @@ export interface MaskToolState {
   hidden: boolean
   enabled: boolean
   reason?: string
+}
+
+/** Undo and redo of board changes, as the toolbar shows them. */
+export interface BoardHistoryControls {
+  canUndo: boolean
+  canRedo: boolean
+  onUndo: () => void
+  onRedo: () => void
+}
+
+/** The undo and redo shortcuts as this computer writes them. */
+function historyKeys(): { undo: string; redo: string } {
+  return platform() === 'darwin' ? { undo: '⌘Z', redo: '⇧⌘Z' } : { undo: 'Ctrl+Z', redo: 'Ctrl+Shift+Z' }
 }
 
 const TOOLS: Array<{ id: BoardTool; label: string; key: string; icon: React.ReactNode }> = [
@@ -31,7 +58,7 @@ function ToolButton({ on, className, ...props }: React.ComponentProps<'button'> 
   )
 }
 
-/** The board's own tools: select, pan, zoom, fit and the minimap. A 画面's tools sit on the card (CardToolbar). */
+/** The board's own tools: select, pan, undo, redo, zoom, fit and the minimap. A 画面's tools sit on the card (CardToolbar). */
 export function Toolbar({
   tool,
   onTool,
@@ -40,6 +67,7 @@ export function Toolbar({
   onFit,
   minimap,
   onMinimap,
+  history,
 }: {
   tool: BoardTool
   onTool: (tool: BoardTool) => void
@@ -48,7 +76,9 @@ export function Toolbar({
   onFit: () => void
   minimap: boolean
   onMinimap: (on: boolean) => void
+  history: BoardHistoryControls
 }): React.JSX.Element {
+  const keys = historyKeys()
   return (
     <div
       role="toolbar"
@@ -67,6 +97,12 @@ export function Toolbar({
           {item.icon}
         </ToolButton>
       ))}
+      <ToolButton aria-label="撤销" title={`撤销 ${keys.undo}`} disabled={!history.canUndo} onClick={history.onUndo}>
+        <Undo2 className="size-4" strokeWidth={1.6} />
+      </ToolButton>
+      <ToolButton aria-label="重做" title={`重做 ${keys.redo}`} disabled={!history.canRedo} onClick={history.onRedo}>
+        <Redo2 className="size-4" strokeWidth={1.6} />
+      </ToolButton>
       <span aria-hidden="true" className="w-2" />
       <IconButton label="缩小" onClick={() => onZoom(1 / 1.25)} className="text-ink">
         <Minus className="size-4" strokeWidth={1.6} />

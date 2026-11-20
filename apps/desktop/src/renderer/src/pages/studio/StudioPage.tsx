@@ -6,7 +6,7 @@ import { cliGpuUuids, generationGpus } from '@shared/bundleFit'
 import { MAX_QUEUED_RUNS, activeCanvasBranchIds, blockedCanvasIds } from '@shared/canvasJobBranch'
 import { Events, Ipc } from '@shared/channels'
 import { ScanLine, Sparkles } from 'lucide-react'
-import { Button, ConfirmDialog, useToast } from '../../components/ui'
+import { Button, useToast } from '../../components/ui'
 import { TitlebarPortal } from '../../components/shell/Titlebar'
 import { AdapterPicker } from '../../components/studio/AdapterPicker'
 import { StudioSidebar } from '../../components/studio/StudioSidebar'
@@ -24,7 +24,6 @@ import {
   createLayoutCanvas,
   defaultSettings,
   editLayer,
-  removedWith,
   resizeCanvas,
   sceneCanvas,
   settingsFrom,
@@ -80,7 +79,8 @@ import { resolveJobInputs } from './jobInputs'
 import { useGenerate } from './useGenerate'
 import { useInputImport } from './useInputImport'
 import { droppedPaths, useModelImport } from '../../lib/modelImport'
-import { useStudioProject } from './useStudioProject'
+import { useStudioProject, type StepOutcome } from './useStudioProject'
+import { ownsUndoKey } from './history'
 import { usePictureRegions } from './usePictureRegions'
 
 const BUNDLE_KEY = 'mossstudio.modelBundleId'
@@ -135,6 +135,9 @@ function isTyping(target: EventTarget | null): boolean {
   return Boolean(element?.closest('input, textarea, select, [contenteditable="true"]'))
 }
 
+/** Undo, redo and deletes share one toast: pressing Ctrl+Z again replaces it instead of stacking. */
+const HISTORY_TOAST = { key: 'board-history' }
+
 /** Blockers the first-run download clears by itself. */
 const PREPARING_BLOCKERS = new Set<Blocker['id']>(['model-none', 'model-incomplete', 'engine'])
 export function StudioPage(): React.JSX.Element {
@@ -175,9 +178,6 @@ export function StudioPage(): React.JSX.Element {
   const [gbcOpen, setGbcOpen] = useState(false)
   const [widths, setWidths] = useState(initialWidths)
   const [viewer, setViewer] = useState<{ canvasId: string; index: number } | null>(null)
-  const [deleting, setDeleting] = useState<ProjectCanvas | null>(null)
-  /** Several picked cards waiting for 删除 to be confirmed. */
-  const [deletingMany, setDeletingMany] = useState<string[] | null>(null)
   const [adapterPickerOpen, setAdapterPickerOpen] = useState(false)
   // 从作品选择: the input a picture from 作品 goes into.
   // 从作品选择: the input a picture from 作品 goes into, or (right-click on the board) where it goes on the board.
@@ -532,8 +532,11 @@ export function StudioPage(): React.JSX.Element {
     if (!created.length) return
     const first = created[0]!
     const ids = new Set(created.map((card) => card.id))
-    project.setCanvases((previous) =>
-      previous.map((canvas) => (ids.has(canvas.id) ? { ...canvas, x: canvas.x - first.x + at.x, y: canvas.y - first.y + at.y } : canvas)),
+    // Placing them is part of bringing them in: one step with the import.
+    project.history.join(project.history.top('undo'), () =>
+      project.setCanvases((previous) =>
+        previous.map((canvas) => (ids.has(canvas.id) ? { ...canvas, x: canvas.x - first.x + at.x, y: canvas.y - first.y + at.y } : canvas)),
+      ),
     )
     project.select(first.id)
     requestAnimationFrame(() => board.current?.keepInView(first.id))
@@ -574,7 +577,8 @@ export function StudioPage(): React.JSX.Element {
     }
     if (recipe.id === 'upscale') {
       const image = await pickPicture()
-      if (image) upscaleFrom(image.id)
+      // The picture and the 放大 fed by it are one step.
+      if (image) project.history.join(project.history.top('undo'), () => upscaleFrom(image.id))
       return
     }
     if (!recipe.role) return
@@ -832,12 +836,42 @@ export function StudioPage(): React.JSX.Element {
         const compiled = compileCanvasPrompt(canvas)
         return compiled.ok ? [] : compiled.errors
       },
+      oneStep: (key, call, run) => live.current.project.history.within({ key, label: '助手的修改', call }, run),
     }
     registerStudioTools(api)
     return () => registerStudioTools(null)
   }, [])
 
-  // Keyboard: Ctrl+Enter generates; V / H / M pick tools; Delete removes a region.
+  /**
+   * Say what an undo or redo did, with the way back tied to that very step: the
+   * toast's button does nothing once another step has taken its place.
+   */
+  const announce = (direction: 'undo' | 'redo', outcome: StepOutcome, offerBack = true): void => {
+    if (outcome === 'running') {
+      toast.push(direction === 'undo' ? '先取消正在生成的画面再撤销' : '先取消正在生成的画面再重做', 'info', undefined, HISTORY_TOAST)
+      return
+    }
+    if (!outcome) return
+    const back =
+      direction === 'undo' ? { label: '重做', onClick: () => redoStep(outcome.id) } : { label: '撤销', onClick: () => undoStep(outcome.id) }
+    toast.push(`${direction === 'undo' ? '已撤销' : '已重做'} ${outcome.label}`, 'info', offerBack ? back : undefined, HISTORY_TOAST)
+  }
+  /** Undo (or redo) the latest step; with `only`, just while that step is still the one on top. */
+  const undoStep = (only?: number): void => announce('undo', live.current.project.history.undo(only))
+  const redoStep = (only?: number): void => announce('redo', live.current.project.history.redo(only))
+  /** The toast after an action on the board: its 撤销 takes back that action and nothing else. */
+  const undoable = (message: string): void => {
+    const id = live.current.project.history.top('undo')
+    toast.push(message, 'info', id === null ? undefined : { label: '撤销', onClick: () => undoStep(id) }, HISTORY_TOAST)
+  }
+  /** The assistant's 撤销这一步: exactly that turn's changes, and only while nothing came after them. */
+  const assistantUndo = {
+    turn: project.history.turn,
+    undo: (calls: readonly string[]): void => announce('undo', live.current.project.history.undoTurn(calls), false),
+    redo: (calls: readonly string[]): void => announce('redo', live.current.project.history.redoTurn(calls), false),
+  }
+
+  // Keyboard: Ctrl+Enter generates; Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y undo and redo; V / H / M pick tools; Delete removes a region.
   useEffect(() => {
     if (!shown) return
     const onKey = (event: KeyboardEvent): void => {
@@ -845,6 +879,17 @@ export function StudioPage(): React.JSX.Element {
         if (document.querySelector('dialog[open]')) return
         event.preventDefault()
         runPrimary()
+        return
+      }
+      const letter = event.key.toLowerCase()
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && (letter === 'z' || letter === 'y')) {
+        // A text field keeps its own undo; a panel outside the Studio (活动) is not the board's.
+        const target = event.target as Node | null
+        const outside = target !== document.body && !root.current?.contains(target)
+        if (ownsUndoKey(event.target) || outside || document.querySelector('dialog[open]')) return
+        event.preventDefault()
+        if (letter === 'y' || event.shiftKey) redoStep()
+        else undoStep()
         return
       }
       if (event.ctrlKey || event.metaKey || event.altKey || isTyping(event.target) || document.querySelector('dialog[open]')) return
@@ -872,7 +917,24 @@ export function StudioPage(): React.JSX.Element {
     return ACTIVE_JOB_STATES.has(job?.state ?? '') || running
   }
 
-  const deletingRuns = deleting ? removedWith(project.canvases, deleting.id).length - 1 : 0
+  /** Cards go at once: the toast, Ctrl+Z and the toolbar bring them back with their runs. */
+  const deleteCards = (ids: readonly string[]): void => {
+    const list = project.canvasesRef.current.filter((canvas) => ids.includes(canvas.id))
+    if (!list.length) return
+    if (list.some(stillRunning)) {
+      toast.push(list.length > 1 ? '有画面还在生成，先取消再删除' : '这个画面还在生成，先取消再删除', 'info')
+      return
+    }
+    // Generated pictures are files in 作品; a card going does not touch them.
+    const ran = list.some((canvas) => canvas.kind === 'result' || runsOf(canvas, project.canvasesRef.current).length > 0)
+    let removedLinks = 0
+    for (const canvas of list) {
+      if (project.canvasesRef.current.some((item) => item.id === canvas.id)) removedLinks += project.removeCanvas(canvas.id)
+    }
+    const what = list.length === 1 ? `「${list[0]!.title}」` : ` ${list.length} 张卡片`
+    const links = removedLinks ? `，并移除了 ${removedLinks} 条连线` : ''
+    undoable(`已删除${what}${links}${ran ? '，图片还在作品里' : ''}`)
+  }
   const viewerCanvas = viewer ? (project.canvases.find((canvas) => canvas.id === viewer.canvasId) ?? null) : null
   const viewerJob = viewerCanvas?.jobId ? jobs.find((job) => job.id === viewerCanvas.jobId) : undefined
 
@@ -979,6 +1041,12 @@ export function StudioPage(): React.JSX.Element {
           blockers={readiness.blockers}
           tool={tool}
           onTool={setTool}
+          history={{
+            canUndo: project.history.canUndo,
+            canRedo: project.history.canRedo,
+            onUndo: () => undoStep(),
+            onRedo: () => redoStep(),
+          }}
           selectedRegionId={selectedRegionId}
           onSelectRegion={setSelectedRegionId}
           onSelectCanvas={(id) => project.select(id)}
@@ -998,27 +1066,14 @@ export function StudioPage(): React.JSX.Element {
           onCancel={(jobId) => {
             void cancelJob(jobId).catch((error: unknown) => toast.push(error instanceof Error ? error.message : String(error), 'error'))
           }}
-          onCallOff={(runId) => project.setCanvases((previous) => dropRun(previous, runId))}
+          onCallOff={(runId) => project.setRunCanvases((previous) => dropRun(previous, runId))}
           onShowActivity={(jobId) => openActivity('jobs', jobId ?? null)}
           onCopy={(canvas) => {
             const created = project.addCanvas(canvas)
             requestAnimationFrame(() => board.current?.reveal(created.id))
           }}
-          onDelete={(canvas) => {
-            if (stillRunning(canvas)) {
-              toast.push('这个画面还在生成，先取消再删除', 'info')
-              return
-            }
-            setDeleting(canvas)
-          }}
-          onDeleteMany={(ids) => {
-            const list = project.canvasesRef.current.filter((canvas) => ids.includes(canvas.id))
-            if (list.some(stillRunning)) {
-              toast.push('有画面还在生成，先取消再删除', 'info')
-              return
-            }
-            setDeletingMany(list.map((canvas) => canvas.id))
-          }}
+          onDelete={(canvas) => deleteCards([canvas.id])}
+          onDeleteMany={deleteCards}
           engineFeatures={boardFeatures}
           controlAdapters={controlAdapters}
           onLink={linkInto}
@@ -1073,12 +1128,12 @@ export function StudioPage(): React.JSX.Element {
           onUseRunSettings={(layoutId, runId) => {
             const run = project.canvasesRef.current.find((canvas) => canvas.id === runId)
             if (!run) return
-            project.updateCanvas(layoutId, (canvas) => withRunSettings(canvas, run))
-            toast.push('已换成这次生成用的设置', 'info')
+            project.updateCanvas(layoutId, (canvas) => withRunSettings(canvas, run), '用这次的设置')
+            undoable('已换成这次生成用的设置')
           }}
           onDropRun={(runId) => {
             project.setCanvases((previous) => dropRun(previous, runId))
-            toast.push('已删除这次生成，图片仍保留在作品里', 'info')
+            undoable('已删除这次生成，图片仍保留在作品里')
           }}
           onRecipe={(recipe, at) => void startRecipe(recipe, at)}
           onUpscale={upscaleFrom}
@@ -1099,7 +1154,7 @@ export function StudioPage(): React.JSX.Element {
           onWidthChange={(right) => setWidths((value) => ({ ...value, right }))}
         >
           <div className="flex h-full min-h-0 flex-col p-4">
-            <Assistant />
+            <Assistant board={assistantUndo} />
           </div>
         </StudioSidebar>
       </div>
@@ -1146,43 +1201,6 @@ export function StudioPage(): React.JSX.Element {
         index={viewer?.index ?? 0}
         onIndex={(index) => setViewer((value) => (value ? { ...value, index } : value))}
         onClose={() => setViewer(null)}
-      />
-
-      <ConfirmDialog
-        open={deleting !== null}
-        onClose={() => setDeleting(null)}
-        title={deleting ? `删除「${deleting.title}」？` : '删除画面？'}
-        description={
-          deleting?.kind === 'style'
-            ? '风格会从项目里删除，接着它的画面不再用它的描述和 LoRA。'
-            : deletingRuns
-              ? `画面、它的区域和 ${deletingRuns} 次生成会从项目里删除。已经生成的图片仍保留在作品里。`
-              : '画面和它的区域会从项目里删除。已经生成的图片仍保留在作品里。'
-        }
-        confirmLabel={deleting?.kind === 'style' ? '删除风格' : '删除画面'}
-        onConfirm={() => {
-          if (deleting) {
-            const removedLinks = project.removeCanvas(deleting.id)
-            if (removedLinks) toast.push(`已删除「${deleting.title}」，并移除了 ${removedLinks} 条连到它的连线`, 'info')
-          }
-          setDeleting(null)
-        }}
-      />
-
-      <ConfirmDialog
-        open={deletingMany !== null}
-        onClose={() => setDeletingMany(null)}
-        title={`删除这 ${deletingMany?.length ?? 0} 张卡片？`}
-        description="它们的区域和生成记录会从项目里删除。已经生成的图片仍保留在作品里。"
-        confirmLabel="删除"
-        onConfirm={() => {
-          let removedLinks = 0
-          for (const id of deletingMany ?? []) {
-            if (project.canvasesRef.current.some((canvas) => canvas.id === id)) removedLinks += project.removeCanvas(id)
-          }
-          if (removedLinks) toast.push(`已删除，并移除了 ${removedLinks} 条连到它们的连线`, 'info')
-          setDeletingMany(null)
-        }}
       />
 
       <AdapterPicker
