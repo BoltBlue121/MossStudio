@@ -82,16 +82,27 @@ describe('automatic descriptions', () => {
   it('stops and says so when the model cannot read pictures, and counts other failures', async () => {
     const { captions, project } = await setup('openai')
     reply = () => json({ error: { message: 'This model does not support image input' } }, 400)
-    expect(await captions.autoCaption(project.id)).toEqual({ written: 0, failed: 0, error: captions.NO_IMAGE_INPUT })
+    expect(await captions.autoCaption(project.id)).toEqual({ written: 0, failed: 0, error: captions.NO_IMAGE_INPUT, noPictures: true })
     // A picture the provider cannot take is a failed description, not a model that cannot see.
     reply = () => json({ error: { message: 'image too large: 8 MB, the limit is 5 MB' } }, 400)
     expect(await captions.autoCaption(project.id, ['a.png'])).toEqual({ written: 0, failed: 1, error: captions.ALL_FAILED })
     reply = () => json({ error: { message: 'Invalid image data' } }, 400)
     expect((await captions.autoCaption(project.id, ['a.png'])).error).toBe(captions.ALL_FAILED)
     reply = () => json({ error: { message: 'Vision is not supported for this model' } }, 400)
-    expect((await captions.autoCaption(project.id, ['a.png'])).error).toBe(captions.NO_IMAGE_INPUT)
+    expect(await captions.autoCaption(project.id, ['a.png'])).toMatchObject({ error: captions.NO_IMAGE_INPUT, noPictures: true })
     reply = () => json({ error: { message: 'overloaded' } }, 503)
     expect(await captions.autoCaption(project.id, ['a.png', 'b.png'])).toEqual({ written: 0, failed: 2, error: captions.ALL_FAILED })
+  })
+
+  it('asks the model 设置 › 语言模型 chose for 助手和漫画, not the newest one', async () => {
+    const ai = await import('@main/services/ai')
+    const chosen = ai.saveProvider({ name: 'chosen', kind: 'openai', baseUrl: 'https://chosen.example.test', model: 'v', apiKey: 'k' })
+    ai.saveProvider({ name: 'newest', kind: 'openai', baseUrl: 'https://newest.example.test', model: 'v', apiKey: 'k' })
+    writeFileSync(join(root(), 'settings.json'), JSON.stringify({ languageProviderId: chosen.id }))
+    const { captions, project } = await setup(null)
+    reply = () => json({ choices: [{ message: { content: '坐在窗边' } }] })
+    expect((await captions.autoCaption(project.id, ['a.png'])).written).toBe(1)
+    expect(requests[0]!.url).toBe('https://chosen.example.test/chat/completions')
   })
 
   it('asks for the content only, not the style, when learning a 画风', async () => {

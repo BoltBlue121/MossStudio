@@ -3,6 +3,8 @@ import { join, relative } from 'node:path'
 import { compareEngineTags, parseEngineStamp } from '@shared/engineUpdate'
 import { hasGithubToken, saveGithubToken } from './githubCredentials'
 import { hasHfToken } from './hfCredentials'
+import { legacyAssistantProviderId, listProviders } from './ai'
+import { pinSeriesProvider } from './manga'
 import type { Settings } from '@shared/types'
 import { isInside, paths, setEngineRoot } from '../lib/paths'
 
@@ -68,6 +70,7 @@ export const DEFAULT_SETTINGS: Settings = {
   trainingEnabled: false,
   gbcEnabled: false,
   gbcProviderId: null,
+  languageProviderId: null,
   gbcVersionId: null,
   gbcDetector: 'owlv2',
   gbcLanguage: 'auto',
@@ -132,6 +135,20 @@ export function getSettings(): Settings {
     // them visible for anyone who was using them before the switch existed.
     if (parsed.remoteHostsEnabled === undefined) cache.remoteHostsEnabled = hasConfiguredRemoteHosts()
     if (parsed.trainingEnabled === undefined) cache.trainingEnabled = hasTrainerInstall(parsed.trainerRoot ?? null)
+    // Before 设置 › 语言模型, the assistant and training captions used the provider of the most
+    // recent conversation, else the newest saved one; that becomes the stored choice. A 漫画
+    // series without its own model used the newest saved one; it is pinned on the series. Both
+    // happen once: the choice is added to the file straight away, and nothing else in it changes.
+    if (parsed.languageProviderId === undefined) {
+      cache.languageProviderId = legacyAssistantProviderId()
+      const newest = listProviders()[0]
+      if (newest) pinSeriesProvider(newest.id)
+      try {
+        atomicWriteJson(paths.settings(), { ...parsed, languageProviderId: cache.languageProviderId })
+      } catch (error) {
+        console.warn('[settings] language model migration', error)
+      }
+    }
     migrateLegacyEngineSettings(cache, parsed as Record<string, unknown>)
     // MossInfer 2.0 (server protocol 2) removed the auto tier: load requires
     // reference | high | turbo. Map legacy configs to the recommended default.

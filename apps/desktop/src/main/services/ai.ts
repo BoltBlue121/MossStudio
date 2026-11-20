@@ -17,8 +17,10 @@ import type {
 } from '@shared/ai'
 import { agentCardSchema, makeCard, planStepSchema, type AgentCard, type AgentCardAnswer, type PlanStep } from '@shared/agent/cards'
 import { MODE_RULES, TOOL_RULES } from '@shared/agent/registry'
+import { Events } from '@shared/channels'
 import { paths } from '../lib/paths'
 import { codedError } from '../lib/codedError'
+import { emit } from '../lib/events'
 
 interface StoredProvider extends AiProviderInfo {
   apiKey: string
@@ -77,6 +79,12 @@ export function saveProvider(input: AiProviderInput): AiProviderInfo {
   const store = load()
   const id = input.id || `provider-${randomUUID().slice(0, 8)}`
   const existing = store.providers.find((item) => item.id === id)
+  // What the provider said about pictures holds for the model it said it about.
+  const sameModel =
+    existing &&
+    existing.kind === input.kind &&
+    existing.baseUrl === input.baseUrl.replace(/\/$/, '') &&
+    existing.model === input.model.trim()
   const provider: StoredProvider = {
     id,
     name: input.name.trim() || 'Custom',
@@ -86,6 +94,7 @@ export function saveProvider(input: AiProviderInput): AiProviderInfo {
     temperature: input.temperature ?? 0.7,
     hasKey: Boolean(input.apiKey || existing?.apiKey),
     apiKey: input.apiKey?.trim() || existing?.apiKey || '',
+    ...(sameModel && existing.noImageInput ? { noImageInput: true } : {}),
   }
   store.providers = [provider, ...store.providers.filter((item) => item.id !== id)]
   save(store)
@@ -545,7 +554,7 @@ async function callProvider(
 export async function complete(input: { providerId?: string; system: string; prompt: string }): Promise<string> {
   const providers = load().providers
   const provider = input.providerId ? providers.find((item) => item.id === input.providerId) : providers[0]
-  if (!provider) throw new Error('还没有连接语言模型，请先在助手里添加')
+  if (!provider) throw new Error('还没有连接语言模型。请在 设置 › 语言模型 里连接一个。')
   const { text } = await callProvider(provider, input.system, [{ role: 'user', content: input.prompt }], [], () => undefined)
   if (!text.trim()) throw new Error('语言模型没有回答，请再试一次')
   return text
@@ -667,10 +676,10 @@ export async function chat(
 export const AI_PROVIDER_KINDS: AiProviderKind[] = ['openai', 'anthropic', 'gemini', 'ollama']
 
 /**
- * The provider the 助手 uses now: the one of the most recent conversation, else the newest saved
- * (the panel lists providers newest first and starts on the first).
+ * The provider the 助手 used before 设置 › 语言模型 existed: the one of the most recent
+ * conversation, else the newest saved. Settings migrate it into `languageProviderId`.
  */
-export function currentProviderId(): string | null {
+export function legacyAssistantProviderId(): string | null {
   const store = load()
   const recent = [...store.conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]
   if (recent && store.providers.some((item) => item.id === recent.providerId)) return recent.providerId
@@ -786,6 +795,29 @@ function errorText(body: unknown, status: number): string {
   return value?.error?.message ?? value?.message ?? `HTTP ${status}`
 }
 
+/**
+ * Tell every window that the connections changed. No payload: events also reach
+ * the LAN web page, and an address may carry credentials. Views ask again.
+ */
+export function providersChanged(): void {
+  emit(Events.aiProviders, null)
+}
+
+/** Whether an error text is a provider saying its model takes no pictures (not a passing failure). */
+export function refusesImages(message: string): boolean {
+  return NO_IMAGE_INPUT.test(message)
+}
+
+/** Remember that this provider's model takes no pictures, so 看图 stops offering it. */
+export function markNoImageInput(providerId: string): void {
+  const store = load()
+  const provider = store.providers.find((item) => item.id === providerId)
+  if (!provider || provider.noImageInput) return
+  provider.noImageInput = true
+  save(store)
+  providersChanged()
+}
+
 /** One picture and one question to the provider, answered as plain text (no tools, no streaming). */
 export async function askAboutImage(providerId: string, question: ImageQuestion, timeoutMs = 60_000): Promise<string> {
   const provider = load().providers.find((item) => item.id === providerId)
@@ -809,7 +841,10 @@ export async function askAboutImage(providerId: string, question: ImageQuestion,
     }
     if (!response.ok) {
       const message = errorText(body, response.status)
-      if (response.status >= 400 && response.status < 500 && NO_IMAGE_INPUT.test(message)) throw codedError(E_NO_IMAGE_INPUT, message)
+      if (response.status >= 400 && response.status < 500 && NO_IMAGE_INPUT.test(message)) {
+        markNoImageInput(providerId)
+        throw codedError(E_NO_IMAGE_INPUT, message)
+      }
       throw new Error(message)
     }
     return imageAnswer(provider.kind, body).trim()

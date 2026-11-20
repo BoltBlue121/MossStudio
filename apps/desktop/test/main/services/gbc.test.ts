@@ -24,6 +24,7 @@ const state = {
     },
   ],
   emitted: [] as Array<[string, unknown]>,
+  refused: [] as string[],
   configs: [] as string[],
   args: [] as string[][],
   versions: [] as Array<{ id: string; path: string }>,
@@ -70,7 +71,9 @@ vi.mock('@main/lib/run', async (importOriginal) => ({
 vi.mock('@main/lib/paths', () => ({ paths: { root: () => root(), cache: () => root() } }))
 vi.mock('@main/lib/events', () => ({ emit: (channel: string, payload: unknown) => state.emitted.push([channel, payload]) }))
 vi.mock('@main/services/settings', () => ({ getSettings: () => state.settings, updateSettings: vi.fn() }))
-vi.mock('@main/services/ai', () => ({
+vi.mock('@main/services/ai', async (importOriginal) => ({
+  refusesImages: (await importOriginal<typeof import('@main/services/ai')>()).refusesImages,
+  markNoImageInput: (id: string) => state.refused.push(id),
   listProviders: () => state.providers,
   getProviderSecret: (id: string) => {
     const provider = state.providers.find((item) => item.id === id)
@@ -99,6 +102,7 @@ beforeEach(() => {
   state.emitted = []
   state.configs = []
   state.args = []
+  state.refused = []
   state.versions = []
   state.behaviour = writes(graph)
 })
@@ -135,6 +139,35 @@ describe('拆成区域', () => {
     expect(state.configs[0]).toContain('"model": "gpt-x"')
     expect(state.configs[0]).toContain('"model": "google/owlv2-base-patch16-ensemble"')
     state.providers.pop()
+  })
+
+  it('passes over a chosen model whose provider said it takes no pictures', async () => {
+    state.providers.push({
+      id: 'text',
+      name: 'Text',
+      kind: 'openai',
+      baseUrl: 'https://text.test/v1',
+      model: 'text-only',
+      temperature: 1,
+      hasKey: true,
+      noImageInput: true,
+    } as (typeof state.providers)[number])
+    state.settings = settingsFixture({ gbcEnabled: true, gbcProviderId: 'text' })
+    const { parseRegions } = await load()
+    await parseRegions('run-1', picture())
+    expect(state.configs[0]).not.toContain('text-only')
+    expect(state.configs[0]).toContain('"model": "claude-sonnet"')
+    state.providers.pop()
+  })
+
+  it('marks the model when its provider says it takes no pictures', async () => {
+    state.behaviour = async () => ({
+      code: 1,
+      stderr: 'Traceback\nopenai.BadRequestError: Error code: 400 - {"error": {"message": "This model does not support image input"}}',
+    })
+    const { parseRegions } = await load()
+    await expect(parseRegions('run-1', picture())).rejects.toThrow('does not support image input')
+    expect(state.refused).toEqual(['claude'])
   })
 
   it('removes the run folder once the graph is read', async () => {
@@ -193,11 +226,12 @@ describe('拆成区域', () => {
     await expect(parseRegions('run-2', picture())).rejects.toThrow('没在这张图里找到物体')
     state.behaviour = async () => ({ code: 1, stderr: 'Traceback\nRuntimeError: CUDA out of memory' })
     await expect(parseRegions('run-3', picture())).rejects.toThrow('CUDA out of memory')
+    expect(state.refused).toEqual([])
     state.behaviour = async () => ({ code: -1, timedOut: true })
     await expect(parseRegions('run-4', picture())).rejects.toThrow('超过 30 分钟')
     const providers = state.providers
     state.providers = providers.filter((provider) => provider.kind === 'ollama')
-    await expect(parseRegions('run-5', picture())).rejects.toThrow('先给助手加一个能用的模型')
+    await expect(parseRegions('run-5', picture())).rejects.toThrow('还没有能看图的语言模型。请在 设置 › 语言模型 里连接一个。')
     state.providers = providers
   })
 })

@@ -39,17 +39,8 @@ import { updaterApi } from './update'
 import { clearEngineAutoUpdateHold, recordManualEngineInstall, startEngineAutoUpdate } from './services/engineAutoUpdate'
 import { cancelMossInferDownload, getMossInferDownloadState, listMossInferReleases } from './services/mossInferDownload'
 import { getWebAccessInfo, startBackend, stopBackend } from './services/backend'
-import {
-  answerAgentCard,
-  chat,
-  complete,
-  listConversations,
-  listProviders,
-  removeConversation,
-  removeProvider,
-  renameConversation,
-  saveProvider,
-} from './services/ai'
+import { answerAgentCard, chat, listConversations, listProviders, removeConversation, renameConversation } from './services/ai'
+import { completeWithDefault, connectProvider, disconnectProvider } from './services/languageModels'
 import {
   cancelGbcJob,
   cancelParse,
@@ -260,10 +251,10 @@ export function registerIpc(): void {
 
   handle(Ipc.aiProvidersList, null, () => listProviders())
 
-  handle(Ipc.aiProviderSave, schemas.aiProviderSave, (input) => saveProvider(input))
+  handle(Ipc.aiProviderSave, schemas.aiProviderSave, (input) => connectProvider(input))
 
   handle(Ipc.aiProviderRemove, schemas.projectId, ({ id }) => {
-    removeProvider(id)
+    disconnectProvider(id)
     return true
   })
 
@@ -276,7 +267,7 @@ export function registerIpc(): void {
 
   handle(Ipc.aiConversationRename, schemas.aiConversationTitle, ({ id, title }) => renameConversation(id, title))
 
-  handle(Ipc.aiComplete, schemas.aiComplete, (input) => complete(input))
+  handle(Ipc.aiComplete, schemas.aiComplete, (input) => completeWithDefault(input))
 
   handle(Ipc.aiToolResult, schemas.aiToolResult, ({ callId, result }) => {
     pendingToolCalls.get(callId)?.(result)
