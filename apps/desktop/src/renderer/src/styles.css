@@ -1,4 +1,4 @@
-﻿@import 'tailwindcss';
+@import 'tailwindcss';
 @import './styles/dropdowns.css';
 @import './styles/studio.css';
 /* The Markdown renderer ships Tailwind classes; generate them. */
@@ -462,6 +462,30 @@ button:disabled {
   padding: 1px 4px;
   font-family: var(--font-mono);
   font-size: var(--text-caption);
+}
+
+.clover-md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: var(--text-caption);
+  line-height: 1.45;
+}
+
+.clover-md th,
+.clover-md td {
+  min-width: 5em;
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.clover-md th {
+  white-space: nowrap;
+  color: var(--ink);
+  font-weight: 600;
 }
 
 /* Quiet scrollbars that sit on whatever tone is behind them. */

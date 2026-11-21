@@ -33,11 +33,20 @@ import {
   type ResolvedGpuProfile,
   type WeightPrecisions,
 } from '@shared/gpuProfile'
-import { bundleGpuProblem, bundleWeightProblem, isFileBundle, isLocalOnlyBundle, profileForBundle } from '@shared/bundleFit'
+import {
+  bundleGpuProblem,
+  bundleWeightProblem,
+  isFileBundle,
+  isRemoteWorkerBundleId,
+  isLocalOnlyBundle,
+  profileForBundle,
+} from '@shared/bundleFit'
 import { probeLocalEngineGpuCompatibility } from './engines'
 import { getTrainingHost } from './trainingHosts'
 import { cancelRemoteEngineJob, runRemoteEngineJob } from './remoteEngine'
 import { remoteAbsolute } from './ssh'
+import { connectWorkerHost, isWorkerDaemonHost } from './workerHostManager'
+import { runRemoteWorkerJob, cancelRemoteWorkerJob } from './remoteWorker'
 import { pushDiagnostic } from './diagnostics'
 import { generationErrorText } from '@shared/generationError'
 import { pushLocalNotification } from './desktopNotifications'
@@ -61,6 +70,7 @@ interface RunningJob {
   killTimer?: NodeJS.Timeout
   lastLines: string[]
   cancelRequested: boolean
+  cancelWorker?: () => void
   cancelCommand?: { command: string; args: string[]; env?: NodeJS.ProcessEnv }
   /** Runs on a CLI engine (moss-infer-vulkan / moss-infer-hip), possibly not handed to it yet. */
   cli?: boolean
@@ -1000,8 +1010,10 @@ async function startEngineJobNow(input: StartEngineJobInput, queuedJob?: JobReco
   let modelSnapshot: unknown
   let modelFiles: { ditFile?: string; textEncoderFile?: string; vaeFile?: string } = {}
   let modelBundle: ModelBundle | undefined
+  const host = input.hostId ? getTrainingHost(settings, input.hostId) : undefined
+  const workerHost = isWorkerDaemonHost(host)
   const cliEngine = input.hostId ? null : cliEngineOf(input.deviceUuid)
-  if (input.modelBinding) {
+  if (input.modelBinding && !workerHost) {
     // A combination saved before 自己组合 stopped offering fp16 main models would fail at load
     // with the engine's weight error; say what is wrong with it before anything starts.
     const catalog = await getCatalog(settings)
@@ -1011,11 +1023,11 @@ async function startEngineJobNow(input: StartEngineJobInput, queuedJob?: JobReco
       throw codedError('E_MODEL', `「${name ?? input.modelBinding.bundleId}」${problem}，请换一个模型`)
     }
   }
-  if (input.hostId && input.modelBinding) {
+  if (input.hostId && input.modelBinding && !workerHost) {
     // Another computer runs the model folder at its remote path; single files load only here.
     const catalog = await getCatalog(settings)
     const bundle = catalog.bundles.find((item) => item.id === input.modelBinding!.bundleId)
-    if (bundle && isLocalOnlyBundle(bundle, catalog.models)) {
+    if (bundle && !isRemoteWorkerBundleId(bundle.id) && isLocalOnlyBundle(bundle, catalog.models)) {
       throw codedError('E_MODEL', `「${bundle.name}」只能在这台电脑上运行，在其他电脑上请用官方模型`)
     }
   }
@@ -1089,10 +1101,13 @@ async function startEngineJobNow(input: StartEngineJobInput, queuedJob?: JobReco
   const executionSettings = gpuProfile ? settingsForGpuProfile(settings, gpuProfile) : settings
 
   if (input.hostId) {
-    const host = getTrainingHost(settings, input.hostId)
     if (!host || host.kind !== 'ssh') throw new Error('远端引擎主机不存在')
-    if (!input.remoteModelPath?.trim()) throw new Error('远端模型路径未配置')
-    const outputRoot = await remoteAbsolute(host, host.outputRoot ?? '~/.mossstudio/outputs')
+    const workerId = input.modelBinding?.bundleId.startsWith('remote-worker:')
+      ? input.modelBinding.bundleId.slice('remote-worker:'.length)
+      : undefined
+    if (workerId && !isWorkerDaemonHost(host)) throw codedError('E_WORKER_CONFIG', '所选主机不是远端服务')
+    if (!workerHost && !input.remoteModelPath?.trim()) throw new Error('远端模型路径未配置')
+    const outputRoot = workerHost ? '' : await remoteAbsolute(host, host.outputRoot ?? '~/.mossstudio/outputs')
     const remoteOutput = `${outputRoot.replace(/\/$/, '')}/${Date.now().toString(36)}-${randomUUID().slice(0, 6)}.png`
     const localOutput = join(paths.outputs(), `${channelSafe(host.id)}-${Date.now().toString(36)}.png`)
     const params = paramsOf(input)
@@ -1154,11 +1169,47 @@ async function startEngineJobNow(input: StartEngineJobInput, queuedJob?: JobReco
       cancelRequested: false,
     }
     running.set(job.id, runningJob)
+    if (workerHost) {
+      runningJob.cancelWorker = () => {
+        void cancelRemoteWorkerJob(job.id).catch(() => undefined)
+      }
+      void (async () => {
+        const profile = await connectWorkerHost(host)
+        if (workerId && profile.id !== workerId) throw codedError('E_WORKER_CONFIG', '所选模型与远端服务不匹配')
+        if (runningJob.cancelRequested) return 130
+        return runRemoteWorkerJob({
+          profile,
+          jobId: job.id,
+          params,
+          output: localOutput,
+          onEvent: (payload) => {
+            handleRunnerEvent(job, runningJob, JSON.stringify(payload))
+            // Submission may have been in flight when cancel was requested.
+            if (payload.type === 'ready' && runningJob.cancelRequested) runningJob.cancelWorker?.()
+          },
+        })
+      })()
+        .then((code) => finish(job, runningJob, code))
+        .catch((error: unknown) => {
+          handleRunnerEvent(
+            job,
+            runningJob,
+            JSON.stringify({
+              type: 'error',
+              code: 'E_WORKER',
+              message: error instanceof Error ? error.message : String(error),
+              fatal: true,
+            }),
+          )
+          finish(job, runningJob, runningJob.cancelRequested ? 130 : -1)
+        })
+      return snapshot(job)
+    }
     void runRemoteEngineJob(
       host,
       {
         engineRoot: host.engineRoot,
-        model: input.remoteModelPath,
+        model: input.remoteModelPath!,
         output: remoteOutput,
         localOutput,
         params,
@@ -1516,6 +1567,10 @@ export async function cancelJob(id: string): Promise<JobRecord | null> {
   }
   runningJob.cancelRequested = true
   appendLog(job, 'system', '正在停止任务…', runningJob)
+  if (job.engine === 'mossinfer' && job.hostId && runningJob.cancelWorker) {
+    runningJob.cancelWorker()
+    return snapshot(job)
+  }
   if (job.engine === 'mossinfer' && job.hostId) {
     // Its own SSH session carries the cancel (and is closed if the host does not confirm); local engines are not involved.
     cancelRemoteEngineJob(job.id)

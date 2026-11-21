@@ -36,6 +36,18 @@ beforeEach(() => {
 })
 const load = () => import('@main/services/trainingHosts')
 
+it('probes worker hosts without invoking the Linux SSH shell', async () => {
+  const manager = await import('@main/services/workerHostManager')
+  const workerProbe = vi
+    .spyOn(manager, 'probeWorkerHost')
+    .mockResolvedValue({ path: '', root: '', gpu: '', online: true, available: true, checkedAt: '2026-01-01' })
+  const { saveTrainingHost, testTrainingHost } = await load()
+  const host = saveTrainingHost({ ...input, remoteBackend: 'worker-daemon' })
+  expect(await testTrainingHost(settings, host.id)).toMatchObject({ status: 'ok' })
+  expect(workerProbe).toHaveBeenCalledWith(expect.objectContaining({ id: host.id }), true)
+  expect(state.probe).not.toHaveBeenCalled()
+})
+
 describe('inventory', () => {
   it('always lists the local host first with resolved paths', async () => {
     const { listTrainingHosts } = await load()
@@ -71,6 +83,25 @@ describe('inventory', () => {
 })
 
 describe('saveTrainingHost', () => {
+  it('persists worker configuration and defaults the workflow', async () => {
+    const { saveTrainingHost } = await load()
+    const worker = {
+      ...input,
+      remoteBackend: 'worker-daemon' as const,
+      workerDiscoveryPath: ' /srv/worker/discovery.json ',
+      workerProviderId: ' render-node ',
+    }
+    const saved = saveTrainingHost(worker)
+    expect(saved).toMatchObject({
+      remoteBackend: 'worker-daemon',
+      workerDiscoveryPath: '/srv/worker/discovery.json',
+      workerProviderId: 'render-node',
+      workerWorkflow: 'default',
+    })
+    vi.resetModules()
+    expect((await load()).getTrainingHost(settings, saved.id)).toMatchObject({ remoteBackend: 'worker-daemon', workerWorkflow: 'default' })
+  })
+
   it('trims input, falls back to the host as name and defaults port/auth', async () => {
     const { saveTrainingHost } = await load()
     const saved = saveTrainingHost(input)

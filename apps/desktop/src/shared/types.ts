@@ -2,6 +2,19 @@ import type { UiScale } from './uiScale'
 import type { EngineMachine, EnginePlan } from './engineChoice'
 import type { GbcLanguage } from './gbc'
 
+export interface LoraMetadata {
+  triggers?: string[]
+  suggestedTriggers?: string[]
+  negativeTriggers?: string[]
+  defaultStrength?: number
+  autoInsert?: 'manual' | 'prefix' | 'suffix'
+  notes?: string
+}
+
+export interface LoraProfile extends LoraMetadata {
+  loraId: string
+}
+
 export type CheckStatus = 'ok' | 'warn' | 'error' | 'unknown'
 
 export type CheckActionKind = 'rescan' | 'open-settings' | 'open-url' | 'install-python' | 'switch-mirror'
@@ -673,7 +686,13 @@ export type SshAuthMethod = 'identityFile' | 'password' | 'none'
 export type TrainerChannel = 'stable' | 'experimental' | 'custom'
 export type TrainerRuntimeState = 'missing' | 'created' | 'installing' | 'ready' | 'error'
 
+export type RemoteHostBackend = 'moss-ssh' | 'worker-daemon'
+
 export interface TrainingHost {
+  remoteBackend?: RemoteHostBackend
+  workerDiscoveryPath?: string
+  workerProviderId?: string
+  workerWorkflow?: string
   id: string
   name: string
   kind: TrainingHostKind

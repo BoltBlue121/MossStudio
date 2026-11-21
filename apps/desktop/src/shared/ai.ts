@@ -107,6 +107,7 @@ export type AiStreamEvent =
 /** Sent from main to the renderer when a tool must run against Studio state. */
 export interface AiToolCallRequest {
   callId: string
+  conversationId?: string
   name: string
   arguments: string
   /** Advanced mode turns a write into a plan step instead of changing anything. */

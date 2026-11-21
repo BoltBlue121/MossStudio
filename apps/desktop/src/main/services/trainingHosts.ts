@@ -1,3 +1,4 @@
+import { isWorkerDaemonHost, probeWorkerHost, workerHostDevices } from './workerHostManager'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -50,6 +51,10 @@ export function listTrainingHosts(settings: Settings): TrainingHost[] {
 }
 
 export interface SaveTrainingHostInput {
+  remoteBackend?: TrainingHost['remoteBackend']
+  workerDiscoveryPath?: string
+  workerProviderId?: string
+  workerWorkflow?: string
   id?: string
   name: string
   host: string
@@ -91,6 +96,10 @@ export function saveTrainingHost(input: SaveTrainingHostInput): TrainingHost {
     kind: 'ssh',
     host: input.host.trim(),
     user: input.user.trim(),
+    remoteBackend: input.remoteBackend ?? existing?.remoteBackend,
+    workerDiscoveryPath: (input.workerDiscoveryPath ?? existing?.workerDiscoveryPath)?.trim() || undefined,
+    workerProviderId: (input.workerProviderId ?? existing?.workerProviderId)?.trim() || undefined,
+    workerWorkflow: (input.workerWorkflow ?? existing?.workerWorkflow)?.trim() || 'default',
     port: input.port ?? 22,
     authMethod,
     identityFile: authMethod === 'identityFile' ? (input.identityFile ?? existing?.identityFile)?.trim() || undefined : undefined,
@@ -130,6 +139,12 @@ export async function testTrainingHost(settings: Settings, id: string): Promise<
       lastCheckedAt: new Date().toISOString(),
       error: cuda.code === 0 ? undefined : '本机没有 NVIDIA CUDA；KohakuMossTrainer 不支持 MPS',
     }
+  }
+  if (isWorkerDaemonHost(host)) {
+    const probe = await probeWorkerHost(host, true)
+    Object.assign(host, { status: probe.online && probe.available ? 'ok' : 'error', lastCheckedAt: probe.checkedAt, error: probe.error })
+    persist()
+    return { ...host }
   }
   try {
     let probe
@@ -239,7 +254,8 @@ function localManagedDevices(settings: Settings): ComputeDevice[] {
 }
 
 function managedHost(settings: Settings, host: TrainingHost): ManagedHost {
-  const devices = host.kind === 'local' ? localManagedDevices(settings) : parseRemoteDevices(host)
+  const devices =
+    host.kind === 'local' ? localManagedDevices(settings) : isWorkerDaemonHost(host) ? workerHostDevices(host) : parseRemoteDevices(host)
   return {
     ...host,
     status: host.kind === 'local' ? 'ok' : host.status,

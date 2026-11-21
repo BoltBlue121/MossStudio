@@ -77,7 +77,8 @@ export function RemoteHosts(): React.JSX.Element {
   const reachable = useMemo(
     () =>
       (hosts ?? [])
-        .filter((host) => host.status === 'ok')
+        // A worker daemon is reached through a tunnel that the engine check itself opens.
+        .filter((host) => host.status === 'ok' || host.remoteBackend === 'worker-daemon')
         .map((host) => host.id)
         .join(','),
     [hosts],
@@ -118,7 +119,8 @@ export function RemoteHosts(): React.JSX.Element {
   async function save(form: HostForm): Promise<boolean> {
     try {
       const saved = await call<ManagedHost>(Ipc.hostsSave, hostSavePayload(form))
-      await call(Ipc.hostsUpdatePaths, hostPathsPatch(saved.id, form))
+      // A worker daemon keeps its own engine and output folders.
+      if (form.remoteBackend !== 'worker-daemon') await call(Ipc.hostsUpdatePaths, hostPathsPatch(saved.id, form))
       await refresh()
       void test(saved)
       return true
@@ -175,7 +177,10 @@ export function RemoteHosts(): React.JSX.Element {
       <Group>
         {hosts === null ? <LoadingRow className="px-3.5" /> : null}
         {hosts?.length === 0 ? (
-          <Row title="还没有远程主机" description="添加一台装有 NVIDIA 显卡的 Linux 电脑，就可以在创作时选择在它上面运行。" />
+          <Row
+            title="还没有远程主机"
+            description="添加一台装有 NVIDIA 显卡的 Linux 电脑，或运行 Worker 守护进程的 Windows / Linux 电脑，就可以在创作时选择在它上面运行。"
+          />
         ) : null}
         {hosts?.map((host) => {
           const engine = engines[host.id]
@@ -190,10 +195,13 @@ export function RemoteHosts(): React.JSX.Element {
                 title={host.name}
                 description={working ? (installing ? install.message : working) : `${summary.statusLabel} · ${summary.detail}`}
               >
-                <Button onClick={() => void prepare(host)} disabled={Boolean(working)}>
-                  {working ? <Spinner /> : null}
-                  {engine?.available ? '准备模型' : '准备引擎和模型'}
-                </Button>
+                {/* A worker daemon brings its own engine and models; there is nothing to install on it. */}
+                {host.remoteBackend === 'worker-daemon' ? null : (
+                  <Button onClick={() => void prepare(host)} disabled={Boolean(working)}>
+                    {working ? <Spinner /> : null}
+                    {engine?.available ? '准备模型' : '准备引擎和模型'}
+                  </Button>
+                )}
                 <Button onClick={() => void test(host)} disabled={Boolean(working)}>
                   测试
                 </Button>

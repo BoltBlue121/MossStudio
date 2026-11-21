@@ -297,6 +297,10 @@ const projectCanvasSchema = z.object({
 })
 
 const hostSaveSchema = z.object({
+  remoteBackend: z.enum(['moss-ssh', 'worker-daemon']).optional(),
+  workerDiscoveryPath: z.string().max(4096).optional(),
+  workerProviderId: z.string().max(120).optional(),
+  workerWorkflow: z.string().max(120).optional(),
   id: z.string().max(80).optional(),
   name: z.string().max(120).default(''),
   host: z.string().min(1).max(255),
@@ -320,7 +324,159 @@ const hostSaveSchema = z.object({
   clearHfToken: z.boolean().optional(),
 })
 
+const agentBackend = z.string().min(1).max(80)
+const agentSession = z.string().min(1).max(256)
+
+export const loraProfileSchema = z.strictObject({
+  loraId: z.string().trim().min(1).max(512),
+  triggers: z.array(z.string().trim().min(1).max(200)).max(64).optional(),
+  suggestedTriggers: z.array(z.string().trim().min(1).max(200)).max(8).optional(),
+  negativeTriggers: z.array(z.string().trim().min(1).max(200)).max(64).optional(),
+  defaultStrength: z.number().finite().min(-4).max(4).optional(),
+  autoInsert: z.enum(['manual', 'prefix', 'suffix']).optional(),
+  notes: z.string().max(4000).optional(),
+})
+
 export const schemas = {
+  remoteWorkerLoras: z
+    .object({
+      hostId: z.string().min(1).max(120).optional(),
+      providerId: z.string().min(1).max(120).optional(),
+      candidates: z.boolean().optional(),
+    })
+    .refine((value) => Boolean(value.hostId || value.providerId), 'hostId or providerId is required'),
+  remoteWorkerLoraRegister: z
+    .object({
+      hostId: z.string().min(1).max(120).optional(),
+      providerId: z.string().min(1).max(120).optional(),
+      id: z.string().min(1).max(4096),
+      action: z.enum(['register', 'unregister']),
+    })
+    .refine((value) => Boolean(value.hostId || value.providerId), 'hostId or providerId is required'),
+  loraProfilesList: z.strictObject({}).optional(),
+  loraProfilesSave: loraProfileSchema,
+  loraProfilesInspect: z
+    .strictObject({
+      filePath: pathLike.optional(),
+      loraId: z.string().trim().min(1).max(260).optional(),
+    })
+    .refine((value) => Boolean(value.filePath || value.loraId), 'filePath or loraId is required'),
+  mcpClientsStatus: z.strictObject({}).optional(),
+  mcpClientInstall: z.strictObject({ clientId: z.enum(['codex', 'claude-code']) }),
+  mcpClientUninstall: z.strictObject({ clientId: z.enum(['codex', 'claude-code']) }),
+  agentHubConnect: z
+    .object({
+      backendId: agentBackend,
+      customCommand: z
+        .string()
+        .trim()
+        .min(1)
+        .max(4096)
+        .regex(/^[^\r\n\0]+$/)
+        .optional(),
+      customArgs: z
+        .array(
+          z
+            .string()
+            .max(4096)
+            .regex(/^[^\0]*$/),
+        )
+        .max(100)
+        .optional(),
+    })
+    .strict(),
+  agentHubBackend: z.object({ backendId: agentBackend }).strict(),
+  agentHubCreateSession: z
+    .object({
+      backendId: agentBackend,
+      title: z.string().min(1).max(200).optional(),
+      cwd: pathLike.optional(),
+      createCwd: z.boolean().optional(),
+      projectId: z.string().min(1).max(128).optional(),
+      agentPreset: z.string().min(1).max(128).optional(),
+      model: z.string().min(1).max(256).optional(),
+      provider: z.string().min(1).max(128).optional(),
+    })
+    .strict(),
+  agentHubModels: z.object({ backendId: agentBackend, sessionId: agentSession.optional() }).strict(),
+  agentHubSetModel: z
+    .object({
+      backendId: agentBackend,
+      sessionId: agentSession,
+      model: z.string().min(1).max(256),
+      provider: z.string().min(1).max(128).optional(),
+      reasoningEffort: z.string().min(1).max(128).optional(),
+    })
+    .strict(),
+  agentHubSession: z.object({ backendId: agentBackend, sessionId: agentSession }).strict(),
+  agentHubSend: z
+    .object({
+      backendId: agentBackend,
+      sessionId: agentSession,
+      requestId: z.string().min(1).max(128).optional(),
+      text: z.string().trim().min(1).max(6000),
+      studioContext: z.string().max(3500).optional(),
+      toolProfile: z.enum(['compact', 'atomic', 'proposal-only', 'custom', 'full']).optional(),
+      attachments: z
+        .array(
+          z
+            .object({
+              name: z.string().min(1).max(256),
+              mime: z.string().min(1).max(128),
+              dataUrl: z.string().max(14_000_000).optional(),
+              path: pathLike.optional(),
+            })
+            .strict(),
+        )
+        .max(10)
+        .optional(),
+    })
+    .strict(),
+  agentHubResolveApproval: z.object({ id: z.string().min(1).max(128), decision: z.enum(['approve', 'reject']) }).strict(),
+  capabilitiesList: z
+    .object({
+      profile: z.enum(['compact', 'atomic', 'proposal-only', 'custom']).optional(),
+      surface: z.enum(['/studio', '/manga', '/library', '/models', '/training']).optional(),
+      enabledPacks: z.array(z.string().min(1).max(120)).max(64).optional(),
+      headlessOnly: z.boolean().optional(),
+      includeExternal: z.boolean().optional(),
+      audience: z
+        .array(z.enum(['tools', 'resources', 'images', 'text-only']))
+        .max(4)
+        .optional(),
+      nameStyle: z.enum(['legacy-or-id', 'canonical']).optional(),
+    })
+    .optional(),
+
+  capabilitiesExecute: z.object({
+    callId: z.string().min(1).max(120).optional(),
+    name: z.string().min(1).max(160),
+    arguments: z.union([z.record(z.string(), z.unknown()), z.string().max(200_000)]).optional(),
+    mode: z.enum(['auto', 'advanced']).optional(),
+    source: z.enum(['assistant', 'ipc', 'external-agent', 'system']).optional(),
+    conversationId: z.string().min(1).max(120).optional(),
+    approved: z.boolean().optional(),
+  }),
+
+  capabilitiesAudit: z
+    .object({
+      limit: z.number().int().min(1).max(200).optional(),
+      conversationId: z.string().min(1).max(120).optional(),
+      packId: z.string().min(1).max(120).optional(),
+      actionId: z.string().min(1).max(160).optional(),
+    })
+    .optional(),
+
+  mcpInfo: z
+    .object({
+      includeToken: z.boolean().optional(),
+    })
+    .optional(),
+
+  mcpSetProfile: z.object({
+    profile: z.enum(['compact', 'atomic', 'proposal-only', 'custom']),
+    enabledPacks: z.array(z.string().min(1).max(120)).max(64).optional(),
+  }),
   settingsUpdate: z
     .object({
       theme: z.enum(['system', 'light', 'dark']),

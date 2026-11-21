@@ -6,6 +6,9 @@ import { DEFAULT_SETTINGS } from '@main/services/settings'
 import { useTempDataRoot } from '@test/helpers/tempDir'
 import { cacheDirFor, installOnDisk, rawModel, sha256, testSettings, vaeFiles, writeCatalog } from './modelFixtures'
 
+const listActiveWorkerProfiles = vi.hoisted(() => vi.fn(() => [] as Array<{ id: string; label: string; hostId: string }>))
+vi.mock('@main/services/workerHostManager', () => ({ listActiveWorkerProfiles }))
+
 const contentDir = vi.hoisted(() => vi.fn<() => string | null>())
 const listJobs = vi.hoisted(() => vi.fn<() => Promise<Array<{ state: string }>>>())
 vi.mock('@main/lib/content', () => ({ contentDir, catalogOverrideDir: () => contentDir() }))
@@ -33,6 +36,7 @@ const bundle = {
 
 beforeEach(async () => {
   vi.resetModules()
+  listActiveWorkerProfiles.mockReturnValue([])
   contentDir.mockReset().mockImplementation(() => releaseDir())
   listJobs.mockReset().mockResolvedValue([])
   models = await import('@main/services/models')
@@ -43,6 +47,19 @@ beforeEach(async () => {
 const byId = <T extends { id: string }>(items: T[], id: string): T | undefined => items.find((item) => item.id === id)
 
 describe('getCatalog sources', () => {
+  it('merges connected worker bundles even after the local catalog is cached', async () => {
+    await models.getCatalog(settings)
+    listActiveWorkerProfiles.mockReturnValue([{ id: 'render', label: 'Render worker', hostId: 'worker-host' }])
+    const connected = await models.getCatalog(settings)
+    expect(byId(connected.bundles, 'remote-worker:render')).toMatchObject({
+      name: 'Render worker',
+      components: { dit: 'remote-worker:render' },
+    })
+    expect(byId(connected.models, 'remote-worker:render')).toMatchObject({ installed: true, installState: 'ready' })
+    listActiveWorkerProfiles.mockReturnValue([])
+    expect(byId((await models.getCatalog(settings)).bundles, 'remote-worker:render')).toBeUndefined()
+  })
+
   it('reads a local release catalog and normalises raw entries', async () => {
     const catalog = await models.getCatalog(settings)
     expect(catalog.source).toBe('local')
@@ -550,6 +567,16 @@ describe('adapters', () => {
       sizeBytes: 3,
       revision: 'main',
     })
+  })
+
+  it('merges trigger words from imported safetensors metadata into the catalog', async () => {
+    const source = join(dataRoot(), 'metadata.safetensors')
+    const header = Buffer.from(JSON.stringify({ __metadata__: { trigger_words: 'ink style' } }))
+    const length = Buffer.alloc(8)
+    length.writeBigUInt64LE(BigInt(header.length))
+    writeFileSync(source, Buffer.concat([length, header]))
+    const linked = await models.linkAdapterFile(settings, { path: source })
+    expect(byId((await models.getCatalog(settings, true)).adapters, linked.id)).toMatchObject({ triggers: ['ink style'] })
   })
 
   it('uses an imported LoRA where it is, once per file however often it is imported', async () => {

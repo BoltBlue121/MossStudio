@@ -10,6 +10,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { ModelImportHost } from './components/ModelImport'
 import { ToastProvider, cn, useToast } from './components/ui'
 import { ActivityPanel } from './components/shell/ActivityPanel'
+import { GlobalApprovalOverlay } from './pages/studio/assistant/GlobalApprovalOverlay'
 import { Rail } from './components/shell/Rail'
 import { LEGACY_REDIRECTS, routeRoot, visibleRoutes } from './components/shell/routes'
 import { Titlebar } from './components/shell/Titlebar'
@@ -133,6 +134,7 @@ function StudioShell(): React.JSX.Element {
         <main className="relative min-w-0 flex-1 overflow-hidden rounded-tl-xl">
           <PageHost active={active} />
           <ActivityPanel />
+          <GlobalApprovalOverlay />
         </main>
       </div>
       <ModelImportHost />

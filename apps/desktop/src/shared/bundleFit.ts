@@ -20,10 +20,15 @@ export const LIMITED_VRAM_BYTES = 16 * 1024 ** 3
  * disk). The engine loads them as `dit_file` / `text_encoder_file` / `vae_file`
  * next to the runtime-config folder; only this computer's engine does that.
  */
+export function isRemoteWorkerBundleId(id?: string): boolean {
+  return Boolean(id?.startsWith('remote-worker:'))
+}
+
 export function isFileBundle(
   bundle: Pick<ModelBundle, 'components'>,
   models: readonly Pick<ModelEntry, 'id' | 'provider' | 'format'>[],
 ): boolean {
+  if (isRemoteWorkerBundleId(bundle.components.dit)) return false
   return [bundle.components.dit, bundle.components.textEncoder, bundle.components.vae].some((id) => {
     const model = models.find((entry) => entry.id === id)
     // A shared diffusers folder is a whole bundle folder, as the CLI engines read it (cliBundleProblem).
@@ -37,6 +42,7 @@ export function isLocalOnlyBundle(
   bundle: Pick<ModelBundle, 'components'>,
   models: readonly Pick<ModelEntry, 'id' | 'provider' | 'format'>[],
 ): boolean {
+  if (isRemoteWorkerBundleId(bundle.components.dit)) return false
   return isFileBundle(bundle, models) || Object.values(bundle.components).some(isSharedModelId)
 }
 

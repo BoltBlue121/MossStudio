@@ -1,3 +1,5 @@
+import { stopAllWorkerHostTunnels } from './services/workerHostManager'
+import { cancelAllRemoteWorkerJobs } from './services/remoteWorker'
 import { app, nativeTheme, protocol } from 'electron'
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -58,8 +60,10 @@ import {
 import { run } from './lib/run'
 import { archiveLegacyInferenceData } from './services/legacyMigration'
 import { matchRule, parseTqdm } from './services/parsers'
-import { registerIpc } from './ipc'
+import { registerIpc, runToolInStudioWindow } from './ipc'
 import { configurePasswordStore } from './lib/passwordStore'
+import { startMcpServer, stopMcpServer } from './mcp'
+import { stopAgentHub } from './agentHub'
 import { configureInstallModeSwitches, registerUninstallIpc, runInstallMode } from './install/app'
 import { applyAppUserModelId } from './install/identity'
 import { acquireAppLock } from './install/singleInstance'
@@ -186,6 +190,7 @@ app
     })
     registerGalleryProtocol()
     registerIpc()
+    void startMcpServer({ runInRenderer: runToolInStudioWindow }).catch((error: unknown) => console.warn('[mcp]', error))
     registerUninstallIpc()
     if (scenario === 'model-management') {
       try {
@@ -1988,7 +1993,13 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
+let quitCleanupStarted = false
+let quitCleanupFinished = false
+app.on('before-quit', (event) => {
+  if (quitCleanupFinished) return
+  event.preventDefault()
+  if (quitCleanupStarted) return
+  quitCleanupStarted = true
   stopTrainingJobs()
   stopGbcProcesses()
   stopModelSourceDiscovery()
@@ -1997,6 +2008,30 @@ app.on('before-quit', () => {
   closeAllSshTerminals()
   stopUpdater()
   stopBackend()
+  void stopMcpServer()
+  void stopAgentHub()
+  // Keep tunnels alive until cancellation is delivered, but never let an unreachable worker block quit.
+  void (async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        cancelAllRemoteWorkerJobs(),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 1500)
+        }),
+      ])
+    } catch (error) {
+      console.warn('[quit] worker cancellation failed', error)
+    } finally {
+      if (timer) clearTimeout(timer)
+      try {
+        await stopAllWorkerHostTunnels()
+      } finally {
+        quitCleanupFinished = true
+        app.quit()
+      }
+    }
+  })().catch((error) => console.warn('[quit] tunnel cleanup failed', error))
   void shutdownMossInfer()
   void shutdownCliEngines()
 })
