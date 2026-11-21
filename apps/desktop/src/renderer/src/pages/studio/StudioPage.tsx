@@ -9,7 +9,7 @@ import { ScanLine, Sparkles } from 'lucide-react'
 import { Button, useToast } from '../../components/ui'
 import { TitlebarPortal } from '../../components/shell/Titlebar'
 import { AdapterPicker } from '../../components/studio/AdapterPicker'
-import { loraProfileStore, recommendedStrength } from '../../components/studio/loraProfilesClient'
+import { loraProfileStore, recommendedStrength, useLoraProfiles } from '../../components/studio/loraProfilesClient'
 import { StudioSidebar } from '../../components/studio/StudioSidebar'
 import { installStudioToolBridge, registerStudioTools, type AddedLayer, type LayerBox, type StudioToolApi } from '../../lib/agentTools'
 import { call, onEvent } from '../../lib/api'
@@ -31,7 +31,7 @@ import {
   settingsFrom,
   type RegionInput,
 } from './canvases'
-import { clampDimension, isSeedLocked, samplingForBundle, SEED_MAX } from './defaults'
+import { clampDimension, isSeedLocked, nearestQuality, qualityPreset, samplingForBundle, SEED_MAX } from './defaults'
 import { InspectorPanel } from './InspectorPanel'
 import type { InputsWiring } from './InputsSection'
 import { ACTIVE_JOB_STATES } from './jobStatus'
@@ -60,6 +60,7 @@ import {
   nodeBlockers,
   seriesFromStyle,
   STYLE_CARD,
+  adaptersWithStyles,
   styleLoraNote,
   tryLoraOnBoard,
   upscaleFromPicture,
@@ -83,8 +84,8 @@ import { resolveJobInputs } from './jobInputs'
 import { useGenerate } from './useGenerate'
 import { useInputImport } from './useInputImport'
 import { droppedPaths, useModelImport } from '../../lib/modelImport'
-import { externalFocusMessage, externalFocusOf, useStudioProject, type StepOutcome } from './useStudioProject'
-import { LOCAL_HOST_ID, registerStudioCapabilities, withExactSteps, type StudioCapabilityDeps } from './studioCapabilities'
+import { createExternalSteps, externalFocusMessage, externalFocusOf, useStudioProject, type StepOutcome } from './useStudioProject'
+import { LOCAL_HOST_ID, registerStudioCapabilities, type StudioCapabilityDeps } from './studioCapabilities'
 import { ownsUndoKey } from './history'
 import { usePictureRegions } from './usePictureRegions'
 
@@ -200,6 +201,8 @@ export function StudioPage(): React.JSX.Element {
   const [galleryTarget, setGalleryTarget] = useState<PickTarget | { at: { x: number; y: number } } | { underlayOf: string } | null>(null)
 
   const remoteEnabled = settings?.remoteHostsEnabled === true
+  /** 设置 › 功能 › 外部 Agent: the 协同 panel beside the 助手. */
+  const externalAgents = settings?.externalAgentsEnabled === true
   /** 运行位置: local (or empty) for this computer, else an SSH host id. */
   const selectRemoteHost = useCallback((id: string) => {
     const next = id === LOCAL_HOST_ID ? '' : id
@@ -244,6 +247,7 @@ export function StudioPage(): React.JSX.Element {
     [selected?.deviceUuid, gpuInventory, settings],
   )
   const cliGpus = useMemo(() => cliGpuUuids(engineReadiness), [engineReadiness])
+  const loraProfiles = useLoraProfiles()
   const derived = deriveReadiness({
     canvas: generating,
     catalog,
@@ -258,6 +262,8 @@ export function StudioPage(): React.JSX.Element {
     gpus,
     cliGpus,
     workerAdapters,
+    loraProfiles,
+    promptAdapters: selected ? adaptersWithStyles(selected, project.canvases) : undefined,
   })
   // A LoRA blocker says when some of the LoRA come from a 风格 (the 画面's own list does not show them).
   const loraNote = selected?.kind === 'layout' ? styleLoraNote(selected, project.canvases) : ''
@@ -668,8 +674,16 @@ export function StudioPage(): React.JSX.Element {
   live.current = { project, generate, notify: toast.push }
   // Capabilities with no built-in tool (cards, wires, runs, projects) for external Agents over MCP.
   const capabilityDeps = useRef<StudioCapabilityDeps | null>(null)
+  // An external Agent's call is one undo step, also what it changes after an await.
+  const externalSteps = useMemo(() => createExternalSteps((group, run) => live.current.project.history.within(group, run)), [])
   capabilityDeps.current = {
-    project,
+    project: {
+      ...project,
+      setCanvases: externalSteps.wrap(project.setCanvases),
+      updateCanvas: externalSteps.wrap(project.updateCanvas),
+      removeCanvas: externalSteps.wrap(project.removeCanvas),
+      select: externalSteps.wrap(project.select),
+    },
     cancelJob,
     catalog,
     preferredBundleId,
@@ -767,7 +781,7 @@ export function StudioPage(): React.JSX.Element {
           })),
           selected: canvas ? viewOf(canvas) : null,
           notes:
-            'prompt is the overall description; the final prompt is compiled from it plus the visible regions. bbox is [x1,y1,x2,y2] in canvas pixels; the tools take normalised 0-1 x/y/w/h. steps is any whole number from 1 to 100 and is kept exactly; 8 (fast), 20 (standard) and 50 (fine) are the presets. A text region needs both strings: caption is the lettering style, text is exactly what is rendered.',
+            'prompt is the overall description; the final prompt is compiled from it plus the visible regions. bbox is [x1,y1,x2,y2] in canvas pixels; the tools take normalised 0-1 x/y/w/h. steps snap to 8 (fast), 20 (standard) or 50 (fine). A text region needs both strings: caption is the lettering style, text is exactly what is rendered.',
         }
       },
       readCanvas: (id) => {
@@ -829,7 +843,10 @@ export function StudioPage(): React.JSX.Element {
             clampDimension(patch.height ?? next.height, next.height),
           )
         }
-        if (patch.steps !== undefined) next = withExactSteps(next, patch.steps, patch.cfg !== undefined)
+        if (patch.steps !== undefined) {
+          const preset = qualityPreset(nearestQuality(patch.steps))
+          next = { ...next, steps: preset.steps, cfg: patch.cfg === undefined ? preset.cfg : next.cfg }
+        }
         if (patch.cfg !== undefined) next = { ...next, cfg: Math.min(20, Math.max(0, patch.cfg)) }
         if (patch.seed !== undefined) next = { ...next, seed: Math.min(SEED_MAX, Math.max(0, Math.round(patch.seed))), seedLocked: true }
         live.current.project.updateCanvas(canvas.id, () => next)
@@ -892,7 +909,7 @@ export function StudioPage(): React.JSX.Element {
       followExternal: async (call, run) => {
         const { project: p } = live.current
         const before = { canvases: p.canvasesRef.current, selectedId: p.selectedRef.current, session: p.sessionKey }
-        const result = await p.history.within({ key: `external:${call}`, label: '外部 Agent 的修改', call }, run)
+        const result = await externalSteps.follow(call, run)
         const after = live.current.project
         // Opening or creating a project is not the Agent adding every card in it: a new session reports nothing.
         const focus = externalFocusOf(before, {
@@ -909,7 +926,7 @@ export function StudioPage(): React.JSX.Element {
     }
     registerStudioTools(api)
     return () => registerStudioTools(null)
-  }, [])
+  }, [externalSteps])
 
   /**
    * Say what an undo or redo did, with the way back tied to that very step: the
@@ -1222,7 +1239,7 @@ export function StudioPage(): React.JSX.Element {
           onWidthChange={(right) => setWidths((value) => ({ ...value, right }))}
         >
           <div className="flex h-full min-h-0 flex-col p-4">
-            {assistantMode === 'collab' ? (
+            {assistantMode === 'collab' && externalAgents ? (
               <CollabPanel
                 board={{
                   projectId: project.projectId,
@@ -1238,7 +1255,7 @@ export function StudioPage(): React.JSX.Element {
                 onCreateProject={project.createProject}
               />
             ) : (
-              <Assistant board={assistantUndo} onCollab={() => chooseAssistantMode('collab')} />
+              <Assistant board={assistantUndo} onCollab={externalAgents ? () => chooseAssistantMode('collab') : undefined} />
             )}
           </div>
         </StudioSidebar>

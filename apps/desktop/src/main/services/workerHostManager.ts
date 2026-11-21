@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import type { RemoteWorkerProfile } from '@shared/remoteWorker'
-import type { ComputeDevice, RemoteEngineInfo, TrainingHost } from '@shared/types'
+import type { ComputeDevice, EngineFeatures, RemoteEngineInfo, Settings, TrainingHost } from '@shared/types'
 import { codedError } from '../lib/codedError'
 import { run } from '../lib/run'
 import { requestWorkerDaemon, setMemoryWorkerToken } from './remoteWorker'
@@ -35,6 +35,10 @@ export interface WorkerHostDeps {
 interface Capabilities {
   engineVersion?: string
   devices: Array<{ index: number; name: string; totalBytes?: number }>
+  /** What the daemon says it does (`features` in `/v1/capabilities`); anything it does not name is off. */
+  features: { lora: boolean; samplers: boolean }
+  /** Accepted names per enum parameter (`values`), as the engine's own `hello` gives them. */
+  values: Record<string, string[]>
 }
 interface Session {
   profile: RemoteWorkerProfile
@@ -46,6 +50,10 @@ interface Session {
 const sessions = new Map<string, Session>()
 const inflight = new Map<string, { signature: string; promise: Promise<RemoteWorkerProfile> }>()
 const epochs = new Map<string, number>()
+/** Worker hosts sit under 远程主机 and have their own switch in 设置 › 功能; off, they are hidden everywhere. */
+export function workerHostsOn(settings: Pick<Settings, 'remoteHostsEnabled' | 'workerHostsEnabled'>): boolean {
+  return settings.remoteHostsEnabled === true && settings.workerHostsEnabled === true
+}
 export function isWorkerDaemonHost(
   host?: Pick<WorkerHostConfig, 'kind' | 'remoteBackend'> | null,
 ): host is WorkerHostConfig & { kind: 'ssh'; remoteBackend: 'worker-daemon' } {
@@ -154,7 +162,20 @@ function parseCapabilities(raw: unknown): Capabilities {
     throw codedError('E_WORKER_RESPONSE', '远端能力信息无效')
   const engine = raw.engine as Record<string, unknown>
   const devices = Array.isArray(engine.devices) ? engine.devices : []
+  const features = 'features' in raw && raw.features && typeof raw.features === 'object' ? (raw.features as Record<string, unknown>) : {}
+  const rawValues = 'values' in raw && raw.values && typeof raw.values === 'object' ? (raw.values as Record<string, unknown>) : {}
+  const values = Object.fromEntries(
+    Object.entries(rawValues)
+      .slice(0, 16)
+      .flatMap(([key, list]) =>
+        /^[a-z_]{1,32}$/.test(key) && Array.isArray(list)
+          ? [[key, list.filter((item): item is string => typeof item === 'string' && item.length <= 64).slice(0, 64)]]
+          : [],
+      ),
+  )
   return {
+    features: { lora: features.lora === true, samplers: features.samplers === true },
+    values,
     engineVersion: typeof engine.version === 'string' ? engine.version.slice(0, 128) : undefined,
     devices: devices.slice(0, 64).flatMap((row: unknown, index) => {
       if (!row || typeof row !== 'object' || !('name' in row) || typeof row.name !== 'string') return []
@@ -197,7 +218,7 @@ export async function connectWorkerHost(
   host: WorkerHostConfig,
   options: { forceReconnect?: boolean; deps?: Partial<WorkerHostDeps> } = {},
 ): Promise<RemoteWorkerProfile> {
-  if (!isWorkerDaemonHost(host)) throw codedError('E_WORKER_CONFIG', '主机未配置为远端守护进程模式')
+  if (!isWorkerDaemonHost(host)) throw codedError('E_WORKER_CONFIG', '这台主机不是 Worker 服务')
   const signature = JSON.stringify([
     host.host,
     host.port,
@@ -257,7 +278,7 @@ export async function connectWorkerHost(
     if (tokenPath.platform !== path.platform || compare(tokenPath.path) !== compare(path.expectedTokenPath))
       throw codedError('E_WORKER_DISCOVERY', '令牌文件必须是发现文件同目录的 daemon-token')
     const token = (await deps.readRemoteFile(host, tokenPath.path)).trim()
-    if (token.length < 16 || token.length > 4096 || /[^\x21-\x7e]/.test(token)) throw codedError('E_WORKER_TOKEN', '远端访问令牌无效')
+    if (token.length < 16 || token.length > 4096 || /[^\x21-\x7e]/.test(token)) throw codedError('E_WORKER_TOKEN', 'Worker 服务的密钥无效')
     if ((epochs.get(host.id) ?? 0) !== epoch) throw codedError('E_WORKER_CANCELLED', '连接已取消')
     const localPort = await deps.allocateLocalPort()
     const tunnel = await deps.startTunnel(host, localPort, remotePort)
@@ -380,5 +401,32 @@ export async function probeWorkerHost(host: WorkerHostConfig, refresh = false, d
       error: '远端连接失败，请检查主机配置和服务状态',
       checkedAt: new Date().toISOString(),
     }
+  }
+}
+
+/**
+ * What a run on a Worker host can use, as its daemon reports it. This app sends
+ * a Worker text-to-image jobs only, so picture inputs, control, references,
+ * 高清修复 and live previews stay off whatever the daemon says.
+ */
+export async function workerEngineFeatures(host: WorkerHostConfig): Promise<EngineFeatures | null> {
+  try {
+    await connectWorkerHost(host)
+  } catch {
+    // Not reachable now: nothing is known about it.
+    return null
+  }
+  const session = sessions.get(host.id)
+  if (!session) return null
+  const { features, values } = session.capabilities
+  return {
+    preview: false,
+    imageInput: false,
+    control: false,
+    references: false,
+    hires: false,
+    samplers: features.samplers,
+    lora: features.lora,
+    values: features.samplers ? values : {},
   }
 }

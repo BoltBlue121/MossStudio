@@ -5,6 +5,7 @@ import {
   applyStudioDescription,
   executeStudioTool,
   formatStudioContext,
+  installExternalToolBridge,
   installStudioToolBridge,
   readStudioSnapshot,
   registerStudioTools,
@@ -485,6 +486,85 @@ describe('lib/agentTools installStudioToolBridge', () => {
     backend.emit(Events.aiToolCall, { callId: 'c', name: 'unknown', arguments: '{}' })
     await flush()
     expect(backend.callsTo(Ipc.aiToolResult)).toHaveLength(1)
+    off()
+    uninstall()
+  })
+})
+
+describe('lib/agentTools bridge: the 助手 and external Agents', () => {
+  it("runs the 助手's call through its own tool and leaves an external Agent's call to the other bridge", async () => {
+    const backend = createMockBackend('ready')
+    const uninstall = backend.install()
+    const followExternal = vi.fn(<T>(_call: string, run: () => Promise<T>) => run())
+    const setSampler = vi.fn(() => ({}))
+    registerStudioTools(api({ followExternal, setSampler } as Partial<StudioToolApi>))
+    const off = installStudioToolBridge()
+    backend.emit(Events.aiToolCall, { callId: 'a1', name: 'studio.sampling.set', arguments: '{"steps":20}', mode: 'auto', turnId: 't' })
+    backend.emit(Events.aiToolCall, { callId: 'x1', name: 'studio.sampling.set', arguments: '{"steps":20}', mode: 'auto', external: true })
+    await flush()
+    const results = backend.callsTo(Ipc.aiToolResult) as Array<{ callId: string; result: { content: string } }>
+    expect(results.map((item) => item.callId)).toEqual(['a1'])
+    expect(JSON.parse(results[0]!.result.content)).toHaveProperty('error')
+    expect(setSampler).not.toHaveBeenCalled()
+    expect(followExternal).not.toHaveBeenCalled()
+    off()
+    uninstall()
+  })
+
+  it("runs an external Agent's call as one followed step, and ignores the 助手's", async () => {
+    const backend = createMockBackend('ready')
+    const uninstall = backend.install()
+    const followExternal = vi.fn(<T>(_call: string, run: () => Promise<T>) => run())
+    const setSampler = vi.fn(() => ({}))
+    registerStudioTools(api({ followExternal, setSampler } as Partial<StudioToolApi>))
+    const openStudio = vi.fn()
+    const off = installExternalToolBridge({ openStudio })
+    backend.emit(Events.aiToolCall, { callId: 'a1', name: 'studio_set_sampler', arguments: '{"steps":20}', mode: 'auto', turnId: 't' })
+    backend.emit(Events.aiToolCall, { callId: 'x1', name: 'studio.sampling.set', arguments: '{"steps":20}', mode: 'auto', external: true })
+    await flush()
+    expect((backend.callsTo(Ipc.aiToolResult) as Array<{ callId: string }>).map((item) => item.callId)).toEqual(['x1'])
+    expect(setSampler).toHaveBeenCalledTimes(1)
+    expect(followExternal).toHaveBeenCalledTimes(1)
+    expect(openStudio).not.toHaveBeenCalled()
+    off()
+    uninstall()
+  })
+
+  it("runs an external Agent's calls one at a time, so a slow call's later edits stay in its own step", async () => {
+    const backend = createMockBackend('ready')
+    const uninstall = backend.install()
+    const order: string[] = []
+    let release = (): void => undefined
+    const followExternal = vi.fn(async <T>(call: string, run: () => Promise<T>) => {
+      order.push(`start ${call}`)
+      if (call === 'slow') await new Promise<void>((resolve) => (release = resolve))
+      const result = await run()
+      order.push(`end ${call}`)
+      return result
+    })
+    registerStudioTools(api({ followExternal } as Partial<StudioToolApi>))
+    const off = installExternalToolBridge({ openStudio: () => undefined })
+    backend.emit(Events.aiToolCall, { callId: 'slow', name: 'studio_read_context', arguments: '{}', external: true })
+    backend.emit(Events.aiToolCall, { callId: 'fast', name: 'studio_read_context', arguments: '{}', external: true })
+    await flush()
+    expect(order).toEqual(['start slow'])
+    release()
+    await vi.waitFor(() => expect(order).toEqual(['start slow', 'end slow', 'start fast', 'end fast']))
+    off()
+    uninstall()
+  })
+
+  it('opens the Studio for an external call made from another page, and says so when it never opens', async () => {
+    const backend = createMockBackend('ready')
+    const uninstall = backend.install()
+    const openStudio = vi.fn()
+    const off = installExternalToolBridge({ openStudio, waitMs: 150 })
+    backend.emit(Events.aiToolCall, { callId: 'x2', name: 'studio.board.read_context', arguments: '{}', external: true })
+    await vi.waitFor(() => expect(backend.callsTo(Ipc.aiToolResult)).toHaveLength(1))
+    expect(openStudio).toHaveBeenCalledTimes(1)
+    const [sent] = backend.callsTo(Ipc.aiToolResult) as Array<{ result: { ok: boolean; content: string } }>
+    expect(sent!.result.ok).toBe(false)
+    expect(JSON.parse(sent!.result.content).error).toContain('创作页还没有打开')
     off()
     uninstall()
   })

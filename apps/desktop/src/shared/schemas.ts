@@ -424,7 +424,6 @@ export const schemas = {
               name: z.string().min(1).max(256),
               mime: z.string().min(1).max(128),
               dataUrl: z.string().max(14_000_000).optional(),
-              path: pathLike.optional(),
             })
             .strict(),
         )
@@ -448,14 +447,10 @@ export const schemas = {
     })
     .optional(),
 
-  capabilitiesExecute: z.object({
-    callId: z.string().min(1).max(120).optional(),
+  // The renderer reads through this; it cannot claim another source or an approval (main sets both).
+  capabilitiesExecute: z.strictObject({
     name: z.string().min(1).max(160),
     arguments: z.union([z.record(z.string(), z.unknown()), z.string().max(200_000)]).optional(),
-    mode: z.enum(['auto', 'advanced']).optional(),
-    source: z.enum(['assistant', 'ipc', 'external-agent', 'system']).optional(),
-    conversationId: z.string().min(1).max(120).optional(),
-    approved: z.boolean().optional(),
   }),
 
   capabilitiesAudit: z
@@ -543,6 +538,8 @@ export const schemas = {
       remoteHostsEnabled: z.boolean(),
       trainingEnabled: z.boolean(),
       gbcEnabled: z.boolean(),
+      externalAgentsEnabled: z.boolean(),
+      workerHostsEnabled: z.boolean(),
       gbcProviderId: z.string().min(1).max(120).nullable(),
       languageProviderId: z.string().min(1).max(120).nullable(),
       gbcVersionId: z.string().min(1).max(160).nullable(),

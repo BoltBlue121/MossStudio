@@ -25,6 +25,8 @@ export interface AgentBackendInfo {
   connected: boolean
   command?: string
   detail?: string
+  /** Its conversations outlive a restart: it lists them (`session/list`) and loads them again (`session/load`). */
+  resumable?: boolean
 }
 export interface AgentSession extends AgentSessionBase {
   projectId?: string
@@ -81,7 +83,8 @@ export interface AgentSendInput {
   text: string
   studioContext?: string
   toolProfile?: ToolProfileId
-  attachments?: Array<{ name: string; mime: string; dataUrl?: string; path?: string }>
+  /** Pictures carried inline; main never reads a file the renderer names. */
+  attachments?: Array<{ name: string; mime: string; dataUrl?: string }>
 }
 export interface AgentHubEvent {
   backendId: string

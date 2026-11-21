@@ -73,36 +73,69 @@ export function legacyToolName(name: string): string | null {
 }
 
 /**
- * One tool call from the main process. The built-in assistant's tools keep
- * their own path (and its per-turn undo); every other capability goes to the
- * renderer host. A call without a turn comes from an external Agent over MCP:
- * the Studio follows what it did on the board.
+ * One call an external Agent made over MCP. A capability that supersedes a
+ * built-in tool runs that tool's handler; every other one goes to the renderer
+ * host. Its board changes are one undo step, and the Studio follows them.
  */
-export async function runStudioToolCall(
+export async function runExternalToolCall(
   request: AiToolCallRequest,
   host: RendererCapabilityHost = RENDERER_CAPABILITY_HOST,
 ): Promise<AiToolResult> {
   const legacy = legacyToolName(request.name)
   const run = (): Promise<AiToolResult> =>
     legacy
-      ? executeStudioTool(
-          { id: request.callId, name: legacy, arguments: request.arguments },
-          { mode: request.mode, turnId: request.turnId },
-        )
+      ? executeStudioTool({ id: request.callId, name: legacy, arguments: request.arguments }, { mode: request.mode })
       : host.execute(
           { id: request.callId, name: request.name, arguments: request.arguments },
           { mode: request.mode, conversationId: request.conversationId },
         )
-  const follow = request.turnId ? undefined : getStudioApi()?.followExternal
+  const follow = getStudioApi()?.followExternal
   return follow ? follow(request.callId, run) : run()
 }
 
-/** Subscribe once; resolves every tool call the main process asks for. */
+/** Subscribe once; resolves every tool call the 助手 asks for. An external Agent's calls go to `installExternalToolBridge`. */
 export function installStudioToolBridge(): () => void {
   return onEvent<AiToolCallRequest>(Events.aiToolCall, (request) => {
+    if (request.external) return
     void (async () => {
-      const result = await runStudioToolCall(request)
+      const result = await executeStudioTool(
+        { id: request.callId, name: request.name, arguments: request.arguments },
+        { mode: request.mode, turnId: request.turnId },
+      )
       await call(Ipc.aiToolResult, { callId: request.callId, result }).catch(() => undefined)
     })()
+  })
+}
+
+/** How long an external Agent's call waits for the Studio to open before it is told why it could not run. */
+export const STUDIO_OPEN_WAIT_MS = 8_000
+
+/** Resolves once the Studio has registered its tools, or false after `waitMs`. */
+async function studioReady(waitMs: number): Promise<boolean> {
+  const deadline = Date.now() + waitMs
+  while (!getStudioApi()) {
+    if (Date.now() >= deadline) return false
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  return true
+}
+
+/**
+ * Subscribe once, from the app shell, while 外部 Agent is on: an external
+ * Agent's board call opens the Studio when the person is on another page, and
+ * says so plainly when it still cannot run.
+ */
+export function installExternalToolBridge(options: { openStudio: () => void; waitMs?: number }): () => void {
+  // One call at a time: each call's board changes, also those after an await, must land in its own undo step.
+  let queue: Promise<void> = Promise.resolve()
+  return onEvent<AiToolCallRequest>(Events.aiToolCall, (request) => {
+    if (!request.external) return
+    queue = queue.then(async () => {
+      if (!getStudioApi()) options.openStudio()
+      const result = (await studioReady(options.waitMs ?? STUDIO_OPEN_WAIT_MS))
+        ? await runExternalToolCall(request)
+        : { ok: false, content: JSON.stringify({ error: 'MossStudio 的创作页还没有打开，请让用户先打开创作页再试' }) }
+      await call(Ipc.aiToolResult, { callId: request.callId, result }).catch(() => undefined)
+    })
   })
 }

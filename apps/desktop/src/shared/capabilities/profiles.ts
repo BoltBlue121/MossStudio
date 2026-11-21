@@ -1,5 +1,14 @@
 import type { AgentMode, AiToolDefinition } from '../ai'
-import type { ActionDescriptor, ActionEffect, ActionTarget, CapabilityId, CapabilitySurface, PolicyGate, SkillAudience } from './protocol'
+import {
+  MUTATING_EFFECTS,
+  type ActionDescriptor,
+  type ActionEffect,
+  type ActionTarget,
+  type CapabilityId,
+  type CapabilitySurface,
+  type PolicyGate,
+  type SkillAudience,
+} from './protocol'
 import type { CapabilityRegistry, SynthesizedSkill } from './registry'
 
 /**
@@ -16,6 +25,8 @@ export interface ToolProfileOptions {
   surface?: CapabilitySurface
   enabledFlags?: Readonly<Record<string, boolean>>
   enabledPacks?: readonly CapabilityId[]
+  /** Packs left out whatever the profile says (the ask cards, which only the 助手's chat shows). */
+  excludePacks?: readonly CapabilityId[]
   includeExternal?: boolean
   headlessOnly?: boolean
   audience?: readonly SkillAudience[]
@@ -44,11 +55,9 @@ export const COMPACT_PROFILE_PACKS: readonly CapabilityId[] = [
   'remote.hosts',
 ]
 
-const MUTATING_EFFECTS: readonly ActionEffect[] = ['write', 'run', 'delete', 'export', 'install', 'configure']
-
 /** Project actions, provider tool schemas and synchronized Skill markdown for a Tool Profile. */
 export function projectCapabilities(registry: CapabilityRegistry, options: ToolProfileOptions): ProjectedToolset {
-  const actions = registry.listActions({
+  const listed = registry.listActions({
     surface: options.surface,
     enabledFlags: options.enabledFlags,
     enabledPacks: options.enabledPacks ?? (options.profile === 'compact' ? COMPACT_PROFILE_PACKS : undefined),
@@ -56,6 +65,7 @@ export function projectCapabilities(registry: CapabilityRegistry, options: ToolP
     headlessOnly: options.headlessOnly,
     ...(options.profile === 'proposal-only' ? { excludeEffects: MUTATING_EFFECTS } : {}),
   })
+  const actions = options.excludePacks?.length ? listed.filter((action) => !options.excludePacks!.includes(action.packId)) : listed
   const tools = registry.toToolDefinitions(actions, { nameStyle: options.nameStyle ?? 'canonical' })
   const skill = registry.synthesizeSkill({
     actions,
@@ -92,6 +102,8 @@ export interface CapabilityAuditEntry {
 
 export interface CapabilityAuditQuery {
   limit?: number
+  /** Only calls from this kind of caller (an Agent reading the trail sees external Agents' calls only). */
+  source?: CapabilityCallSource
   conversationId?: string
   packId?: string
   actionId?: string

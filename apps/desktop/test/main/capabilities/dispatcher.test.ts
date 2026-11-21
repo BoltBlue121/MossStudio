@@ -5,6 +5,7 @@ import { paths } from '@main/lib/paths'
 import {
   createBuiltinMainHandlers,
   createMainCapabilityDispatcher,
+  flushCapabilityAudit,
   listCapabilityAudit,
   resetCapabilityAuditMemory,
 } from '@main/capabilities'
@@ -18,6 +19,9 @@ import type { ManagedHost } from '@shared/types'
 import { useTempDataRoot } from '@test/helpers/tempDir'
 
 useTempDataRoot()
+
+/** remote.hosts.* is behind 设置 › 功能 › 远程主机 (and its Worker hosts behind their own switch). */
+const REMOTE = { remoteHostsEnabled: true, workerHostsEnabled: true }
 
 beforeEach(() => {
   resetCapabilityAuditMemory()
@@ -40,7 +44,7 @@ describe('main/capabilities dispatcher and audit trail', () => {
     } as ManagedHost
     const spy = vi.spyOn(trainingHosts, 'listManagedHosts').mockReturnValue([{ ...host, id: 'local', kind: 'local' }, host])
     try {
-      const dispatcher = createMainCapabilityDispatcher({ mainHandlers: createBuiltinMainHandlers() })
+      const dispatcher = createMainCapabilityDispatcher({ mainHandlers: createBuiltinMainHandlers(), readFlags: () => REMOTE })
       const result = await dispatcher.execute({ name: 'remote.hosts.list', source: 'external-agent' })
       expect(result.ok).toBe(true)
       expect(JSON.parse(result.content)).toEqual({
@@ -61,6 +65,15 @@ describe('main/capabilities dispatcher and audit trail', () => {
     }
   })
 
+  it('refuses remote.hosts.* while 设置 › 功能 › 远程主机 is off', async () => {
+    const list = vi.fn(() => ({ hosts: [] }))
+    const dispatcher = createMainCapabilityDispatcher({ mainHandlers: { 'remote.hosts.list': list }, readFlags: () => ({}) })
+    const result = await dispatcher.execute({ name: 'remote.hosts.list', source: 'external-agent' })
+    expect(result.ok).toBe(false)
+    expect(JSON.parse(result.content).error).toContain('远程主机')
+    expect(list).not.toHaveBeenCalled()
+  })
+
   it('tests hosts, refreshes status and invalidates the catalog after connecting', async () => {
     const host: ManagedHost = { id: 'ssh-node', name: 'Node', kind: 'ssh', trainerRoot: '/trainer', status: 'unchecked', devices: [] }
     vi.spyOn(trainingHosts, 'getTrainingHost').mockReturnValue(host)
@@ -71,7 +84,7 @@ describe('main/capabilities dispatcher and audit trail', () => {
       .spyOn(engines, 'remoteEngineInfo')
       .mockResolvedValue({ online: true } as Awaited<ReturnType<typeof engines.remoteEngineInfo>>)
     try {
-      const dispatcher = createMainCapabilityDispatcher({ mainHandlers: createBuiltinMainHandlers() })
+      const dispatcher = createMainCapabilityDispatcher({ mainHandlers: createBuiltinMainHandlers(), readFlags: () => REMOTE })
       const result = await dispatcher.execute({ name: 'remote.hosts.test', arguments: { hostId: host.id } })
       expect(result.ok).toBe(true)
       expect(JSON.parse(result.content)).toMatchObject({ id: host.id, status: 'ok', remoteBackend: 'moss-ssh', devices: [] })
@@ -103,7 +116,8 @@ describe('main/capabilities dispatcher and audit trail', () => {
     const change = vi.spyOn(remoteWorker, 'changeRemoteWorkerLora').mockResolvedValue({ id: item.id, registered: false })
     const invalidate = vi.spyOn(models, 'invalidateCatalog').mockImplementation(() => {})
     try {
-      const dispatcher = createMainCapabilityDispatcher({ mainHandlers: createBuiltinMainHandlers() })
+      const dispatcher = createMainCapabilityDispatcher({ mainHandlers: createBuiltinMainHandlers(), readFlags: () => REMOTE })
+      dispatcher.requestApproval = async () => true
       const result = await dispatcher.execute({ name: 'remote.hosts.loras_list', arguments: { hostId: host.id, candidates: true } })
       expect(result.ok).toBe(true)
       expect(JSON.parse(result.content)).toEqual({ value: [{ ...item, triggers: ['style-token'] }] })
@@ -112,7 +126,6 @@ describe('main/capabilities dispatcher and audit trail', () => {
       const registered = await dispatcher.execute({
         name: 'remote.hosts.lora_register',
         arguments: { hostId: host.id, id: item.id, action: 'unregister' },
-        approved: true,
       })
       expect(registered.ok).toBe(true)
       expect(change).toHaveBeenCalledWith(profile, item.id, 'unregister')
@@ -125,19 +138,23 @@ describe('main/capabilities dispatcher and audit trail', () => {
     }
   })
 
-  it('requires human approval before changing remote Worker LoRA registration', async () => {
+  it('requires human approval before changing remote Worker LoRA registration, and a caller cannot claim one', async () => {
     const change = vi.fn(() => ({ registered: true }))
-    const dispatcher = createMainCapabilityDispatcher({ mainHandlers: { 'remote.hosts.lora_register': change } })
+    const dispatcher = createMainCapabilityDispatcher({ mainHandlers: { 'remote.hosts.lora_register': change }, readFlags: () => REMOTE })
     const call = {
       name: 'remote.hosts.lora_register',
-      arguments: { hostId: 'ssh-worker', id: 'style', action: 'register' },
+      arguments: { hostId: 'ssh-worker', id: 'style', action: 'register', approved: true },
       source: 'external-agent' as const,
     }
-    const blocked = await dispatcher.execute(call)
+    const blocked = await dispatcher.execute({ ...call, arguments: { hostId: 'ssh-worker', id: 'style', action: 'register' } })
     expect(blocked.ok).toBe(false)
     expect(JSON.parse(blocked.content).requiresApproval).toBe(true)
+    expect((await dispatcher.execute(call)).ok).toBe(false)
     expect(change).not.toHaveBeenCalled()
-    expect((await dispatcher.execute({ ...call, approved: true })).ok).toBe(true)
+    dispatcher.requestApproval = async () => false
+    expect((await dispatcher.execute({ ...call, arguments: { hostId: 'ssh-worker', id: 'style', action: 'register' } })).ok).toBe(false)
+    dispatcher.requestApproval = async () => true
+    expect((await dispatcher.execute({ ...call, arguments: { hostId: 'ssh-worker', id: 'style', action: 'register' } })).ok).toBe(true)
     expect(change).toHaveBeenCalledOnce()
   })
 
@@ -225,10 +242,10 @@ describe('main/capabilities dispatcher and audit trail', () => {
     expect(JSON.parse(deferred.content).proposed).toMatchObject({ tool: 'studio.projects.delete', args: { id: 'proj-1' } })
     expect(deleted).toEqual([])
 
+    dispatcher.requestApproval = async () => true
     const approved = await dispatcher.execute({
       name: 'studio.projects.delete',
       arguments: { id: 'proj-1' },
-      approved: true,
       source: 'external-agent',
       conversationId: 'conv-1',
     })
@@ -245,12 +262,13 @@ describe('main/capabilities dispatcher and audit trail', () => {
     expect(rendererCalls).toEqual([{ name: 'studio_read_context', conversationId: 'conv-2' }])
 
     // 5. Audit trail (操作留痕) is persisted on disk and reloads after memory reset.
+    await flushCapabilityAudit()
     expect(existsSync(paths.capabilityAudit())).toBe(true)
     const lines = readFileSync(paths.capabilityAudit(), 'utf8').trim().split('\n')
     expect(lines).toHaveLength(7)
 
     resetCapabilityAuditMemory()
-    const reloaded = listCapabilityAudit({ conversationId: 'conv-2' })
+    const reloaded = await listCapabilityAudit({ conversationId: 'conv-2' })
     expect(reloaded).toHaveLength(2)
     expect(reloaded[0]!.actionId).toBe('studio.board.read_context')
     expect(reloaded[1]!.actionId).toBe('studio.projects.delete')
@@ -271,7 +289,7 @@ describe('main/capabilities dispatcher and audit trail', () => {
     expect(bad.ok).toBe(false)
     expect(spy).not.toHaveBeenCalled()
 
-    const entries = listCapabilityAudit({ actionId: 'studio.projects.get' })
+    const entries = await listCapabilityAudit({ actionId: 'studio.projects.get' })
     expect(entries).toHaveLength(1)
     expect(entries[0]!.ok).toBe(false)
     expect(entries[0]!.error).toBeTruthy()

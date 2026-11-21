@@ -2,8 +2,13 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { Ipc } from '@shared/channels'
-import { canvasFixture } from '@test/mocks/backend/fixtures'
+import { canvasFixture, settingsFixture } from '@test/mocks/backend/fixtures'
 import { createMockBackend } from '@test/mocks/backend'
+import { scenario } from '@test/mocks/backend/scenarios'
+
+/** The 协同 panel exists only while 设置 › 功能 › 外部 Agent is on. */
+const withExternalAgents = () =>
+  scenario('ready', { settings: settingsFixture({ onboardingState: 'completed', externalAgentsEnabled: true }) })
 import { ToastProvider } from '@renderer/components/ui'
 import { ApiError } from '@renderer/lib/api'
 import { prettyArgs } from '@renderer/pages/studio/assistant/ApprovalDock'
@@ -43,6 +48,7 @@ afterEach(() => {
   root = null
   host = null
   localStorage.clear()
+  sessionStorage.clear()
 })
 
 const missing = new ApiError({ code: 'E_MOCK_UNHANDLED', message: 'mock backend has no handler' })
@@ -225,8 +231,8 @@ describe('collab panel helpers', () => {
     expect(next.packs).not.toContain('studio.ask')
     expect(next.packs).toHaveLength(COMPACT_PACKS.length - 1)
     expect(togglePack({ mode: 'atomic', packs: [] }, 'training.jobs').packs).toHaveLength(14)
-    expect(toolProfileLine({ mode: 'custom', packs: ['studio.ask'] })).toBe('Tool Profile: custom (studio.ask)')
-    expect(toolProfileLine({ mode: 'atomic', packs: [] })).toBe('Tool Profile: atomic')
+    expect(toolProfileLine({ mode: 'custom', packs: ['studio.ask'] })).toBe('Tools allowed: studio.ask')
+    expect(toolProfileLine({ mode: 'atomic', packs: [] })).toBe('Tools allowed: the atomic set')
   })
 
   it('works out the new project folder and refuses names that would escape it', () => {
@@ -325,7 +331,7 @@ describe('CollabPanel', () => {
   }
 
   it('shows the compact header, connects an ACP Agent and switches to the built-in assistant', async () => {
-    const backend = createMockBackend('ready')
+    const backend = createMockBackend(withExternalAgents())
     backend.install()
     backend.handle(Ipc.agentHubBackends, () => [
       { id: 'codex-acp', label: 'Codex ACP', kind: 'acp', available: true, connected: false },
@@ -362,14 +368,14 @@ describe('CollabPanel', () => {
     await act(async () => (connect as HTMLButtonElement).click())
     await settle()
     expect(backend.callsTo(Ipc.agentHubConnect)).toEqual([{ backendId: 'codex-acp' }])
-    expect(view.textContent).toContain('还没有可用的对话')
+    expect(view.textContent).toContain('还没有对话')
 
     await act(async () => (view.querySelector('[data-standalone-assistant]') as HTMLButtonElement).click())
     expect(standalone).toBe(1)
   })
 
   it('shows only this project conversations and imports another one by working folder first', async () => {
-    const backend = createMockBackend('ready')
+    const backend = createMockBackend(withExternalAgents())
     backend.install()
     backend.handle(Ipc.agentHubBackends, () => [{ id: 'codex-acp', label: 'Codex ACP', kind: 'acp', available: true, connected: true }])
     backend.handle(Ipc.agentHubSessions, () => [
@@ -415,7 +421,7 @@ describe('CollabPanel', () => {
   })
 
   function mountWithFolders(onCreateProject?: (name: string) => Promise<string | null>) {
-    const backend = createMockBackend('ready')
+    const backend = createMockBackend(withExternalAgents())
     backend.install()
     backend.handle(Ipc.agentHubBackends, () => [{ id: 'codex-acp', label: 'Codex ACP', kind: 'acp', available: true, connected: true }])
     backend.handle(Ipc.agentHubSessions, () => [
@@ -462,7 +468,8 @@ describe('CollabPanel', () => {
     await settle()
     expect(backend.callsTo(Ipc.agentHubCreateSession)).toEqual([{ backendId: 'codex-acp', cwd: 'F:\\work\\comic', projectId: 'q' }])
     expect(readSessionBinding('codex-acp', 'q').pinnedIds).toEqual(['fixture-agent-session'])
-    expect(readSessionBinding('codex-acp', 'p').pinnedIds).toEqual(['s1', 'fixture-agent-session'])
+    // Made for 漫画集, so it is listed there and not pinned to the open project as well (A-L5).
+    expect(readSessionBinding('codex-acp', 'p').pinnedIds).toEqual(['s1'])
   })
 
   it('creates a new project folder and a new canvas project for the conversation', async () => {
@@ -501,7 +508,7 @@ describe('CollabPanel', () => {
   })
 
   it('does not pick a conversation of another folder for a project that has none', async () => {
-    const backend = createMockBackend('ready')
+    const backend = createMockBackend(withExternalAgents())
     backend.install()
     backend.handle(Ipc.agentHubBackends, () => [{ id: 'codex-acp', label: 'Codex ACP', kind: 'acp', available: true, connected: true }])
     backend.handle(Ipc.agentHubSessions, () => [{ id: 'other', title: '别处', cwd: 'F:\\elsewhere', updatedAt: 5, running: true }])
@@ -520,7 +527,7 @@ describe('CollabPanel', () => {
   })
 
   it('answers an external request from the app-wide overlay while no panel shows it inline', async () => {
-    const backend = createMockBackend('ready')
+    const backend = createMockBackend(withExternalAgents())
     backend.install()
     backend.handle(Ipc.agentHubApprovals, () => ({
       pending: [
