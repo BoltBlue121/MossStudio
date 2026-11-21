@@ -7,7 +7,7 @@ import { runProjectCanvasTests } from './projects.test'
 import { runStudioCanvasUiTests } from './studioCanvasUi.test'
 import { ensureDirs, paths } from './lib/paths'
 import { getBackendInfo, getWebAccessInfo, startBackend, stopBackend } from './services/backend'
-import { listProviders, removeProvider, saveProvider } from './services/ai'
+import { listProviders, migratePlainApiKeys, removeProvider, saveProvider } from './services/ai'
 import { gbcStatus, stopGbcProcesses } from './services/gbc'
 import { stopModelSourceDiscovery } from './services/modelSourceDiscovery'
 import type { JobRecord } from '@shared/types'
@@ -59,6 +59,7 @@ import { run } from './lib/run'
 import { archiveLegacyInferenceData } from './services/legacyMigration'
 import { matchRule, parseTqdm } from './services/parsers'
 import { registerIpc } from './ipc'
+import { configurePasswordStore } from './lib/passwordStore'
 import { configureInstallModeSwitches, registerUninstallIpc, runInstallMode } from './install/app'
 import { applyAppUserModelId } from './install/identity'
 import { acquireAppLock } from './install/singleInstance'
@@ -96,6 +97,8 @@ if (scenario) {
 app.setName('MossStudio')
 applyAppUserModelId()
 configureInstallModeSwitches()
+// Before ready: Electron picks the Linux keyring when it sets up encryption, right after this script.
+configurePasswordStore()
 nativeTheme.themeSource = getSettings().theme
 
 protocol.registerSchemesAsPrivileged([
@@ -169,6 +172,11 @@ app
       await purgeLegacySimulationJobs()
     } catch (error) {
       console.error('[migration] simulation jobs', error)
+    }
+    try {
+      migratePlainApiKeys()
+    } catch (error) {
+      console.error('[migration] language model keys', error)
     }
     onJobCompleted((job) => {
       if (job.kind !== 'training') return
@@ -1510,13 +1518,21 @@ exit 0
     }
 
     if (scenario === 'ai-provider') {
-      const saved = saveProvider({
-        name: 'Scenario',
-        kind: 'openai',
-        baseUrl: 'https://example.com/v1',
-        model: 'test-model',
-        apiKey: 'secret-key',
-      })
+      let saved
+      try {
+        saved = saveProvider({
+          name: 'Scenario',
+          kind: 'openai',
+          baseUrl: 'https://example.com/v1',
+          model: 'test-model',
+          apiKey: 'secret-key',
+        })
+      } catch (error) {
+        // Without an OS keyring (Linux basic_text) a key cannot be saved: fail instead of hanging.
+        console.error('[scenario] ai-provider', error instanceof Error ? error.message : error)
+        app.exit(1)
+        return
+      }
       const listed = listProviders().find((provider) => provider.id === saved.id)
       removeProvider(saved.id)
       const after = listProviders().some((provider) => provider.id === saved.id)
