@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
 import { join } from 'node:path'
 import { app, utilityProcess, type UtilityProcess } from 'electron'
+import { Events } from '@shared/channels'
 import type { BackendInfo, WebAccessInfo } from '@shared/backend'
 import { onEmit } from '../lib/events'
 import { activeJobInputPaths, cancelJob, getJob, listJobs } from './supervisor'
@@ -121,6 +122,8 @@ export async function startBackend(): Promise<BackendInfo> {
   info = await ready
   if (info.ready) {
     unsubscribe = onEmit((channel, payload) => {
+      // Local agent conversations and approval requests must never reach LAN clients.
+      if (channel === Events.agentHubEvent || channel === Events.capabilityApproval) return
       try {
         child?.postMessage({ type: 'event', channel, payload })
       } catch {

@@ -18,6 +18,9 @@ export function ProjectSwitcher({ project }: { project: StudioProject }): React.
     <>
       <Popover
         label="项目"
+        // The menu hangs below the title bar's window-drag area; keep it and its items clickable.
+        rootClassName="no-drag"
+        className="no-drag"
         trigger={(props) => (
           <button
             type="button"
@@ -26,7 +29,7 @@ export function ProjectSwitcher({ project }: { project: StudioProject }): React.
             aria-controls={props['aria-controls']}
             aria-haspopup={props['aria-haspopup']}
             data-project-switcher
-            className="inline-flex h-7 max-w-[260px] items-center gap-1.5 rounded-md px-2.5 text-ui font-semibold text-ink transition-colors hover:bg-well"
+            className="no-drag inline-flex h-7 max-w-[260px] items-center gap-1.5 rounded-md px-2.5 text-ui font-semibold text-ink transition-colors hover:bg-well"
           >
             <span className="truncate">{project.projectName}</span>
             <ChevronDown className="size-3.5 shrink-0 text-ink-2" aria-hidden="true" strokeWidth={1.6} />

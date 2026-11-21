@@ -1,4 +1,4 @@
-import type { ManagedHost, SshAuthMethod } from '@shared/types'
+import type { ManagedHost, RemoteHostBackend, SshAuthMethod } from '@shared/types'
 import { integerInRange, optionalHfEndpoint, optionalProxyUrl, requiredText } from '../../lib/settingsDraft'
 
 /** What the 添加 SSH 主机 dialog edits. Strings throughout, as typed. */
@@ -12,6 +12,12 @@ export interface HostForm {
   identityFile: string
   password: string
   hasPassword: boolean
+  /** How the computer runs pictures: MossStudio's own engine over SSH, or a worker daemon reached through an SSH tunnel. */
+  remoteBackend: RemoteHostBackend
+  /** Absolute path of the worker daemon's discovery file on the remote computer. */
+  workerDiscoveryPath: string
+  /** Worker workflow name; empty = the daemon's default. */
+  workerWorkflow: string
   trainerRoot: string
   engineRoot: string
   outputRoot: string
@@ -43,6 +49,9 @@ export function emptyHostForm(): HostForm {
     identityFile: '',
     password: '',
     hasPassword: false,
+    remoteBackend: 'moss-ssh',
+    workerDiscoveryPath: '',
+    workerWorkflow: '',
     ...REMOTE_DEFAULT_PATHS,
     weightsPath: '',
     downloadProxy: '',
@@ -65,6 +74,9 @@ export function hostFormFrom(host: ManagedHost): HostForm {
     identityFile: host.identityFile ?? '',
     password: '',
     hasPassword: host.hasPassword ?? false,
+    remoteBackend: host.remoteBackend ?? 'moss-ssh',
+    workerDiscoveryPath: host.workerDiscoveryPath ?? '',
+    workerWorkflow: host.workerWorkflow ?? '',
     trainerRoot: host.trainerRoot || REMOTE_DEFAULT_PATHS.trainerRoot,
     engineRoot: host.engineRoot ?? REMOTE_DEFAULT_PATHS.engineRoot,
     outputRoot: host.outputRoot ?? REMOTE_DEFAULT_PATHS.outputRoot,
@@ -81,6 +93,18 @@ export function hostFormFrom(host: ManagedHost): HostForm {
 
 export type HostFormErrors = Partial<Record<keyof HostForm, string>>
 
+/** The same rules the main process applies before it reads the file over SSH. */
+export function workerDiscoveryProblem(raw: string): string | undefined {
+  const value = raw.trim()
+  if (!value) return '请填写守护进程 discovery 文件的绝对路径'
+  if (value.length > 4096 || Array.from(value).some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)) return '路径太长或包含控制字符'
+  if (/["'`$&|;<>()*?{}[\]!~%]/.test(value)) return '路径不能包含引号、变量或通配符'
+  if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(value)) return '路径不能包含上级目录 ..'
+  if (/^[A-Za-z]:[\\/]/.test(value)) return value.slice(2).includes(':') ? '路径里只能有盘符后的一个冒号' : undefined
+  if (value.startsWith('/')) return undefined
+  return '请填写绝对路径，例如 /path/to/worker/discovery.json 或 C:\\worker\\data\\discovery.json'
+}
+
 /** Field-by-field problems, shown under each field. Empty means the form can be saved. */
 export function validateHostForm(form: HostForm): HostFormErrors {
   const errors: HostFormErrors = {}
@@ -93,6 +117,13 @@ export function validateHostForm(form: HostForm): HostFormErrors {
   if (port) errors.port = port
   if (form.authMethod === 'password' && !form.password && !form.hasPassword) errors.password = '请输入 SSH 密码'
   if (/[\r\n\0]/.test(form.password)) errors.password = '密码不能包含换行'
+  if (form.remoteBackend === 'worker-daemon') {
+    // The daemon owns models, engine and outputs: only how to reach it matters.
+    const discovery = workerDiscoveryProblem(form.workerDiscoveryPath)
+    if (discovery) errors.workerDiscoveryPath = discovery
+    if (form.workerWorkflow.trim().length > 120) errors.workerWorkflow = '名称太长'
+    return errors
+  }
   const trainerRoot = requiredText('训练器目录')(form.trainerRoot)
   if (trainerRoot) errors.trainerRoot = trainerRoot
   const proxy = optionalProxyUrl(form.downloadProxy)
@@ -179,7 +210,12 @@ export function hostSavePayload(form: HostForm): Record<string, unknown> {
     authMethod: form.authMethod,
     identityFile: form.authMethod === 'identityFile' ? form.identityFile.trim() || undefined : undefined,
     password: form.authMethod === 'password' ? form.password || undefined : undefined,
-    trainerRoot: form.trainerRoot.trim(),
+    remoteBackend: form.remoteBackend,
+    ...(form.remoteBackend === 'worker-daemon'
+      ? { workerDiscoveryPath: form.workerDiscoveryPath.trim(), workerWorkflow: form.workerWorkflow.trim() || undefined }
+      : {}),
+    // Hidden while the worker daemon is chosen, but kept, so switching back finds them as they were.
+    trainerRoot: form.trainerRoot.trim() || REMOTE_DEFAULT_PATHS.trainerRoot,
     modelsRoot: form.modelsRoot.trim() || undefined,
     weightsPath: form.weightsPath.trim() || undefined,
     downloadProxy: form.downloadProxy.trim(),

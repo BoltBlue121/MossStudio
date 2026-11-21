@@ -11,6 +11,8 @@ import {
   type ReadinessInput,
 } from '@renderer/pages/studio/readiness'
 import { cliEngineFeatures } from '@shared/cliEngine'
+import { workerCanvasAdapter } from '@shared/remoteWorker'
+import { workerAdapterEntries, workerBundleChoice } from '@renderer/pages/studio/remoteWorkerLoras'
 import { engineFeaturesFixture } from '@test/mocks/backend'
 import { canvas, layer } from './fixtures'
 
@@ -155,6 +157,111 @@ describe('studio/readiness deriveReadiness', () => {
       id: 'remote-path',
       action: { to: '/settings/devices' },
     })
+  })
+
+  it('lets a Worker daemon host run a remote-worker model with LoRA, without a model location or a local engine', () => {
+    const workerModel: ModelEntry = { ...model('remote-worker:w1'), provider: 'local', precision: '', tags: ['remote-worker'] }
+    const workerBundle = bundle('remote-worker:w1', {
+      name: 'Worker 1',
+      components: { dit: workerModel.id, textEncoder: workerModel.id, vae: workerModel.id },
+      support: workerModel.id,
+      custom: true,
+    })
+    const cat = catalog({ bundles: [...catalog().bundles, workerBundle], models: [...catalog().models, workerModel] })
+    const missing: EngineReadiness = { state: 'missing', path: null }
+    const withLora = canvas({ prompt: 'x', adapters: [{ id: 'style', strength: 1 }] })
+    const worker = { name: 'render-box', remoteBackend: 'worker-daemon' as const }
+    // On the Worker host: no 模型位置, LoRA allowed, this computer's engine does not matter.
+    expect(
+      deriveReadiness(
+        input({ catalog: cat, bundle: resolveBundle(cat, workerBundle.id, null), canvas: withLora, engine: missing, remote: worker }),
+      ).blockers,
+    ).toEqual([])
+    // An official model on the Worker host passes the same way.
+    expect(deriveReadiness(input({ catalog: cat, canvas: withLora, engine: missing, remote: worker })).blockers).toEqual([])
+    // A remote-worker model picked while 本机 is the location: not local-only, no local engine needed.
+    expect(
+      deriveReadiness(
+        input({
+          catalog: cat,
+          bundle: resolveBundle(cat, workerBundle.id, null),
+          canvas: withLora,
+          engine: missing,
+          features: cliEngineFeatures('vulkan'),
+        }),
+      ).blockers,
+    ).toEqual([])
+  })
+
+  it('keeps every local and SSH check for a person with no Worker', () => {
+    const missing: EngineReadiness = { state: 'missing', path: null }
+    const withLora = canvas({ prompt: 'x', adapters: [{ id: 'style', strength: 1 }] })
+    expect(deriveReadiness(input({ engine: missing })).blockers.map((item) => item.id)).toEqual(['engine'])
+    expect(deriveReadiness(input({ remote: { name: 'gpu-box', remoteBackend: 'moss-ssh' } })).blockers.map((item) => item.id)).toEqual([
+      'remote-path',
+    ])
+    expect(
+      deriveReadiness(input({ canvas: withLora, remote: { name: 'gpu-box', modelPath: '/m', remoteBackend: 'moss-ssh' } })).blockers.map(
+        (item) => item.id,
+      ),
+    ).toEqual(['remote-adapters'])
+    expect(deriveReadiness(input({ canvas: withLora, features: cliEngineFeatures('vulkan') })).blockers.map((item) => item.id)).toEqual([
+      'lora-unsupported',
+    ])
+    // A single file of this computer still cannot go to an SSH host.
+    const own: ModelEntry = { ...model('own-dit'), provider: 'local' }
+    const cat = catalog({ bundles: [bundle('own')], models: [own, model('te'), model('vae'), model('cfg')] })
+    expect(
+      deriveReadiness(input({ catalog: cat, bundle: resolveBundle(cat, 'own', null), remote: { name: 'gpu-box', modelPath: '/m' } }))
+        .blockers[0],
+    ).toMatchObject({ id: 'model-engine', message: '「OWN」只能在这台电脑上运行，在其他电脑上请换成官方模型' })
+  })
+
+  it('runs on a Worker host with no model downloaded here, checking LoRA against the Worker list', () => {
+    const empty = catalog({ models: [], adapters: [] })
+    const host = { id: 'h1', name: 'render-box', remoteBackend: 'worker-daemon' as const }
+    const missing: EngineReadiness = { state: 'missing', path: null }
+    const entries = workerAdapterEntries([
+      { id: 'anime.safetensors', name: 'Anime', sizeBytes: 1, registered: true, triggers: ['anime'] },
+      { id: 'styles/ink.safetensors', name: 'Ink', sizeBytes: 1, registered: true },
+      { id: 'old.safetensors', name: 'Old', sizeBytes: 1, registered: false },
+    ])
+    const ink = workerCanvasAdapter('styles/ink.safetensors', 1)
+    const withLora = canvas({ prompt: 'x', adapters: [{ id: 'anime.safetensors', strength: 1 }, ink] })
+    const base = {
+      catalog: empty,
+      bundle: workerBundleChoice(host, empty),
+      canvas: withLora,
+      engine: missing,
+      remote: host,
+      features: cliEngineFeatures('vulkan'),
+    }
+    // Zero local models, a LoRA this computer never had: nothing stands in the way.
+    expect(deriveReadiness(input({ ...base, workerAdapters: entries })).blockers).toEqual([])
+    // Even with the local bundle choice that would say 还没有可用的模型.
+    expect(deriveReadiness(input({ ...base, bundle: resolveBundle(empty, undefined, null), workerAdapters: entries })).blockers).toEqual([])
+    // The list not read yet, or empty: nothing is reported missing.
+    expect(deriveReadiness(input({ ...base, workerAdapters: null })).blockers).toEqual([])
+    expect(deriveReadiness(input({ ...base, workerAdapters: [] })).blockers).toEqual([])
+    // A LoRA the Worker has not registered is named against the Worker, not the local library.
+    const unregistered = deriveReadiness(
+      input({ ...base, canvas: canvas({ prompt: 'x', adapters: [{ id: 'old.safetensors', strength: 1 }] }), workerAdapters: entries }),
+    ).blockers
+    expect(unregistered).toEqual([{ id: 'adapters', message: '「render-box」上没有登记 LoRA 「Old」，请移除或在 LoRA 列表里登记' }])
+  })
+
+  it('checks local LoRA against the library as before when no Worker host is picked', () => {
+    const withLora = canvas({ prompt: 'x', adapters: [{ id: 'gone', strength: 1 }] })
+    const entries = workerAdapterEntries([{ id: 'gone.safetensors', name: 'gone', sizeBytes: 1, registered: true }])
+    // A Worker list lying around changes nothing for this computer or an SSH host.
+    expect(deriveReadiness(input({ canvas: withLora, workerAdapters: entries })).blockers[0]).toMatchObject({
+      id: 'adapters',
+      action: { to: '/models' },
+    })
+    const cat = catalog({ models: [] })
+    expect(
+      deriveReadiness(input({ catalog: cat, bundle: resolveBundle(cat, undefined, null), workerAdapters: entries })).blockers[0]?.id,
+    ).toBe('model-none')
   })
 
   it('names missing LoRAs and refuses LoRAs on remote runs', () => {

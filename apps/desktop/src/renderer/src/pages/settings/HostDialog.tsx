@@ -1,7 +1,7 @@
 import { FolderOpen } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Ipc } from '@shared/channels'
-import type { SshAuthMethod } from '@shared/types'
+import type { RemoteHostBackend, SshAuthMethod } from '@shared/types'
 import { call } from '../../lib/api'
 import { Advanced, Button, Field, FieldLabel, IconButton, Input, Modal, Segmented, Spinner, Switch, useToast } from '../../components/ui'
 import { errorText } from './fields'
@@ -76,12 +76,18 @@ export function HostDialog({
     }
   }
 
+  const isWorker = form.remoteBackend === 'worker-daemon'
+
   return (
     <Modal
       open={open}
       onClose={onClose}
       title={form.id ? '编辑 SSH 主机' : '添加 SSH 主机'}
-      description="需要一台装有 NVIDIA 显卡的 Linux 电脑。保存后会马上测试连接；第一次连接会记住主机的指纹。"
+      description={
+        isWorker
+          ? '连接一台运行 Worker 守护进程的 Windows 或 Linux 显卡电脑。MossStudio 通过 SSH 隧道连到它，访问令牌只留在内存里。'
+          : '需要一台装有 NVIDIA 显卡的 Linux 电脑。保存后会马上测试连接；第一次连接会记住主机的指纹。'
+      }
       width="max-w-xl"
       footer={
         <>
@@ -101,6 +107,19 @@ export function HostDialog({
           void submit()
         }}
       >
+        <div className="flex flex-col gap-2">
+          <FieldLabel>运行方式</FieldLabel>
+          <Segmented<RemoteHostBackend>
+            label="运行方式"
+            block
+            value={form.remoteBackend}
+            onChange={(value) => set('remoteBackend', value)}
+            options={[
+              { value: 'moss-ssh', label: 'MossStudio 引擎（Linux）' },
+              { value: 'worker-daemon', label: 'Worker 守护进程（Windows / Linux）' },
+            ]}
+          />
+        </div>
         <div className="grid grid-cols-[1fr_96px] gap-3">
           <Field label="地址">
             <Input
@@ -183,7 +202,34 @@ export function HostDialog({
             <p className="text-caption text-ink-2">只适用于服务器允许免验证登录的账户。</p>
           )}
         </div>
-        <div className="-mx-3.5 rounded-lg bg-panel">
+        {isWorker ? (
+          <>
+            <Field label="discovery 文件路径" hint="Worker 守护进程启动时写下的 discovery.json 的绝对路径，它的访问令牌在同一目录。">
+              <Input
+                className="font-mono text-caption"
+                value={form.workerDiscoveryPath}
+                placeholder="/path/to/worker/discovery.json 或 C:\worker\data\discovery.json"
+                spellCheck={false}
+                aria-invalid={Boolean(errors.workerDiscoveryPath) || undefined}
+                onChange={(event) => set('workerDiscoveryPath', event.target.value)}
+              />
+              <FieldError message={errors.workerDiscoveryPath} />
+            </Field>
+            <Field label="工作流" hint="守护进程里的工作流名称。留空时用它的默认工作流。">
+              <Input
+                className="font-mono text-caption"
+                value={form.workerWorkflow}
+                placeholder="default"
+                spellCheck={false}
+                aria-invalid={Boolean(errors.workerWorkflow) || undefined}
+                onChange={(event) => set('workerWorkflow', event.target.value)}
+              />
+              <FieldError message={errors.workerWorkflow} />
+            </Field>
+          </>
+        ) : null}
+        {/* Hidden, not dropped, while the worker daemon is chosen: switching back keeps what was typed. */}
+        <div hidden={isWorker} className="-mx-3.5 rounded-lg bg-panel">
           <Advanced summary="远程目录、下载代理、HF 地址和令牌">
             <div className="flex flex-col gap-3 px-3.5 pb-3">
               <div className="grid grid-cols-2 gap-3">

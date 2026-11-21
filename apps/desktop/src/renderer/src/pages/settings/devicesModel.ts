@@ -218,7 +218,13 @@ export function hostSummary(host: ManagedHost, engine: RemoteEngineInfo | undefi
   const gpu = host.devices[0]?.name ?? engine?.gpu?.split('\n')[0]
   const parts = [address]
   if (gpu) parts.push(gpu)
-  if (engine?.online) parts.push(engine.available ? (engine.version ? `引擎 ${engine.version} 已安装` : '引擎已安装') : '引擎未安装')
+  if (host.remoteBackend === 'worker-daemon') {
+    if (engine?.online && engine.available) parts.push(engine.version ? `Worker 引擎 ${engine.version} 就绪` : 'Worker 引擎就绪')
+    else if (engine) parts.push('Worker 未连接')
+    else parts.push('Worker 守护进程')
+  } else if (engine?.online) {
+    parts.push(engine.available ? (engine.version ? `引擎 ${engine.version} 已安装` : '引擎已安装') : '引擎未安装')
+  }
   if (host.status === 'error') {
     return { status: 'error', statusLabel: '连接失败', detail: [address, host.error ?? '无法连接'].join(' · ') }
   }

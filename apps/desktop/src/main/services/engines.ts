@@ -1,3 +1,4 @@
+import { isWorkerDaemonHost, probeWorkerHost } from './workerHostManager'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import type { EngineGpuProbeSnapshot, LocalEngineVersion, RemoteEngineInfo } from '@shared/types'
@@ -282,5 +283,6 @@ export async function remoteEngineInfo(hostId: string, refreshCuda = false): Pro
   const host = getTrainingHost(getSettings(), hostId)
   if (!host) throw new Error('主机不存在')
   if (host.kind !== 'ssh') throw new Error('不是 SSH 主机')
+  if (isWorkerDaemonHost(host)) return probeWorkerHost(host, refreshCuda)
   return remoteEngineStatus(host, refreshCuda)
 }

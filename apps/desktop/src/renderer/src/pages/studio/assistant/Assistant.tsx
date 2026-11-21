@@ -166,7 +166,7 @@ function TurnUndo({ calls, board }: { calls: readonly string[]; board: Assistant
  * the canvas through the studio_* tools. On the Studio page `board` gives each
  * turn that changed the board a way to take it back.
  */
-export function Assistant({ board }: { board?: AssistantBoardUndo } = {}): React.JSX.Element {
+export function Assistant({ board, onCollab }: { board?: AssistantBoardUndo; onCollab?: () => void } = {}): React.JSX.Element {
   const toast = useToast()
   const copyText = useCopyText()
   const animate = useUiAnimationEnabled()
@@ -525,6 +525,17 @@ export function Assistant({ board }: { board?: AssistantBoardUndo } = {}): React
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-1">
+        {onCollab ? (
+          <Button
+            tone="ghost"
+            size="xs"
+            onClick={onCollab}
+            data-collab-toggle
+            title="切换到 Agent 协同：Codex 等外部 Agent 通过 MCP 操作画板"
+          >
+            Agent 协同
+          </Button>
+        ) : null}
         {providers.length ? (
           <Popover
             align="start"

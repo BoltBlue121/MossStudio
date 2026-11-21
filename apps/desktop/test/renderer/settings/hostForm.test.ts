@@ -123,3 +123,48 @@ describe('host form', () => {
     })
   })
 })
+
+describe('worker daemon hosts', () => {
+  const worker = (patch: Partial<ReturnType<typeof emptyHostForm>> = {}) => ({
+    ...emptyHostForm(),
+    host: 'worker.example.test',
+    user: 'artist',
+    remoteBackend: 'worker-daemon' as const,
+    workerDiscoveryPath: '/path/to/worker/discovery.json',
+    ...patch,
+  })
+
+  it('starts on the MossStudio engine and keeps a saved worker host as it was', () => {
+    expect(emptyHostForm().remoteBackend).toBe('moss-ssh')
+    const form = hostFormFrom(
+      sshHostFixture({ remoteBackend: 'worker-daemon', workerDiscoveryPath: 'C:\\worker\\data\\discovery.json', workerWorkflow: 'sdxl' }),
+    )
+    expect(form).toMatchObject({
+      remoteBackend: 'worker-daemon',
+      workerDiscoveryPath: 'C:\\worker\\data\\discovery.json',
+      workerWorkflow: 'sdxl',
+    })
+  })
+
+  it('needs an absolute, plain discovery path and skips the engine folders', () => {
+    expect(validateHostForm(worker())).toEqual({})
+    expect(validateHostForm(worker({ workerDiscoveryPath: 'C:\\worker\\data\\discovery.json', trainerRoot: '' }))).toEqual({})
+    expect(validateHostForm(worker({ workerDiscoveryPath: '' })).workerDiscoveryPath).toContain('绝对路径')
+    expect(validateHostForm(worker({ workerDiscoveryPath: 'data/discovery.json' })).workerDiscoveryPath).toContain('绝对路径')
+    expect(validateHostForm(worker({ workerDiscoveryPath: '/srv/../etc/discovery.json' })).workerDiscoveryPath).toContain('..')
+    expect(validateHostForm(worker({ workerDiscoveryPath: '/srv/$HOME/discovery.json' })).workerDiscoveryPath).toContain('变量')
+    expect(validateHostForm(worker({ workerDiscoveryPath: 'C:\\a:b\\discovery.json' })).workerDiscoveryPath).toContain('冒号')
+  })
+
+  it('saves the backend with its discovery path, and leaves the worker fields out for the MossStudio engine', () => {
+    expect(hostSavePayload(worker({ workerWorkflow: '  ' }))).toMatchObject({
+      remoteBackend: 'worker-daemon',
+      workerDiscoveryPath: '/path/to/worker/discovery.json',
+      workerWorkflow: undefined,
+      trainerRoot: '~/.mossstudio/trainer',
+    })
+    const plain = hostSavePayload({ ...emptyHostForm(), host: 'gpu', user: 'u' })
+    expect(plain.remoteBackend).toBe('moss-ssh')
+    expect(plain).not.toHaveProperty('workerDiscoveryPath')
+  })
+})

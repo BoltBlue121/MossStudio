@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { GalleryItem, GpuInventorySnapshot, ManagedHost, ProjectCanvas, ProjectLayer } from '@shared/types'
-import { ADAPTER_STRENGTH_DEFAULT, normalizeCanvasAdapters } from '@shared/adapters'
+import { normalizeCanvasAdapters } from '@shared/adapters'
 import { cliGpuUuids, generationGpus } from '@shared/bundleFit'
 import { MAX_QUEUED_RUNS, activeCanvasBranchIds, blockedCanvasIds } from '@shared/canvasJobBranch'
 import { Events, Ipc } from '@shared/channels'
@@ -9,6 +9,7 @@ import { ScanLine, Sparkles } from 'lucide-react'
 import { Button, useToast } from '../../components/ui'
 import { TitlebarPortal } from '../../components/shell/Titlebar'
 import { AdapterPicker } from '../../components/studio/AdapterPicker'
+import { loraProfileStore, recommendedStrength } from '../../components/studio/loraProfilesClient'
 import { StudioSidebar } from '../../components/studio/StudioSidebar'
 import { installStudioToolBridge, registerStudioTools, type AddedLayer, type LayerBox, type StudioToolApi } from '../../lib/agentTools'
 import { call, onEvent } from '../../lib/api'
@@ -16,6 +17,7 @@ import { clampBox } from '../../lib/layout'
 import { useShell } from '../../lib/shell'
 import { useApp } from '../../store'
 import { Assistant } from './assistant/Assistant'
+import { CollabPanel } from './assistant/CollabPanel'
 import { Board, type BoardHandle } from './Board'
 import {
   addRegion,
@@ -29,7 +31,7 @@ import {
   settingsFrom,
   type RegionInput,
 } from './canvases'
-import { clampDimension, isSeedLocked, nearestQuality, qualityPreset, samplingForBundle, SEED_MAX } from './defaults'
+import { clampDimension, isSeedLocked, samplingForBundle, SEED_MAX } from './defaults'
 import { InspectorPanel } from './InspectorPanel'
 import type { InputsWiring } from './InputsSection'
 import { ACTIVE_JOB_STATES } from './jobStatus'
@@ -42,6 +44,8 @@ import { GbcPanel } from './GbcPanel'
 import { sizeLike, withParsedRegions } from './pictureRegions'
 import type { GbcPicture } from '@shared/gbc'
 import { deriveReadiness, resolveBundle, type Blocker } from './readiness'
+import { isWorkerDaemonHost, workerAdapterEntries, workerAdapterFor, workerBundleChoice } from './remoteWorkerLoras'
+import { useWorkerLoras } from './useWorkerLoras'
 import { usePreparation } from '../../lib/usePreparation'
 import { useBoardAssets } from './useBoardAssets'
 import { useEngineFeatures } from './useEngineFeatures'
@@ -79,12 +83,14 @@ import { resolveJobInputs } from './jobInputs'
 import { useGenerate } from './useGenerate'
 import { useInputImport } from './useInputImport'
 import { droppedPaths, useModelImport } from '../../lib/modelImport'
-import { useStudioProject, type StepOutcome } from './useStudioProject'
+import { externalFocusMessage, externalFocusOf, useStudioProject, type StepOutcome } from './useStudioProject'
+import { LOCAL_HOST_ID, registerStudioCapabilities, withExactSteps, type StudioCapabilityDeps } from './studioCapabilities'
 import { ownsUndoKey } from './history'
 import { usePictureRegions } from './usePictureRegions'
 
 const BUNDLE_KEY = 'mossstudio.modelBundleId'
 const HOST_KEY = 'mossstudio.studioHostId'
+const ASSISTANT_MODE_KEY = 'mossstudio.assistantMode'
 const WIDTH_KEY = 'mossstudio.studioPanelWidths'
 const UNDERLAY_HANDOFF_KEY = 'clover.studioBackground'
 
@@ -137,6 +143,8 @@ function isTyping(target: EventTarget | null): boolean {
 
 /** Undo, redo and deletes share one toast: pressing Ctrl+Z again replaces it instead of stacking. */
 const HISTORY_TOAST = { key: 'board-history' }
+/** What an external Agent did replaces its last note instead of stacking. */
+const EXTERNAL_TOAST = { key: 'external-agent' }
 
 /** Blockers the first-run download clears by itself. */
 const PREPARING_BLOCKERS = new Set<Blocker['id']>(['model-none', 'model-incomplete', 'engine'])
@@ -174,6 +182,14 @@ export function StudioPage(): React.JSX.Element {
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null)
   /** 助手 opens beside the board from the title bar; closed, the board takes the room. */
   const [assistantOpen, setAssistantOpen] = useState(false)
+  /** 助手 is the built-in chat or the 协同 panel for external Agents; the choice is remembered. */
+  const [assistantMode, setAssistantMode] = useState<'builtin' | 'collab'>(() =>
+    readStorage(ASSISTANT_MODE_KEY) === 'collab' ? 'collab' : 'builtin',
+  )
+  const chooseAssistantMode = (mode: 'builtin' | 'collab'): void => {
+    setAssistantMode(mode)
+    writeStorage(ASSISTANT_MODE_KEY, mode)
+  }
   /** 解析 opens beside the board; it and 助手 share the right side. */
   const [gbcOpen, setGbcOpen] = useState(false)
   const [widths, setWidths] = useState(initialWidths)
@@ -184,8 +200,18 @@ export function StudioPage(): React.JSX.Element {
   const [galleryTarget, setGalleryTarget] = useState<PickTarget | { at: { x: number; y: number } } | { underlayOf: string } | null>(null)
 
   const remoteEnabled = settings?.remoteHostsEnabled === true
+  /** 运行位置: local (or empty) for this computer, else an SSH host id. */
+  const selectRemoteHost = useCallback((id: string) => {
+    const next = id === LOCAL_HOST_ID ? '' : id
+    setRemoteHostId(next)
+    writeStorage(HOST_KEY, next || null)
+  }, [])
   const remoteHost = remoteEnabled ? (hosts.find((host) => host.id === remoteHostId) ?? null) : null
-  const bundle = resolveBundle(catalog, selected?.modelBundleId, preferredBundleId)
+  // A Worker daemon picked as 运行位置 runs like an SSH host, with the model and LoRA it has itself.
+  const workerHost = isWorkerDaemonHost(remoteHost) ? remoteHost : null
+  const workerLoras = useWorkerLoras(workerHost?.id ?? null)
+  const workerAdapters = useMemo(() => (workerLoras.items ? workerAdapterEntries(workerLoras.items) : null), [workerLoras.items])
+  const bundle = workerHost ? workerBundleChoice(workerHost, catalog) : resolveBundle(catalog, selected?.modelBundleId, preferredBundleId)
   // Board: wires, imported pictures and masks.
   const boardFeatures = useEngineFeatures(
     selected ? { deviceUuid: selected.deviceUuid, hostId: remoteHost?.id } : { hostId: remoteHost?.id },
@@ -225,12 +251,13 @@ export function StudioPage(): React.JSX.Element {
     engine: engineReadiness,
     // While first-run preparation is still going ('active'), its page is where progress shows.
     setupDone: settings ? settings.onboardingState === 'completed' || settings.onboardingState === 'dismissed' : true,
-    remote: remoteHost ? { name: remoteHost.name, modelPath: remoteHost.modelPath } : null,
+    remote: remoteHost ? { name: remoteHost.name, modelPath: remoteHost.modelPath, remoteBackend: remoteHost.remoteBackend } : null,
     inputBlockers,
     update,
     features: boardFeatures,
     gpus,
     cliGpus,
+    workerAdapters,
   })
   // A LoRA blocker says when some of the LoRA come from a 风格 (the 画面's own list does not show them).
   const loraNote = selected?.kind === 'layout' ? styleLoraNote(selected, project.canvases) : ''
@@ -261,6 +288,7 @@ export function StudioPage(): React.JSX.Element {
     catalog,
     preferredBundleId,
     remoteHost,
+    workerAdapters,
     controlAdapters,
     controlAdaptersLoaded,
     notify: toast.push,
@@ -636,8 +664,35 @@ export function StudioPage(): React.JSX.Element {
   }
 
   // The assistant drives the canvas through these; every call reads live state.
-  const live = useRef({ project, generate })
-  live.current = { project, generate }
+  const live = useRef({ project, generate, notify: toast.push })
+  live.current = { project, generate, notify: toast.push }
+  // Capabilities with no built-in tool (cards, wires, runs, projects) for external Agents over MCP.
+  const capabilityDeps = useRef<StudioCapabilityDeps | null>(null)
+  capabilityDeps.current = {
+    project,
+    cancelJob,
+    catalog,
+    preferredBundleId,
+    engineReadiness,
+    settings,
+    update,
+    remoteHost,
+    boardFeatures,
+    controlAdapters,
+    controlAdaptersLoaded,
+    gpuInventory,
+    jobs,
+    remoteHosts: hosts,
+    selectRemoteHost,
+    problems: () => {
+      const { project: p } = live.current
+      const canvas = p.canvasesRef.current.find((item) => item.id === p.selectedRef.current)
+      if (!canvas) return []
+      const compiled = compileCanvasPrompt(canvas)
+      return compiled.ok ? [] : compiled.errors
+    },
+  }
+  useEffect(() => registerStudioCapabilities(() => capabilityDeps.current!), [])
   useEffect(() => installStudioToolBridge(), [])
   useEffect(() => {
     const current = (): ProjectCanvas | null => {
@@ -712,7 +767,7 @@ export function StudioPage(): React.JSX.Element {
           })),
           selected: canvas ? viewOf(canvas) : null,
           notes:
-            'prompt is the overall description; the final prompt is compiled from it plus the visible regions. bbox is [x1,y1,x2,y2] in canvas pixels; the tools take normalised 0-1 x/y/w/h. steps snap to 8 (fast), 20 (standard) or 50 (fine). A text region needs both strings: caption is the lettering style, text is exactly what is rendered.',
+            'prompt is the overall description; the final prompt is compiled from it plus the visible regions. bbox is [x1,y1,x2,y2] in canvas pixels; the tools take normalised 0-1 x/y/w/h. steps is any whole number from 1 to 100 and is kept exactly; 8 (fast), 20 (standard) and 50 (fine) are the presets. A text region needs both strings: caption is the lettering style, text is exactly what is rendered.',
         }
       },
       readCanvas: (id) => {
@@ -774,10 +829,7 @@ export function StudioPage(): React.JSX.Element {
             clampDimension(patch.height ?? next.height, next.height),
           )
         }
-        if (patch.steps !== undefined) {
-          const preset = qualityPreset(nearestQuality(patch.steps))
-          next = { ...next, steps: preset.steps, cfg: patch.cfg === undefined ? preset.cfg : next.cfg }
-        }
+        if (patch.steps !== undefined) next = withExactSteps(next, patch.steps, patch.cfg !== undefined)
         if (patch.cfg !== undefined) next = { ...next, cfg: Math.min(20, Math.max(0, patch.cfg)) }
         if (patch.seed !== undefined) next = { ...next, seed: Math.min(SEED_MAX, Math.max(0, Math.round(patch.seed))), seedLocked: true }
         live.current.project.updateCanvas(canvas.id, () => next)
@@ -837,6 +889,23 @@ export function StudioPage(): React.JSX.Element {
         return compiled.ok ? [] : compiled.errors
       },
       oneStep: (key, call, run) => live.current.project.history.within({ key, label: '助手的修改', call }, run),
+      followExternal: async (call, run) => {
+        const { project: p } = live.current
+        const before = { canvases: p.canvasesRef.current, selectedId: p.selectedRef.current, session: p.sessionKey }
+        const result = await p.history.within({ key: `external:${call}`, label: '外部 Agent 的修改', call }, run)
+        const after = live.current.project
+        // Opening or creating a project is not the Agent adding every card in it: a new session reports nothing.
+        const focus = externalFocusOf(before, {
+          canvases: after.canvasesRef.current,
+          selectedId: after.selectedRef.current,
+          session: after.sessionKey,
+        })
+        if (focus) {
+          requestAnimationFrame(() => board.current?.reveal(focus.canvasId))
+          live.current.notify(externalFocusMessage(focus), 'info', undefined, EXTERNAL_TOAST)
+        }
+        return result
+      },
     }
     registerStudioTools(api)
     return () => registerStudioTools(null)
@@ -982,14 +1051,12 @@ export function StudioPage(): React.JSX.Element {
           regionCount={selected?.layers.length ?? 0}
           catalog={catalog}
           bundle={bundle}
+          workerAdapters={workerHost ? workerAdapters : undefined}
           settings={settings}
           gpuInventory={gpuInventory}
           hosts={hosts}
           remoteHostId={remoteHostId}
-          onRemoteHostChange={(id) => {
-            setRemoteHostId(id)
-            writeStorage(HOST_KEY, id || null)
-          }}
+          onRemoteHostChange={selectRemoteHost}
           blockers={panelBlockers}
           waiting={waiting}
           prompt={selected ? (readiness.prompt ?? null) : null}
@@ -1108,6 +1175,7 @@ export function StudioPage(): React.JSX.Element {
             onAddStyle: addStyle,
           }}
           describeModel={(canvas) => {
+            if (workerHost) return { label: `远端主机 · ${workerHost.name}`, ready: true }
             if (!catalog) return null
             const choice = resolveBundle(catalog, canvas.modelBundleId, preferredBundleId)
             if (!choice.bundle) return { label: choice.unavailable ? '找不到选的模型' : '没有模型', ready: false }
@@ -1154,7 +1222,24 @@ export function StudioPage(): React.JSX.Element {
           onWidthChange={(right) => setWidths((value) => ({ ...value, right }))}
         >
           <div className="flex h-full min-h-0 flex-col p-4">
-            <Assistant board={assistantUndo} />
+            {assistantMode === 'collab' ? (
+              <CollabPanel
+                board={{
+                  projectId: project.projectId,
+                  projectName: project.projectName,
+                  canvas: selected,
+                  modelName: bundle.bundle?.name,
+                  selectedRegionId,
+                }}
+                projectKey={project.sessionKey}
+                visible={assistantOpen && !gbcOpen}
+                onStandalone={() => chooseAssistantMode('builtin')}
+                projects={project.projects}
+                onCreateProject={project.createProject}
+              />
+            ) : (
+              <Assistant board={assistantUndo} onCollab={() => chooseAssistantMode('collab')} />
+            )}
           </div>
         </StudioSidebar>
       </div>
@@ -1206,17 +1291,27 @@ export function StudioPage(): React.JSX.Element {
       <AdapterPicker
         open={adapterPickerOpen}
         selected={normalizeCanvasAdapters(selected?.adapters)}
-        catalog={catalog?.adapters}
+        catalog={workerHost ? workerAdapters : catalog?.adapters}
+        remoteWorker={
+          workerHost
+            ? {
+                host: { id: workerHost.id, name: workerHost.name },
+                loading: workerLoras.loading,
+                error: workerLoras.error,
+                onChanged: workerLoras.reload,
+              }
+            : undefined
+        }
         onClose={() => setAdapterPickerOpen(false)}
         onToggle={(id) =>
           changeSelected((canvas) => {
             const current = normalizeCanvasAdapters(canvas.adapters)
-            return {
-              ...canvas,
-              adapters: current.some((item) => item.id === id)
-                ? current.filter((item) => item.id !== id)
-                : normalizeCanvasAdapters([...current, { id, strength: ADAPTER_STRENGTH_DEFAULT }]),
-            }
+            if (current.some((item) => item.id === id)) return { ...canvas, adapters: current.filter((item) => item.id !== id) }
+            // A Worker LoRA keeps its Worker path when its name is not a portable id.
+            const entry = workerHost ? workerAdapters?.find((item) => item.id === id) : undefined
+            const strength = recommendedStrength(loraProfileStore.getSnapshot(), entry?.workerId ?? id)
+            const added = entry ? workerAdapterFor(entry, strength) : { id, strength }
+            return { ...canvas, adapters: normalizeCanvasAdapters([...current, added]) }
           })
         }
         onImport={async () => {

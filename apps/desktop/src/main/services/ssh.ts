@@ -21,8 +21,8 @@ function expandHome(value: string): string {
 }
 
 export function targetOf(host: TrainingHost): string {
-  if (!host.host || !host.user) throw new Error('SSH host 配置不完整')
-  return `${host.user}@${host.host}`
+  if (!host.host || (!host.user && host.remoteBackend !== 'worker-daemon')) throw new Error('SSH host 配置不完整')
+  return host.user ? `${host.user}@${host.host}` : host.host
 }
 
 function authArgs(host: TrainingHost): string[] {
@@ -96,12 +96,12 @@ export function sshEnv(host: TrainingHost): NodeJS.ProcessEnv {
 }
 
 function commonArgs(host: TrainingHost): string[] {
-  if (host.kind !== 'ssh' || !host.host || !host.user) throw new Error('不是有效的 SSH 主机')
+  if (host.kind !== 'ssh' || !host.host || (!host.user && host.remoteBackend !== 'worker-daemon')) throw new Error('不是有效的 SSH 主机')
   const args = [
     ...authArgs(host),
     ...hostKeyArgs(),
     '-o',
-    'ConnectTimeout=12',
+    host.remoteBackend === 'worker-daemon' ? 'ConnectTimeout=25' : 'ConnectTimeout=12',
     '-o',
     'ServerAliveInterval=15',
     '-o',
@@ -129,8 +129,16 @@ export function scpCommand(): string {
 }
 
 function scpBaseArgs(host: TrainingHost, recursive: boolean): string[] {
-  if (host.kind !== 'ssh' || !host.host || !host.user) throw new Error('不是有效的 SSH 训练主机')
-  const args = ['-S', sshCommand(), ...authArgs(host), ...hostKeyArgs(), '-o', 'ConnectTimeout=12']
+  if (host.kind !== 'ssh' || !host.host || (!host.user && host.remoteBackend !== 'worker-daemon'))
+    throw new Error('不是有效的 SSH 训练主机')
+  const args = [
+    '-S',
+    sshCommand(),
+    ...authArgs(host),
+    ...hostKeyArgs(),
+    '-o',
+    host.remoteBackend === 'worker-daemon' ? 'ConnectTimeout=25' : 'ConnectTimeout=12',
+  ]
   if (host.port) args.push('-P', String(host.port))
   if (recursive) args.push('-r')
   return args

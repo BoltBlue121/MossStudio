@@ -3,7 +3,9 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { MAX_QUEUED_RUNS } from '@shared/canvasJobBranch'
 import { Ipc } from '@shared/channels'
-import type { ProjectCanvas } from '@shared/types'
+import type { Catalog, ManagedHost, ProjectCanvas } from '@shared/types'
+import { workerCanvasAdapter } from '@shared/remoteWorker'
+import { workerAdapterEntries, type WorkerAdapterEntry } from '@renderer/pages/studio/remoteWorkerLoras'
 import { catalogFixture, createMockBackend, SFT_BUNDLE_IDS } from '@test/mocks/backend'
 import { SUBMIT_TIMEOUT_MS, useGenerate } from '@renderer/pages/studio/useGenerate'
 import { dropRun, queuedRunsOf, runsOf } from '@renderer/pages/studio/runs'
@@ -33,7 +35,15 @@ const result = (id: string, patch: Partial<ProjectCanvas> = {}): ProjectCanvas =
  * The hook over an in-memory board; the backend's job route answers every submission with a queued job.
  * `held`: each submission waits for `release()` (or never answers), and gives up when its request is aborted.
  */
-function mount(start: ProjectCanvas[], options: { held?: boolean } = {}) {
+function mount(
+  start: ProjectCanvas[],
+  options: {
+    held?: boolean
+    catalog?: Catalog
+    remoteHost?: ManagedHost | null
+    workerAdapters?: readonly WorkerAdapterEntry[] | null
+  } = {},
+) {
   const backend = createMockBackend('ready')
   uninstall = backend.install()
   const sent: Array<Record<string, unknown>> = []
@@ -74,9 +84,10 @@ function mount(start: ProjectCanvas[], options: { held?: boolean } = {}) {
   function Probe(): null {
     api = useGenerate({
       project,
-      catalog: catalogFixture({ installed: SFT_BUNDLE_IDS }),
+      catalog: options.catalog ?? catalogFixture({ installed: SFT_BUNDLE_IDS }),
       preferredBundleId: null,
-      remoteHost: null,
+      remoteHost: options.remoteHost ?? null,
+      workerAdapters: options.workerAdapters,
       notify,
     })
     return null
@@ -195,5 +206,78 @@ describe('studio/useGenerate', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('studio/useGenerate on a Worker host', () => {
+  const worker = (patch: Partial<ManagedHost> = {}): ManagedHost => ({
+    id: 'h1',
+    name: 'render-box',
+    kind: 'ssh',
+    remoteBackend: 'worker-daemon',
+    trainerRoot: '',
+    status: 'ok',
+    devices: [],
+    ...patch,
+  })
+  const nothingHere = (): Catalog => ({ ...catalogFixture({ installed: [] }), adapters: [] })
+  const entries = workerAdapterEntries([
+    { id: 'anime.safetensors', name: 'Anime', sizeBytes: 1, registered: true },
+    { id: 'styles/ink.safetensors', name: 'Ink', sizeBytes: 1, registered: true },
+    { id: 'old.safetensors', name: 'Old', sizeBytes: 1, registered: false },
+  ])
+
+  it('sends with hostId and the Worker model when nothing is downloaded here, with the Worker LoRA', async () => {
+    const ink = workerCanvasAdapter('styles/ink.safetensors', 0.8)
+    const start = scene({ adapters: [{ id: 'anime.safetensors', strength: 1 }, ink] })
+    const { api, board, sent, notify } = mount([start], { catalog: nothingHere(), remoteHost: worker(), workerAdapters: entries })
+    expect(await api().generate('scene')).toMatchObject({ queued: true })
+    expect(notify).not.toHaveBeenCalled()
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({
+      hostId: 'h1',
+      modelName: 'render-box',
+      modelBinding: { bundleId: 'remote-worker:worker-h1' },
+      adapters: [{ id: 'anime.safetensors', strength: 1 }, ink],
+    })
+    expect(sent[0]!['remoteModelPath']).toBeUndefined()
+    // The 画面 keeps naming no model of its own: back on this computer it resolves as before.
+    expect(board.current.find((item) => item.id === 'scene')?.modelBundleId).toBeUndefined()
+  })
+
+  it('uses the custom provider id and does not report LoRA missing while the Worker list is unknown', async () => {
+    const start = scene({ adapters: [{ id: 'anime.safetensors', strength: 1 }] })
+    const { api, sent } = mount([start], {
+      catalog: nothingHere(),
+      remoteHost: worker({ workerProviderId: 'gpu-a' }),
+      workerAdapters: null,
+    })
+    expect(await api().generate('scene')).toMatchObject({ queued: true })
+    expect(sent[0]).toMatchObject({ hostId: 'h1', modelBinding: { bundleId: 'remote-worker:gpu-a' } })
+  })
+
+  it('refuses a LoRA the Worker has not registered, naming the host', async () => {
+    const start = scene({ adapters: [{ id: 'old.safetensors', strength: 1 }] })
+    const { api, sent } = mount([start], { catalog: nothingHere(), remoteHost: worker(), workerAdapters: entries })
+    expect(await api().generate('scene')).toEqual({
+      queued: false,
+      error: '「render-box」上没有登记 LoRA 「Old」，请移除或在 LoRA 列表里登记',
+    })
+    expect(sent).toHaveLength(0)
+  })
+
+  it('keeps every local check for a person with no Worker', async () => {
+    const local = mount([scene()], { catalog: nothingHere(), workerAdapters: entries })
+    expect(await local.api().generate('scene')).toEqual({ queued: false, error: '还没有可用的模型，请先到模型页下载' })
+    expect(local.sent).toHaveLength(0)
+    act(() => root?.unmount())
+    uninstall?.()
+    const withLora = mount([scene({ adapters: [{ id: 'anime.safetensors', strength: 1 }] })], { workerAdapters: entries })
+    expect((await withLora.api().generate('scene')).error).toContain('找不到了')
+    const ssh = worker({ id: 'h2', remoteBackend: 'moss-ssh', modelPath: '' })
+    act(() => root?.unmount())
+    uninstall?.()
+    const sshRun = mount([scene()], { remoteHost: ssh })
+    expect((await sshRun.api().generate('scene')).error).toBe('「render-box」还没有设置模型位置，请到 设置 › 设备与引擎 填写')
   })
 })

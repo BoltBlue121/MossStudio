@@ -9,6 +9,15 @@ import type { MossInferSink } from '@main/services/mossInfer'
 import { useTempDataRoot } from '@test/helpers/tempDir'
 import { MAX_QUEUED_RUNS } from '@shared/canvasJobBranch'
 
+const runRemoteWorkerJob = vi.hoisted(() => vi.fn())
+const cancelRemoteWorkerJob = vi.hoisted(() => vi.fn(async () => true))
+vi.mock('@main/services/remoteWorker', () => ({ runRemoteWorkerJob, cancelRemoteWorkerJob }))
+vi.mock('@main/services/workerHostManager', () => ({
+  connectWorkerHost: vi.fn(async () => ({ id: 'render', hostId: 'h1', kind: 'worker-daemon' })),
+  isWorkerDaemonHost: (host?: { remoteBackend?: string }) => host?.remoteBackend === 'worker-daemon',
+  listActiveWorkerProfiles: () => [],
+}))
+
 const emit = vi.hoisted(() => vi.fn())
 const runMossInferJob = vi.hoisted(() => vi.fn())
 const prepareModelSource = vi.hoisted(() => vi.fn())
@@ -172,6 +181,57 @@ const request = (prompt: string, patch: Record<string, unknown> = {}) =>
     modelBinding: { bundleId: 'b' },
     ...patch,
   }) as Parameters<typeof supervisor.startEngineJob>[0]
+
+it.each([undefined, { bundleId: 'files', dit: 'dit-file' }])(
+  'runs a worker host with no remote path or downloaded model (%j)',
+  async (modelBinding) => {
+    const host = { id: 'h1', name: 'Worker', kind: 'ssh', remoteBackend: 'worker-daemon' }
+    getTrainingHost.mockReturnValue(host)
+    getCatalog.mockResolvedValue({ bundles: [], models: [], adapters: [] })
+    runRemoteWorkerJob.mockReset().mockImplementation(async ({ onEvent }) => {
+      onEvent({ type: 'result', images: [{ path: '/worker.png', width: 1024, height: 1024, seed: 1 }] })
+      return 0
+    })
+    const job = await supervisor.startEngineJob(request('worker', { hostId: 'h1', modelBinding }))
+    await vi.waitFor(() =>
+      expect(runRemoteWorkerJob).toHaveBeenCalledWith(
+        expect.objectContaining({ jobId: job.id, profile: expect.objectContaining({ hostId: 'h1' }) }),
+      ),
+    )
+    const { connectWorkerHost } = await import('@main/services/workerHostManager')
+    expect(connectWorkerHost).toHaveBeenCalledWith(host)
+    expect(getCatalog).not.toHaveBeenCalled()
+    expect(prepareModelSource).not.toHaveBeenCalled()
+    expect(runRemoteEngineJob).not.toHaveBeenCalled()
+    expect(runMossInferJob).not.toHaveBeenCalled()
+    await vi.waitFor(async () => expect((await supervisor.listJobs()).find((item) => item.id === job.id)?.state).toBe('succeeded'))
+  },
+)
+
+it('dispatches worker progress and cancellation through the existing lifecycle', async () => {
+  getTrainingHost.mockReturnValue({ id: 'h1', name: 'Worker', kind: 'ssh', remoteBackend: 'worker-daemon' })
+  let done!: (code: number) => void
+  let event!: (event: Record<string, unknown>) => void
+  runRemoteWorkerJob.mockImplementation((options) => {
+    event = options.onEvent
+    return new Promise<number>((resolve) => {
+      done = resolve
+    })
+  })
+  const job = await supervisor.startEngineJob(request('worker', { hostId: 'h1', modelBinding: { bundleId: 'remote-worker:render' } }))
+  await vi.waitFor(() => expect(runRemoteWorkerJob).toHaveBeenCalled())
+  expect(runRemoteEngineJob).not.toHaveBeenCalled()
+  await supervisor.cancelJob(job.id)
+  const cancelCalls = cancelRemoteWorkerJob.mock.calls.length
+  event({ type: 'ready' })
+  expect(cancelRemoteWorkerJob.mock.calls.length).toBe(cancelCalls + 1)
+  event({ type: 'progress', stage: 'denoise', current: 3, total: 20, percent: 15 })
+  expect(updates(job.id).at(-1)?.progress.percent).toBe(15)
+  await supervisor.cancelJob(job.id)
+  expect(cancelRemoteWorkerJob).toHaveBeenCalledWith(job.id)
+  done(130)
+  await vi.waitFor(async () => expect((await supervisor.listJobs()).find((item) => item.id === job.id)?.state).toBe('canceled'))
+})
 
 /** Every job update emitted for `id`, in order. */
 const updates = (id: string): JobRecord[] =>

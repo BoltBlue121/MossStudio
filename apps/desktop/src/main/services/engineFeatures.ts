@@ -77,6 +77,10 @@ export async function getEngineFeatures(target: { deviceUuid?: string; hostId?: 
   if (target.hostId) {
     const host = getTrainingHost(getSettings(), target.hostId)
     if (!host || host.kind !== 'ssh') return null
+    // Worker workflows own generation; they do not expose the MossInfer SSH protocol.
+    if (host.remoteBackend === 'worker-daemon') {
+      return { preview: false, imageInput: false, control: false, references: false, hires: false, samplers: false, lora: true, values: {} }
+    }
     const hello = await remoteEngineHello(host)
     if (!hello || !protocolCompatible(hello)) return null
     // Input pictures are uploaded to the host; control adapters and live

@@ -1,7 +1,9 @@
 import { ChevronDown, Lock, LockOpen, Plus } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Notice } from '../../components/common/Notice'
-import type { Catalog, GpuInventorySnapshot, ManagedHost, ProjectCanvas, Settings } from '@shared/types'
+import { LoraTriggerBar } from '../../components/studio/LoraTriggerBar'
+import { findLoraProfile, mergeEntryLoraProfile, useLoraProfiles } from '../../components/studio/loraProfilesClient'
+import type { AdapterEntry, Catalog, GpuInventorySnapshot, ManagedHost, ProjectCanvas, Settings } from '@shared/types'
 import {
   ADAPTER_STRENGTH_MAX,
   ADAPTER_STRENGTH_MIN,
@@ -43,6 +45,7 @@ import {
 } from './defaults'
 import { canvasDescription, withDescription, type CompiledPrompt } from './prompt'
 import { installedBundles, type Blocker, type BundleChoice } from './readiness'
+import { isWorkerDaemonHost, type WorkerAdapterEntry } from './remoteWorkerLoras'
 import { ModelPicker } from './ModelPicker'
 import { ModelName } from '../../components/common/ModelName'
 import { bundleComponentIds, sizeText } from '../models/logic'
@@ -96,6 +99,8 @@ export interface ParamsPanelProps {
   regionCount: number
   catalog: Catalog | null
   bundle: BundleChoice
+  /** The LoRA of the Worker host picked as 运行位置 (null while unknown); absent for this computer and SSH hosts. */
+  workerAdapters?: readonly WorkerAdapterEntry[] | null
   settings: Settings | null
   gpuInventory: GpuInventorySnapshot | null
   hosts: ManagedHost[]
@@ -155,6 +160,7 @@ function CanvasParams({
   regionCount,
   catalog,
   bundle,
+  workerAdapters,
   settings,
   gpuInventory,
   hosts,
@@ -204,6 +210,8 @@ function CanvasParams({
     canvas.deviceUuid && gpuInventory && !gpuInventory.devices.some((device) => device.uuid === canvas.deviceUuid),
   )
   const locationName = remoteHost ? remoteHost.name : '本机'
+  // A Worker host brings its own model: the summary names the host, not a model of this computer.
+  const workerHost = isWorkerDaemonHost(remoteHost) ? remoteHost : null
   // The collapsed row names what is inside, so a first-time user knows it opens
   // settings instead of reading the values as a status line.
   const advancedSummary = ['种子 / CFG / 设备', seedLocked ? `种子 ${canvas.seed}` : '随机', locationName].join(' · ')
@@ -216,7 +224,14 @@ function CanvasParams({
   // Model, size and LoRA as separate pieces; the spaces keep the plain text readable ("MOSS-Image SFT INT8 1:1").
   const summary = (
     <>
-      {bundle.bundle ? <ModelName item={bundle.bundle} /> : <span>没有模型</span>} <span className="shrink-0 text-ink-2">{sizeLabel}</span>
+      {workerHost ? (
+        <span className="truncate">远端主机 · {workerHost.name}</span>
+      ) : bundle.bundle ? (
+        <ModelName item={bundle.bundle} />
+      ) : (
+        <span>没有模型</span>
+      )}{' '}
+      <span className="shrink-0 text-ink-2">{sizeLabel}</span>
       {adapters.length ? (
         <>
           {' '}
@@ -310,8 +325,11 @@ function CanvasParams({
                   <LoraSection
                     adapters={adapters}
                     catalog={catalog}
+                    entries={workerHost ? workerAdapters : undefined}
                     readOnly={readOnly}
                     unsupported={loraUnsupported}
+                    description={description}
+                    onDescriptionChange={(update) => onChange((current) => withDescription(current, update(canvasDescription(current))))}
                     onOpenAdapters={onOpenAdapters}
                     onChange={setAdapters}
                   />
@@ -604,22 +622,35 @@ function CanvasParams({
 export function LoraSection({
   adapters,
   catalog,
+  entries,
   readOnly = false,
   unsupported = false,
   hint,
+  description,
+  onDescriptionChange,
   onOpenAdapters,
   onChange,
 }: {
   adapters: ReturnType<typeof normalizeCanvasAdapters>
   catalog: Catalog | null
+  /** The Worker host's LoRA instead of this computer's library; null while unknown (rows then never show as missing). */
+  entries?: readonly WorkerAdapterEntry[] | null
   readOnly?: boolean
   /** The engine has no LoRA: nothing to add; rows already there stay so they can be removed. */
   unsupported?: boolean
   hint?: string
+  /** The description trigger words are written into; without it the trigger chips only show. */
+  description?: string
+  onDescriptionChange?: (update: (description: string) => string) => void
   onOpenAdapters: () => void
   onChange: (next: ProjectCanvas['adapters']) => void
 }): React.JSX.Element | null {
-  const adapterRows = adapterStatuses(adapters, catalog?.adapters)
+  const profiles = useLoraProfiles()
+  const library: readonly AdapterEntry[] | undefined = entries === undefined ? catalog?.adapters : (entries ?? undefined)
+  const adapterRows = adapterStatuses(adapters, library).map((row) =>
+    // Not read from the Worker yet: unknown, not missing.
+    entries === null || (entries && !entries.length) ? { ...row, installed: true } : row,
+  )
   const loraUnsupported = unsupported
   const setAdapters = onChange
   return (
@@ -636,29 +667,45 @@ export function LoraSection({
       )}
       {adapterRows.length ? (
         <div className="flex flex-col gap-1">
-          {adapterRows.map(({ adapter, name, installed: present }) => (
-            <SlotRow
-              key={adapter.id}
-              data-adapter-row={adapter.id}
-              title={present ? name : `${name}（找不到文件）`}
-              titleTone={present ? 'ink' : 'warn'}
-              removeLabel={`移除 ${name}`}
-              onRemove={readOnly ? undefined : () => setAdapters(adapters.filter((item) => item.id !== adapter.id))}
-            >
-              <SliderField
-                label="强度"
-                ariaLabel={`${name} 强度`}
-                min={ADAPTER_STRENGTH_MIN}
-                max={ADAPTER_STRENGTH_MAX}
-                step={ADAPTER_STRENGTH_STEP}
-                value={adapter.strength}
-                format={formatAdapterStrength}
-                onChange={(value) =>
-                  setAdapters(adapters.map((item) => (item.id === adapter.id ? { ...item, strength: clampAdapterStrength(value) } : item)))
-                }
-              />
-            </SlotRow>
-          ))}
+          {adapterRows.map(({ adapter, name, installed: present }) => {
+            const entry = library?.find((item) => item.id === adapter.id)
+            const profile = mergeEntryLoraProfile(adapter.path ?? adapter.id, entry, findLoraProfile(profiles, adapter))
+            return (
+              <SlotRow
+                key={adapter.id}
+                data-adapter-row={adapter.id}
+                title={present ? name : `${name}（找不到文件）`}
+                titleTone={present ? 'ink' : 'warn'}
+                removeLabel={`移除 ${name}`}
+                onRemove={readOnly ? undefined : () => setAdapters(adapters.filter((item) => item.id !== adapter.id))}
+              >
+                <SliderField
+                  label="强度"
+                  ariaLabel={`${name} 强度`}
+                  min={ADAPTER_STRENGTH_MIN}
+                  max={ADAPTER_STRENGTH_MAX}
+                  step={ADAPTER_STRENGTH_STEP}
+                  value={adapter.strength}
+                  format={formatAdapterStrength}
+                  onChange={(value) =>
+                    setAdapters(
+                      adapters.map((item) => (item.id === adapter.id ? { ...item, strength: clampAdapterStrength(value) } : item)),
+                    )
+                  }
+                />
+                {readOnly && !profile?.triggers.length ? null : (
+                  <LoraTriggerBar
+                    adapter={adapter}
+                    name={name}
+                    profile={profile}
+                    description={description ?? ''}
+                    readOnly={readOnly}
+                    onDescriptionChange={onDescriptionChange}
+                  />
+                )}
+              </SlotRow>
+            )
+          })}
         </div>
       ) : null}
     </>
@@ -712,6 +759,7 @@ function UpscaleSection({
 function StylePanel({
   canvas,
   catalog,
+  workerAdapters,
   inputs,
   onChange,
   onOpenAdapters,
@@ -748,7 +796,10 @@ function StylePanel({
           <LoraSection
             adapters={normalizeCanvasAdapters(canvas.adapters)}
             catalog={catalog}
+            entries={workerAdapters}
             unsupported={loraUnsupported}
+            description={canvas.prompt}
+            onDescriptionChange={(update) => onChange((current) => withDescription(current, update(current.prompt)))}
             onOpenAdapters={onOpenAdapters}
             onChange={(next) => onChange((current) => ({ ...current, adapters: normalizeCanvasAdapters(next) }))}
           />
