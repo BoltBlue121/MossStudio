@@ -1,3 +1,12 @@
+import { connectWorkerHost, disconnectWorkerHost, isWorkerDaemonHost, workerHostProviderId } from './services/workerHostManager'
+import { listRemoteWorkerLoras, changeRemoteWorkerLora } from './services/remoteWorker'
+import { mergeLoraMeta } from './services/loraProfiles'
+import { resolveAdapterFile } from './services/models'
+import type { CapabilityId } from '@shared/capabilities'
+import { createBuiltinMainDispatcher, listCapabilityAudit } from './capabilities'
+import { getActiveMcpServer, getMcpServerState, startMcpServer, getMcpClientsStatus, installMcpClient, uninstallMcpClient } from './mcp'
+import { listLoraProfiles, saveLoraProfile, extractSafetensorsTriggers } from './services/loraProfiles'
+import { agentHub, attachCapabilityApproval, capabilityApprovalQueue } from './agentHub'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { totalmem } from 'node:os'
@@ -5,7 +14,6 @@ import { ZodError, type ZodType } from 'zod'
 import { Events, Ipc } from '@shared/channels'
 import { schemas } from '@shared/schemas'
 import { trainingSchemas } from '@shared/training'
-import { resolveToolset, toolDefinitions } from '@shared/agent/registry'
 import type { AgentMode, AiToolCall, AiToolCallRequest, AiToolResult } from '@shared/ai'
 import type { IpcResult, Settings } from '@shared/types'
 import { emit } from './lib/events'
@@ -193,6 +201,59 @@ function runToolInRenderer(event: Electron.IpcMainInvokeEvent, call: AiToolCall,
   })
 }
 
+function runToolOnWebContents(
+  sender: Electron.WebContents,
+  call: AiToolCall,
+  mode: AgentMode,
+  conversationId?: string,
+  timeoutMs = 60_000,
+): Promise<AiToolResult> {
+  return new Promise<AiToolResult>((resolve) => {
+    const callId = call.id
+    const settle = (result: AiToolResult): void => {
+      pendingToolCalls.delete(callId)
+      resolve(result)
+    }
+    const timer = setTimeout(
+      () => settle({ ok: false, content: JSON.stringify({ error: `tool timed out after ${Math.round(timeoutMs / 1000)}s` }) }),
+      timeoutMs,
+    )
+    pendingToolCalls.set(callId, (result) => {
+      clearTimeout(timer)
+      settle(result)
+    })
+    if (sender.isDestroyed()) {
+      clearTimeout(timer)
+      settle({ ok: false, content: JSON.stringify({ error: 'window closed' }) })
+      return
+    }
+    sender.send(Events.aiToolCall, { callId, name: call.name, arguments: call.arguments, mode, conversationId })
+  })
+}
+export async function runToolInStudioWindow(call: AiToolCall, mode: AgentMode, conversationId?: string): Promise<AiToolResult> {
+  const win = BrowserWindow.getAllWindows().find((item) => !item.isDestroyed() && !item.webContents.isDestroyed())
+  if (!win) {
+    return { ok: false, content: JSON.stringify({ error: 'Studio 窗口尚未打开，无法执行画板操作' }) }
+  }
+  if (win.webContents.isLoading()) {
+    await new Promise<void>((resolve) => {
+      const done = (): void => {
+        clearTimeout(waitTimer)
+        win.webContents.off('did-finish-load', done)
+        resolve()
+      }
+      const waitTimer = setTimeout(done, 8_000)
+      win.webContents.once('did-finish-load', done)
+    })
+  }
+  if (win.isDestroyed() || win.webContents.isDestroyed()) {
+    return { ok: false, content: JSON.stringify({ error: 'Studio 窗口已关闭' }) }
+  }
+  // Remote generation submission includes SSH checks and worker queueing before it acknowledges the job.
+  const timeoutMs = call.name === 'studio.runs.generate' || call.name === 'studio_generate' ? 45_000 : 15_000
+  return runToolOnWebContents(win.webContents, call, mode, conversationId, timeoutMs)
+}
+
 export function registerIpc(): void {
   async function refreshSharedModels(settings: Settings, changed = false): Promise<void> {
     await refreshModelSources(settings, changed)
@@ -250,6 +311,98 @@ export function registerIpc(): void {
 
   handle(Ipc.backendInfo, null, () => getBackendInfo())
 
+  const capabilities = createBuiltinMainDispatcher()
+  attachCapabilityApproval(capabilities)
+
+  handle(Ipc.agentHubBackends, null, () => agentHub.backends())
+  handle(Ipc.agentHubModels, schemas.agentHubModels, ({ backendId, sessionId }) => agentHub.models(backendId, sessionId))
+  handle(Ipc.agentHubSetModel, schemas.agentHubSetModel, (input) => agentHub.setModel(input))
+  handle(Ipc.agentHubSessionStats, schemas.agentHubSession, ({ backendId, sessionId }) => agentHub.sessionStats(backendId, sessionId))
+  handle(Ipc.agentHubConnect, schemas.agentHubConnect, (input) => agentHub.connect(input))
+  handle(Ipc.agentHubDisconnect, schemas.agentHubBackend, ({ backendId }) => agentHub.disconnect(backendId))
+  handle(Ipc.agentHubSessions, schemas.agentHubBackend, ({ backendId }) => agentHub.sessions(backendId))
+  handle(Ipc.agentHubCreateSession, schemas.agentHubCreateSession, (input) => agentHub.createSession(input))
+  handle(Ipc.agentHubMessages, schemas.agentHubSession, ({ backendId, sessionId }) => agentHub.messages(backendId, sessionId))
+  handle(Ipc.agentHubSend, schemas.agentHubSend, (input) => agentHub.send(input))
+  handle(Ipc.agentHubStop, schemas.agentHubSession, ({ backendId, sessionId }) => agentHub.stop(backendId, sessionId))
+  handle(Ipc.agentHubApprovals, null, () => capabilityApprovalQueue.listPending())
+  handle(Ipc.agentHubResolveApproval, schemas.agentHubResolveApproval, ({ id, decision }) => capabilityApprovalQueue.resolve(id, decision))
+
+  handle(Ipc.capabilitiesList, schemas.capabilitiesList, (input) =>
+    capabilities.list(
+      input
+        ? {
+            ...input,
+            enabledPacks: input.enabledPacks as CapabilityId[] | undefined,
+          }
+        : undefined,
+    ),
+  )
+
+  handle(Ipc.capabilitiesSkill, schemas.capabilitiesList, (input) =>
+    capabilities.skill(
+      input
+        ? {
+            ...input,
+            enabledPacks: input.enabledPacks as CapabilityId[] | undefined,
+          }
+        : undefined,
+    ),
+  )
+
+  handle(Ipc.capabilitiesExecute, schemas.capabilitiesExecute, (input, event) =>
+    capabilities.execute({
+      ...input,
+      runInRenderer: (call, mode, conversationId) => runToolInRenderer(event, call, mode, conversationId ?? ''),
+    }),
+  )
+
+  handle(Ipc.capabilitiesAudit, schemas.capabilitiesAudit, (input) => listCapabilityAudit(input ?? {}))
+
+  handle(Ipc.mcpClientsStatus, schemas.mcpClientsStatus, () => getMcpClientsStatus())
+  handle(Ipc.mcpClientInstall, schemas.mcpClientInstall, ({ clientId }) => installMcpClient(clientId))
+  handle(Ipc.mcpClientUninstall, schemas.mcpClientUninstall, ({ clientId }) => uninstallMcpClient(clientId))
+  const workerProfileFor = async ({ hostId, providerId }: { hostId?: string; providerId?: string }) => {
+    const settings = getSettings()
+    const host = hostId
+      ? getTrainingHost(settings, hostId)
+      : listTrainingHosts(settings).find((item) => isWorkerDaemonHost(item) && workerHostProviderId(item) === providerId)
+    if (!isWorkerDaemonHost(host)) throw new Error('请选择远端工作节点')
+    const profile = await connectWorkerHost(host)
+    if (providerId && profile.id !== providerId) throw new Error('所选服务与远端主机不匹配')
+    return profile
+  }
+  handle(Ipc.remoteWorkerLoras, schemas.remoteWorkerLoras, async ({ hostId, providerId, candidates }) => {
+    const profile = await workerProfileFor({ hostId, providerId })
+    return Promise.all((await listRemoteWorkerLoras(profile, candidates)).items.map((item) => mergeLoraMeta(item)))
+  })
+  handle(Ipc.remoteWorkerLoraRegister, schemas.remoteWorkerLoraRegister, async ({ hostId, providerId, id, action }) => {
+    const result = await changeRemoteWorkerLora(await workerProfileFor({ hostId, providerId }), id, action)
+    invalidateCatalog()
+    return result
+  })
+  handle(Ipc.loraProfilesList, schemas.loraProfilesList, () => listLoraProfiles())
+  handle(Ipc.loraProfilesSave, schemas.loraProfilesSave, async (input) => {
+    const result = await saveLoraProfile(input)
+    invalidateCatalog()
+    emit(Events.loraProfilesChanged, { loraId: result.loraId })
+    return result
+  })
+  handle(Ipc.loraProfilesInspect, schemas.loraProfilesInspect, async ({ filePath, loraId }) => {
+    const resolved =
+      filePath && existsSync(filePath) ? filePath : loraId ? await resolveAdapterFile(getSettings(), loraId).catch(() => null) : null
+    if (!resolved || !existsSync(resolved)) {
+      throw new Error('本机找不到该 LoRA 的权重文件，请手动填写触发词或确认权重路径')
+    }
+    return extractSafetensorsTriggers(resolved)
+  })
+  handle(Ipc.mcpInfo, schemas.mcpInfo, (input) => getMcpServerState(input?.includeToken === true))
+
+  handle(Ipc.mcpSetProfile, schemas.mcpSetProfile, async ({ profile, enabledPacks }) => {
+    const server = getActiveMcpServer() ?? (await startMcpServer({ runInRenderer: runToolInStudioWindow }))
+    return server.setProfile(profile, enabledPacks as CapabilityId[] | undefined)
+  })
+
   handle(Ipc.aiProvidersList, null, () => listProviders())
 
   handle(Ipc.aiProviderSave, schemas.aiProviderSave, (input) => connectProvider(input))
@@ -284,8 +437,16 @@ export function registerIpc(): void {
       emit: (payload) => {
         if (!event.sender.isDestroyed()) event.sender.send(Events.aiStream, payload)
       },
-      runTool: (call, mode, turnId) => runToolInRenderer(event, call, mode, turnId),
-      tools: toolDefinitions(resolveToolset({ page: 'studio' })),
+      runTool: (call, mode, turnId) =>
+        capabilities.execute({
+          callId: call.id,
+          name: call.name,
+          arguments: call.arguments,
+          mode,
+          source: 'assistant',
+          runInRenderer: (rendererCall, rendererMode) => runToolInRenderer(event, rendererCall, rendererMode, turnId),
+        }),
+      tools: capabilities.list({ profile: 'compact', surface: '/studio', nameStyle: 'legacy-or-id' }).tools,
     }),
   )
 
@@ -384,14 +545,18 @@ export function registerIpc(): void {
 
   handle(Ipc.hostsList, null, () => listManagedHosts(getSettings()))
 
-  handle(Ipc.hostsSave, schemas.hostSave, (input) => {
+  handle(Ipc.hostsSave, schemas.hostSave, async (input) => {
+    if (input.id) await disconnectWorkerHost(input.id)
+    invalidateCatalog()
     const saved = saveTrainingHost(input)
     const managed = listManagedHosts(getSettings()).find((host) => host.id === saved.id) ?? saved
     emit(Events.hostsChanged, { id: saved.id })
     return managed
   })
 
-  handle(Ipc.hostsRemove, schemas.hostId, ({ id }) => {
+  handle(Ipc.hostsRemove, schemas.hostId, async ({ id }) => {
+    await disconnectWorkerHost(id)
+    invalidateCatalog()
     removeTrainingHost(id)
     emit(Events.hostsChanged, { id })
     return true
@@ -419,6 +584,7 @@ export function registerIpc(): void {
 
   handle(Ipc.hostsTest, schemas.hostId, async ({ id }) => {
     const host = await testManagedHost(getSettings(), id)
+    if (isWorkerDaemonHost(host)) invalidateCatalog()
     emit(Events.hostsChanged, { id })
     return host
   })

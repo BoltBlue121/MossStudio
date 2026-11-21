@@ -85,4 +85,10 @@ export interface StudioToolApi {
    * `key` as one undo step, tagged with the tool call. Absent where nothing keeps an undo history.
    */
   oneStep?<T>(key: string, call: string | undefined, run: () => T): T
+  /**
+   * Run a call an external Agent made (over MCP, not in the built-in chat):
+   * its changes are one undo step, and the board shows a card it added or
+   * selected, or says that it rewrote the open one.
+   */
+  followExternal?<T>(call: string, run: () => Promise<T>): Promise<T>
 }

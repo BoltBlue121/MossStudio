@@ -177,6 +177,10 @@ async function packageApp({ platform, versions, out }) {
         extraResource: RESOURCES,
       })
       if (!appDir) throw new Error('electron packager returned no app folder')
+      const resourceRoot = os === 'darwin' ? join(appDir, 'MossStudio.app', 'Contents', 'Resources') : join(appDir, 'resources')
+      const bridgeDir = join(resourceRoot, 'tools', 'mcp')
+      mkdirSync(bridgeDir, { recursive: true })
+      copyFileSync(join(REPO_ROOT, 'tools', 'mcp', 'mossstudio-mcp-stdio.mjs'), join(bridgeDir, 'mossstudio-mcp-stdio.mjs'))
       const target = join(out, version, platform)
       rmSync(target, { recursive: true, force: true })
       mkdirSync(join(out, version), { recursive: true })
@@ -206,7 +210,7 @@ async function packageApp({ platform, versions, out }) {
 function checkPackage(target, os, version) {
   const resources = os === 'darwin' ? join(target, 'MossStudio.app', 'Contents', 'Resources') : join(target, 'resources')
   const exe = os === 'win32' ? join(target, 'MossStudio.exe') : os === 'linux' ? join(target, 'MossStudio') : join(target, 'MossStudio.app', 'Contents', 'MacOS', 'MossStudio')
-  for (const path of [exe, join(resources, 'app.asar'), join(resources, 'models.json'), join(resources, 'rules.json')]) {
+  for (const path of [exe, join(resources, 'app.asar'), join(resources, 'models.json'), join(resources, 'rules.json'), join(resources, 'tools', 'mcp', 'mossstudio-mcp-stdio.mjs')]) {
     if (!existsSync(path)) throw new Error(`packaged app lacks ${path}`)
   }
   if (os === 'darwin') {

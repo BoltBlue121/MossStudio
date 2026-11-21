@@ -236,6 +236,72 @@ function projectSummary(project: ProjectDocument): ProjectSummary {
 function defaultHandlers(): Map<string, Handler> {
   const h = new Map<string, Handler>()
   const p = <T>(payload: unknown) => (payload ?? {}) as T
+  const loraProfiles = new Map<string, Record<string, unknown>>()
+  h.set(Ipc.loraProfilesList, () => [...loraProfiles.values()])
+  h.set(Ipc.loraProfilesSave, (payload, { emit }) => {
+    const profile = p<Record<string, unknown> & { loraId: string }>(payload)
+    loraProfiles.set(profile.loraId, { ...profile })
+    emit(Events.loraProfilesChanged, { loraId: profile.loraId })
+    return profile
+  })
+  h.set(Ipc.loraProfilesInspect, () => ({ triggerWords: [], metadata: {} }))
+  for (const channel of [
+    Ipc.remoteWorkerLoras,
+    Ipc.agentHubBackends,
+    Ipc.agentHubSessions,
+    Ipc.agentHubApprovals,
+    Ipc.capabilitiesList,
+    Ipc.capabilitiesAudit,
+    Ipc.mcpClientsStatus,
+  ])
+    h.set(channel, () => [])
+  h.set(Ipc.remoteWorkerLoraRegister, (payload) => p(payload))
+  h.set(Ipc.agentHubModels, () => ({ models: [] }))
+  h.set(Ipc.agentHubMessages, () => ({ messages: [], hasMore: false, asOfSeq: 0 }))
+  h.set(Ipc.agentHubSessionStats, () => ({
+    messageCount: 0,
+    userTurns: 0,
+    assistantTurns: 0,
+    estimatedChars: 0,
+    activeMcpTools: 0,
+    recentToolCalls: 0,
+    running: false,
+  }))
+  h.set(Ipc.agentHubCreateSession, () => ({ sessionId: 'fixture-agent-session' }))
+  h.set(Ipc.agentHubSetModel, (payload) => ({ ok: true, ...p<object>(payload) }))
+  h.set(Ipc.agentHubConnect, (payload) => ({
+    id: p<{ backendId: string }>(payload).backendId,
+    label: 'Fixture agent',
+    kind: 'acp',
+    available: true,
+    connected: true,
+  }))
+  for (const channel of [Ipc.agentHubDisconnect, Ipc.agentHubSend, Ipc.agentHubStop, Ipc.agentHubResolveApproval])
+    h.set(channel, () => true)
+  h.set(Ipc.capabilitiesSkill, () => ({ markdown: '', digest: '' }))
+  h.set(Ipc.capabilitiesExecute, () => ({ ok: true, data: null }))
+  const mcpState = {
+    running: false,
+    host: '127.0.0.1',
+    port: 0,
+    url: '',
+    profile: 'studio-core',
+    enabledPacks: [],
+    discoveryPath: '',
+    stdioBridgePath: '',
+  }
+  h.set(Ipc.mcpInfo, () => ({ ...mcpState }))
+  h.set(Ipc.mcpSetProfile, (payload) => Object.assign(mcpState, p<object>(payload)))
+  for (const channel of [Ipc.mcpClientInstall, Ipc.mcpClientUninstall])
+    h.set(channel, (payload) => ({
+      id: p<{ clientId: string }>(payload).clientId,
+      label: 'Fixture client',
+      configPath: '',
+      detected: false,
+      installed: channel === Ipc.mcpClientInstall,
+      installMode: 'copy-only',
+      detail: '',
+    }))
 
   h.set(Ipc.appInfo, (_, { state }) => {
     // Like main: the models folder follows settings.

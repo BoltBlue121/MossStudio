@@ -75,6 +75,66 @@ function isFormField(element: Element | null): boolean {
   return Boolean(element?.closest('input, textarea, select, [contenteditable="true"]'))
 }
 
+/** The board before or after a call an external Agent made. */
+export interface BoardState {
+  canvases: readonly ProjectCanvas[]
+  selectedId: string | null
+  /** The project session (sessionKey); a call that opened or created a project leaves a different one. */
+  session?: number
+}
+
+/** What the board should follow after an external Agent's call, and how to say it. */
+export interface ExternalFocus {
+  canvasId: string
+  title: string
+  change: 'added' | 'selected' | 'edited' | 'run'
+}
+
+/**
+ * Where to look after an external Agent changed the board: a card it added
+ * (the last 画面 among them), else a card it selected, else the open card when
+ * it rewrote its description or regions. A run folded into a filmstrip is shown
+ * through its 画面. Null when nothing the person would miss happened, or when
+ * the call switched to another project: its cards were not made by the Agent.
+ */
+export function externalFocusOf(before: BoardState, after: BoardState): ExternalFocus | null {
+  if (before.session !== undefined && after.session !== undefined && before.session !== after.session) return null
+  const folded = foldedRunIds(after.canvases)
+  const visible = (id: string | null | undefined): ProjectCanvas | null => {
+    const card = id ? after.canvases.find((canvas) => canvas.id === id) : undefined
+    if (!card) return null
+    if (folded.has(card.id) && card.sourceCanvasId) return after.canvases.find((canvas) => canvas.id === card.sourceCanvasId) ?? card
+    return card
+  }
+  const known = new Set(before.canvases.map((canvas) => canvas.id))
+  const added = after.canvases.filter((canvas) => !known.has(canvas.id))
+  const addedCard = visible([...added].reverse().find((canvas) => canvas.kind === 'layout')?.id ?? added.at(-1)?.id)
+  if (addedCard && known.has(addedCard.id)) {
+    // Only a run was added: it shows in the filmstrip of its 画面.
+    return { canvasId: addedCard.id, title: addedCard.title, change: 'run' }
+  }
+  if (addedCard) return { canvasId: addedCard.id, title: addedCard.title, change: 'added' }
+  if (after.selectedId && after.selectedId !== before.selectedId) {
+    const card = visible(after.selectedId)
+    if (card) return { canvasId: card.id, title: card.title, change: 'selected' }
+  }
+  const id = after.selectedId
+  const was = id ? before.canvases.find((canvas) => canvas.id === id) : undefined
+  const now = id ? after.canvases.find((canvas) => canvas.id === id) : undefined
+  if (was && now && (was.prompt !== now.prompt || JSON.stringify(was.layers) !== JSON.stringify(now.layers))) {
+    return { canvasId: now.id, title: now.title, change: 'edited' }
+  }
+  return null
+}
+
+/** The toast line for what an external Agent just did on the board. */
+export function externalFocusMessage(focus: ExternalFocus): string {
+  if (focus.change === 'added') return `外部 Agent 新建了「${focus.title}」`
+  if (focus.change === 'selected') return `外部 Agent 切到了「${focus.title}」`
+  if (focus.change === 'run') return `外部 Agent 开始生成「${focus.title}」`
+  return `外部 Agent 修改了「${focus.title}」`
+}
+
 export interface StudioProject {
   loaded: boolean
   /** Changes whenever another project is opened or a new one is started. */
@@ -101,6 +161,8 @@ export interface StudioProject {
   saveNow: (override?: { canvases: ProjectCanvas[]; selectedCanvasId: string | null }) => Promise<ProjectDocument | null>
   openProject: (id: string) => Promise<void>
   newProject: () => Promise<void>
+  /** Saves an empty project under `name` without leaving the open one; its id, or null when the save failed. */
+  createProject: (name: string) => Promise<string | null>
   rename: (name: string) => void
   deleteProject: (id: string) => Promise<void>
   history: StudioHistory
@@ -669,6 +731,22 @@ export function useStudioProject(options: {
     blankProject(list.map((item) => item.name))
   }, [blankProject, client, projects, saveBeforeLeaving])
 
+  const createProject = useCallback(
+    async (name: string): Promise<string | null> => {
+      const trimmed = name.trim()
+      if (!trimmed) return null
+      try {
+        const saved = await client.saveProject({ name: trimmed.slice(0, 200), canvases: [] })
+        setProjects(await client.listProjects().catch(() => projects))
+        return saved.id
+      } catch (error) {
+        onErrorRef.current(error instanceof Error ? error.message : String(error))
+        return null
+      }
+    },
+    [client, projects],
+  )
+
   const rename = useCallback(
     (name: string) => {
       const trimmed = name.trim()
@@ -741,6 +819,7 @@ export function useStudioProject(options: {
     saveNow,
     openProject,
     newProject,
+    createProject,
     rename,
     deleteProject,
     history: { ...historyShape, undo, redo, top, within, join, turn, undoTurn, redoTurn },

@@ -68,6 +68,42 @@ const mangaWithPage = (page: Record<string, unknown>): unknown => ({
 })
 
 const cases = {
+  remoteWorkerLoras: {
+    valid: { hostId: 'host' },
+    accepts: { provider: { providerId: 'worker-host', candidates: true }, both: { hostId: 'host', providerId: 'worker-host' } },
+    rejects: { missing: {}, emptyHost: { hostId: '' }, emptyProvider: { providerId: '' } },
+  },
+  remoteWorkerLoraRegister: {
+    valid: { hostId: 'host', id: 'lora', action: 'register' },
+    accepts: { provider: { providerId: 'worker-host', id: 'lora', action: 'unregister' } },
+    rejects: { missing: { id: 'lora', action: 'register' }, action: { hostId: 'host', id: 'lora', action: 'delete' } },
+  },
+  loraProfilesList: { valid: {}, rejects: { unknown: { x: true } } },
+  loraProfilesSave: { valid: { loraId: 'lora' }, rejects: { strength: { loraId: 'lora', defaultStrength: 5 } } },
+  loraProfilesInspect: { valid: { loraId: 'lora' }, rejects: { missing: {} } },
+  mcpClientsStatus: { valid: {}, rejects: { unknown: { x: true } } },
+  mcpClientInstall: { valid: { clientId: 'codex' }, rejects: { unknown: { clientId: 'other' } } },
+  mcpClientUninstall: { valid: { clientId: 'claude-code' }, rejects: { missing: {} } },
+  agentHubConnect: { valid: { backendId: 'codex' }, rejects: { command: { backendId: 'custom', customCommand: 'bad\ncommand' } } },
+  agentHubBackend: { valid: { backendId: 'codex' }, rejects: { empty: { backendId: '' } } },
+  agentHubCreateSession: {
+    valid: { backendId: 'codex' },
+    accepts: { 'a new project folder': { backendId: 'codex', cwd: 'F:/work/new', createCwd: true } },
+    rejects: { missing: {}, createCwd: { backendId: 'codex', cwd: 'F:/work/new', createCwd: 'yes' } },
+  },
+  agentHubModels: { valid: { backendId: 'codex' }, rejects: { missing: {} } },
+  agentHubSetModel: { valid: { backendId: 'codex', sessionId: 's', model: 'm' }, rejects: { missing: {} } },
+  agentHubSession: { valid: { backendId: 'codex', sessionId: 's' }, rejects: { missing: {} } },
+  agentHubSend: {
+    valid: { backendId: 'codex', sessionId: 's', text: 'hello' },
+    rejects: { empty: { backendId: 'codex', sessionId: 's', text: '' } },
+  },
+  agentHubResolveApproval: { valid: { id: 'a', decision: 'approve' }, rejects: { missing: {} } },
+  capabilitiesList: { valid: {}, rejects: { profile: { profile: 'unknown' } } },
+  capabilitiesExecute: { valid: { name: 'models.catalog.installed' }, rejects: { missing: {} } },
+  capabilitiesAudit: { valid: {}, rejects: { limit: { limit: 0 } } },
+  mcpInfo: { valid: {}, rejects: { token: { includeToken: 'true' } } },
+  mcpSetProfile: { valid: { profile: 'compact' }, rejects: { profile: { profile: 'unknown' } } },
   settingsUpdate: {
     valid: {},
     accepts: {
@@ -1096,7 +1132,24 @@ const schemaFor = (name: keyof Schemas) => schemas[name] as unknown as z.ZodType
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
-const STRICT = new Set<keyof Schemas>(['engineSystemCuda', 'mossInferCudaLibs'])
+const STRICT = new Set<keyof Schemas>([
+  'engineSystemCuda',
+  'mossInferCudaLibs',
+  'loraProfilesList',
+  'loraProfilesSave',
+  'loraProfilesInspect',
+  'mcpClientsStatus',
+  'mcpClientInstall',
+  'mcpClientUninstall',
+  'agentHubConnect',
+  'agentHubBackend',
+  'agentHubCreateSession',
+  'agentHubModels',
+  'agentHubSetModel',
+  'agentHubSession',
+  'agentHubSend',
+  'agentHubResolveApproval',
+])
 
 describe('schemas table', () => {
   it('covers every exported schema', () => {

@@ -73,6 +73,13 @@ describe('the certified catalog', () => {
 })
 
 describe('isFileBundle', () => {
+  it('does not treat virtual worker models as local files', () => {
+    const id = 'remote-worker:windows'
+    const virtual = { components: { dit: id, textEncoder: id, vae: id } }
+    const models = [{ id, provider: 'local' as const }]
+    expect(isFileBundle(virtual, models)).toBe(false)
+    expect(isLocalOnlyBundle(virtual, models)).toBe(false)
+  })
   it('tells single-file models from folder ones', () => {
     expect(isFileBundle(bundle('moss-sft-int8'), catalog.models)).toBe(true)
     expect(isFileBundle(bundle('moss-sft'), catalog.models)).toBe(false)

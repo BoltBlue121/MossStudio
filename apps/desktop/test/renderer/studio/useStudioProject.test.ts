@@ -533,4 +533,23 @@ describe('useStudioProject history', () => {
     })
     expect([get().history.canUndo, get().history.canRedo]).toEqual([false, false])
   })
+
+  it('creates an empty project for a conversation without leaving the open one', async () => {
+    const fake = fakeClient([doc('a')])
+    const { get, errors } = await mount(fake.client)
+    let id: string | null = null
+    await act(async () => {
+      id = await get().createProject('  港口海报  ')
+    })
+    expect(id).toMatch(/^project-new-/)
+    expect(fake.projects.get(id!)).toMatchObject({ name: '港口海报', canvases: [] })
+    expect(get().projectId).toBe('a')
+    expect(get().projects.map((item) => item.name)).toContain('港口海报')
+    fake.control.fail = true
+    await act(async () => {
+      id = await get().createProject('又一个')
+    })
+    expect(id).toBeNull()
+    expect(errors).toEqual(['disk full'])
+  })
 })

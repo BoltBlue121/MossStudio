@@ -1,6 +1,9 @@
 import { Events, Ipc } from '@shared/channels'
-import type { AiToolCallRequest } from '@shared/ai'
+import type { AiToolCallRequest, AiToolResult } from '@shared/ai'
+import { toolByName } from '@shared/agent/registry'
+import { BUILTIN_CAPABILITY_REGISTRY } from '@shared/capabilities'
 import { call, onEvent } from './api'
+import { RENDERER_CAPABILITY_HOST, type RendererCapabilityHost } from './capabilities'
 import { applyPlan, executeStudioTool, getStudioApi, setStudioApi } from './agent/executor'
 import type { StudioSnapshot, StudioToolApi } from './agent/types'
 
@@ -59,14 +62,46 @@ export function formatStudioContext(snapshot: StudioSnapshot | null): string | u
   return lines.join('\n')
 }
 
+/**
+ * The built-in tool a call means: a legacy `studio_*` name as it is, or a
+ * capability id that supersedes one (`studio.sampling.set` → `studio_set_sampler`).
+ */
+export function legacyToolName(name: string): string | null {
+  if (toolByName(name)) return name
+  const alias = BUILTIN_CAPABILITY_REGISTRY.getAction(name)?.descriptor.legacyAlias
+  return alias && toolByName(alias) ? alias : null
+}
+
+/**
+ * One tool call from the main process. The built-in assistant's tools keep
+ * their own path (and its per-turn undo); every other capability goes to the
+ * renderer host. A call without a turn comes from an external Agent over MCP:
+ * the Studio follows what it did on the board.
+ */
+export async function runStudioToolCall(
+  request: AiToolCallRequest,
+  host: RendererCapabilityHost = RENDERER_CAPABILITY_HOST,
+): Promise<AiToolResult> {
+  const legacy = legacyToolName(request.name)
+  const run = (): Promise<AiToolResult> =>
+    legacy
+      ? executeStudioTool(
+          { id: request.callId, name: legacy, arguments: request.arguments },
+          { mode: request.mode, turnId: request.turnId },
+        )
+      : host.execute(
+          { id: request.callId, name: request.name, arguments: request.arguments },
+          { mode: request.mode, conversationId: request.conversationId },
+        )
+  const follow = request.turnId ? undefined : getStudioApi()?.followExternal
+  return follow ? follow(request.callId, run) : run()
+}
+
 /** Subscribe once; resolves every tool call the main process asks for. */
 export function installStudioToolBridge(): () => void {
   return onEvent<AiToolCallRequest>(Events.aiToolCall, (request) => {
     void (async () => {
-      const result = await executeStudioTool(
-        { id: request.callId, name: request.name, arguments: request.arguments },
-        { mode: request.mode, turnId: request.turnId },
-      )
+      const result = await runStudioToolCall(request)
       await call(Ipc.aiToolResult, { callId: request.callId, result }).catch(() => undefined)
     })()
   })

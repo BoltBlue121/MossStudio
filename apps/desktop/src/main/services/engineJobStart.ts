@@ -11,6 +11,9 @@ import { pickJobInputs, validateJobInputs } from './jobInputs'
 import { PROJECT_ID_PATTERN, projectAssetsDir } from './projects'
 import { getSettings } from './settings'
 import { startEngineJob } from './supervisor'
+import { getTrainingHost } from './trainingHosts'
+import { connectWorkerHost, isWorkerDaemonHost, listActiveWorkerProfiles } from './workerHostManager'
+import { resolveRemoteWorkerAdapters } from './remoteWorker'
 import { assertGenerationAllowed } from '../update/gate'
 
 const INPUT_KEYS = new Set(['initImage', 'mask', 'control', 'references', 'visionReferences', 'sampling'])
@@ -29,6 +32,22 @@ export async function startRequestedEngineJob(raw: Record<string, unknown>): Pro
   assertGenerationAllowed()
   const settings = getSettings()
   const hostId = text(raw['hostId'])
+  const binding = raw['modelBinding'] as { bundleId?: unknown } | undefined
+  const bundleId = text(binding?.bundleId)
+  let host = hostId ? getTrainingHost(settings, hostId) : undefined
+  if ((host && isWorkerDaemonHost(host)) || bundleId?.startsWith('remote-worker:')) {
+    const profileId = bundleId?.startsWith('remote-worker:') ? bundleId.slice('remote-worker:'.length) : undefined
+    if (!hostId && profileId) {
+      const targetId = listActiveWorkerProfiles().find((profile) => profile.id === profileId)?.hostId
+      host = targetId ? getTrainingHost(settings, targetId) : undefined
+    }
+    if (!host || !isWorkerDaemonHost(host)) throw codedError('E_WORKER_CONFIG', '请选择已连接的远端服务主机')
+    if (Object.keys(pickJobInputs(raw)).length) throw codedError('E_WORKER_UNSUPPORTED', '远端服务暂不支持图像输入或高级采样')
+    const profile = await connectWorkerHost(host)
+    if (profileId && profile.id !== profileId) throw codedError('E_WORKER_CONFIG', '所选模型与远端服务不匹配')
+    const adapters = await resolveRemoteWorkerAdapters(profile, raw['adapters'])
+    return startEngineJob({ ...raw, hostId: host.id, deviceUuid: undefined, adapters } as never)
+  }
   const adapters = await resolveCanvasAdapters(settings, raw['adapters'], { hostId })
   const base = Object.fromEntries(Object.entries(raw).filter(([key]) => !INPUT_KEYS.has(key)))
   const wantsInputs = Object.keys(pickJobInputs(raw)).length > 0

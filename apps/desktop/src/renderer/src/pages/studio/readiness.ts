@@ -7,12 +7,14 @@ import type {
   ModelBundle,
   ModelEntry,
   ProjectCanvas,
+  RemoteHostBackend,
 } from '@shared/types'
 import { bundleGpusProblem, bundleWeightProblem, isFileBundle, isLocalOnlyBundle } from '@shared/bundleFit'
 import { adapterStatuses, normalizeCanvasAdapters } from '@shared/adapters'
 import { CLI_ENGINE_LABEL, cliBundleProblem } from '@shared/cliEngine'
 import { lostFile, lostFileText } from '@shared/modelImport'
 import { compileCanvasPrompt, type CompiledPrompt } from './prompt'
+import { isWorkerDaemonHost, missingWorkerAdapters, type WorkerAdapterEntry } from './remoteWorkerLoras'
 
 /** Problems with a canvas's pictures and sampling choices (see jobInputs.ts). */
 export type InputBlockerId = 'input-source' | 'input-adapter' | 'input-unsupported' | 'input-invalid'
@@ -91,7 +93,7 @@ export interface ReadinessInput {
   /** True once first-run setup has been completed or dismissed. */
   setupDone: boolean
   /** The SSH machine this run goes to, when remote hosts are enabled and one is picked. */
-  remote: { name: string; modelPath?: string } | null
+  remote: { name: string; modelPath?: string; remoteBackend?: RemoteHostBackend } | null
   /** What is wrong with the canvas's pictures and sampling (from `resolveJobInputs`). */
   inputBlockers?: readonly Blocker[]
   /** The app update state: this version may be too old to generate (main refuses it too). */
@@ -102,6 +104,24 @@ export interface ReadinessInput {
   gpus?: readonly GpuInventoryDevice[]
   /** Which of them run a CLI engine (兼容模式 / AMD 原生). */
   cliGpus?: ReadonlySet<string>
+  /** The LoRA the picked Worker host has (`Ipc.remoteWorkerLoras`); null or absent while unknown. */
+  workerAdapters?: readonly WorkerAdapterEntry[] | null
+}
+
+/** Bundle ids of the models a connected Worker daemon serves (see models.ts in main). */
+export const REMOTE_WORKER_BUNDLE_PREFIX = 'remote-worker:'
+
+/**
+ * A run that goes to a Worker daemon: either the host is one, or the model is
+ * one a connected Worker serves. The Worker owns the model files, the engine
+ * and LoRA, so the checks about this computer's engine and the SSH model
+ * location do not apply.
+ */
+export function isWorkerRun(
+  bundle: Pick<ModelBundle, 'id'> | null | undefined,
+  remote: { remoteBackend?: RemoteHostBackend } | null | undefined,
+): boolean {
+  return Boolean(bundle?.id.startsWith(REMOTE_WORKER_BUNDLE_PREFIX)) || remote?.remoteBackend === 'worker-daemon'
 }
 
 export interface Readiness {
@@ -129,7 +149,9 @@ export function deriveReadiness(input: ReadinessInput): Readiness {
         : { label: '查看', to: '/settings/updates' },
     })
   }
-  if (input.catalog) {
+  // A Worker host brings its own model: nothing on this computer has to be downloaded.
+  const workerHost = isWorkerDaemonHost(input.remote)
+  if (input.catalog && !workerHost) {
     if (input.bundle.unavailable) {
       blockers.push({
         id: 'model-missing',
@@ -154,18 +176,20 @@ export function deriveReadiness(input: ReadinessInput): Readiness {
   }
 
   // No engine loads an fp16 main model; the checks below would only add a second reason. A moved file already said why.
-  const lostOwn = input.catalog && input.bundle.bundle ? lostFile(input.bundle.bundle, input.catalog.models) : null
-  const weights = input.catalog && input.bundle.bundle && !lostOwn ? bundleWeightProblem(input.bundle.bundle, input.catalog.models) : null
+  const lostOwn = input.catalog && input.bundle.bundle && !workerHost ? lostFile(input.bundle.bundle, input.catalog.models) : null
+  const weights =
+    input.catalog && input.bundle.bundle && !lostOwn && !workerHost ? bundleWeightProblem(input.bundle.bundle, input.catalog.models) : null
   if (weights) blockers.push({ id: 'model-engine', message: `「${input.bundle.bundle!.name}」${weights}，请换一个模型`, action: toModels })
 
+  const worker = isWorkerRun(input.bundle.bundle, input.remote)
   // A CLI engine (兼容模式 / AMD 原生) reads a bf16 bundle folder only.
-  const cli = input.remote ? undefined : input.features?.cli
+  const cli = input.remote || worker ? undefined : input.features?.cli
   if (!weights && cli && input.catalog && input.bundle.bundle && input.bundle.installed) {
     const problem = cliBundleProblem(cli, input.bundle.bundle, input.catalog.models)
     if (problem) blockers.push({ id: 'model-engine', message: problem, action: toModels })
   }
   // Single files load only on this computer; some quantized models need a particular GPU.
-  const picked = !weights && input.catalog && input.bundle.installed ? input.bundle.bundle : null
+  const picked = !weights && !worker && input.catalog && input.bundle.installed ? input.bundle.bundle : null
   if (picked && input.catalog) {
     const problem = input.remote
       ? isLocalOnlyBundle(picked, input.catalog.models)
@@ -181,7 +205,8 @@ export function deriveReadiness(input: ReadinessInput): Readiness {
       })
   }
 
-  if (input.remote) {
+  // A Worker reports its own engine and model problems when the job starts there.
+  if (input.remote && !worker) {
     if (!input.remote.modelPath?.trim()) {
       blockers.push({
         id: 'remote-path',
@@ -189,7 +214,7 @@ export function deriveReadiness(input: ReadinessInput): Readiness {
         action: { label: '去设置', to: '/settings/devices' },
       })
     }
-  } else if (input.engine && input.engine.state !== 'ready') {
+  } else if (!input.remote && !worker && input.engine && input.engine.state !== 'ready') {
     const target = input.setupDone ? '/settings/devices' : '/setup'
     if (input.engine.installing) {
       const percent = Math.max(0, Math.min(100, Math.round(input.engine.installing.percent)))
@@ -201,17 +226,26 @@ export function deriveReadiness(input: ReadinessInput): Readiness {
 
   const adapters = normalizeCanvasAdapters(input.canvas?.adapters)
   // Until the library has loaded nothing is known to be missing.
-  const missing = input.catalog ? adapterStatuses(adapters, input.catalog.adapters).filter((item) => !item.installed) : []
+  // On a Worker host its own list decides, never this computer's library.
+  const missing = workerHost
+    ? missingWorkerAdapters(adapters, input.workerAdapters).map((adapter) => ({
+        name: input.workerAdapters?.find((entry) => entry.id === adapter.id)?.name ?? adapter.path ?? adapter.id,
+      }))
+    : input.catalog
+      ? adapterStatuses(adapters, input.catalog.adapters).filter((item) => !item.installed)
+      : []
   if (missing.length) {
-    blockers.push({
-      id: 'adapters',
-      message: `LoRA ${missing.map((item) => `「${item.name}」`).join('')}找不到了，请移除或重新安装`,
-      action: { label: '去模型库', to: '/models' },
-    })
+    const names = missing.map((item) => `「${item.name}」`).join('')
+    blockers.push(
+      workerHost
+        ? { id: 'adapters', message: `「${input.remote!.name}」上没有登记 LoRA ${names}，请移除或在 LoRA 列表里登记` }
+        : { id: 'adapters', message: `LoRA ${names}找不到了，请移除或重新安装`, action: { label: '去模型库', to: '/models' } },
+    )
   }
-  if (input.remote && adapters.length) {
+  // A Worker applies LoRA itself.
+  if (!worker && input.remote && adapters.length) {
     blockers.push({ id: 'remote-adapters', message: '在其他电脑上运行时暂不支持 LoRA，请移除 LoRA 或改回这台电脑' })
-  } else if (adapters.length && input.features && !input.features.lora) {
+  } else if (!worker && adapters.length && input.features && !input.features.lora) {
     const engine = input.features.cli ? `${CLI_ENGINE_LABEL[input.features.cli]}引擎` : '这台设备上的引擎'
     blockers.push({ id: 'lora-unsupported', message: `${engine}不支持 LoRA，请移除 LoRA 后再生成` })
   }

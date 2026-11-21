@@ -53,6 +53,13 @@ describe('quoting and targets', () => {
 })
 
 describe('argument builders', () => {
+  it('allows worker hosts to use the SSH configured user and a longer timeout', async () => {
+    const { targetOf, sshTunnelArgs } = await load()
+    const worker = { ...host, user: '', remoteBackend: 'worker-daemon' as const }
+    expect(targetOf(worker)).toBe('gpu.test')
+    expect(sshTunnelArgs(worker, 1000, 2000)).toContain('ConnectTimeout=25')
+  })
+
   it('sshArgs runs the command through a quoted login shell with the port', async () => {
     const { sshArgs } = await load()
     const args = sshArgs(host, "echo 'x'")

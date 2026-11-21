@@ -12,7 +12,9 @@ import { smallerCanvas, taskCanvasFor } from './canvases'
 import { profileFor, randomSeed, samplingForBundle, seedForRun } from './defaults'
 import { resolveJobInputs } from './jobInputs'
 import { compileCanvasPrompt } from './prompt'
-import { resolveBundle } from './readiness'
+import { loraProfileStore } from '../../components/studio/loraProfilesClient'
+import { isWorkerRun, resolveBundle } from './readiness'
+import { isWorkerDaemonHost, missingWorkerAdapters, workerBundleChoice, type WorkerAdapterEntry } from './remoteWorkerLoras'
 import { generatedSnapshot, generationCanvas, nodeBlockers, styleLoraNote, withUpscaleSize } from './nodes'
 import { queuedRunsOf, runsOf, shownRun, staleRunIds } from './runs'
 import type { StudioProject } from './useStudioProject'
@@ -57,6 +59,8 @@ interface PreparedRun {
   seed: number
   remoteHost: ManagedHost | null
   remoteModelPath?: string
+  /** What Activity names the job after: the model, or the Worker host that brings its own. */
+  modelName: string
 }
 
 type RunResult = { queued: boolean; canvasId?: string; jobId?: string; error?: string }
@@ -73,6 +77,8 @@ export function useGenerate(options: {
   catalog: Catalog | null
   preferredBundleId: string | null
   remoteHost: ManagedHost | null
+  /** The LoRA the picked Worker host has; null or absent while unknown (never reported missing then). */
+  workerAdapters?: readonly WorkerAdapterEntry[] | null
   /** Registered control adapters (a canvas's control adapter id resolves to its file). */
   controlAdapters?: readonly ControlAdapterEntry[]
   controlAdaptersLoaded?: boolean
@@ -114,19 +120,35 @@ export function useGenerate(options: {
       const runs = runsOf(source, canvases)
       if (queuedRunsOf(runs).length >= MAX_QUEUED_RUNS) return { error: '排队已满，等前面的画完再加' }
 
-      const choice = resolveBundle(catalog, source.modelBundleId, preferredBundleId)
+      // A Worker host brings its own model; a canvas keeps the model it names for when it runs here again.
+      const workerHost = isWorkerDaemonHost(remoteHost) ? remoteHost : null
+      const choice = workerHost ? workerBundleChoice(workerHost, catalog) : resolveBundle(catalog, source.modelBundleId, preferredBundleId)
       if (!choice.bundle)
         return { error: choice.unavailable ? '这个画面用的模型已经不在模型库里，请换一个模型' : '还没有可用的模型，请先到模型页下载' }
       if (!choice.installed) return { error: `「${choice.bundle.name}」还没有下载完` }
+      // A Worker daemon owns its model files and LoRA; the SSH model location does not apply.
+      const worker = isWorkerRun(choice.bundle, remoteHost)
       const remoteModelPath = remoteHost?.modelPath?.trim()
-      if (remoteHost && !remoteModelPath) return { error: `「${remoteHost.name}」还没有设置模型位置，请到 设置 › 设备与引擎 填写` }
+      if (remoteHost && !worker && !remoteModelPath)
+        return { error: `「${remoteHost.name}」还没有设置模型位置，请到 设置 › 设备与引擎 填写` }
       const adapters = normalizeCanvasAdapters(generating.adapters)
       // A 风格's LoRA count too; the message says where they come from.
       const fromStyles = styleLoraNote(source, canvases)
-      if (remoteHost && adapters.length) return { error: `在其他电脑上运行时暂不支持 LoRA，请移除 LoRA 或改回这台电脑${fromStyles}` }
-      const missing = adapterStatuses(adapters, catalog?.adapters).filter((item) => !item.installed)
-      if (missing.length)
-        return { error: `LoRA ${missing.map((item) => `「${item.name}」`).join('')}找不到了，请移除或到模型库重新安装${fromStyles}` }
+      if (remoteHost && !worker && adapters.length)
+        return { error: `在其他电脑上运行时暂不支持 LoRA，请移除 LoRA 或改回这台电脑${fromStyles}` }
+      if (workerHost) {
+        // Checked against the Worker's own list; unknown is left to the Worker when the job starts.
+        const entries = latest.current.workerAdapters
+        const absent = missingWorkerAdapters(adapters, entries)
+        if (absent.length) {
+          const names = absent.map((item) => `「${entries?.find((entry) => entry.id === item.id)?.name ?? item.path ?? item.id}」`)
+          return { error: `「${workerHost.name}」上没有登记 LoRA ${names.join('')}，请移除或在 LoRA 列表里登记${fromStyles}` }
+        }
+      } else {
+        const missing = adapterStatuses(adapters, catalog?.adapters).filter((item) => !item.installed)
+        if (missing.length)
+          return { error: `LoRA ${missing.map((item) => `「${item.name}」`).join('')}找不到了，请移除或到模型库重新安装${fromStyles}` }
+      }
       // Regions are laid out on the first-pass size.
       const compiled = compileCanvasPrompt(generating.baseSize ? { ...generating, ...generating.baseSize } : generating)
       if (!compiled.ok) return { error: compiled.errors[0] ?? '描述还不完整' }
@@ -141,10 +163,12 @@ export function useGenerate(options: {
       const seed = seedMode === 'same' ? shownSeed : seedMode === 'new' ? randomSeed() : seedForRun(source)
       // A canvas that never picked a model runs with the one it resolves to; a few-step
       // model (Turbo) then brings its own steps and CFG, as picking it by hand does.
-      const sampling = source.modelBundleId ? { steps: source.steps, cfg: source.cfg } : samplingForBundle(source, null, choice.bundle)
+      const sampling =
+        source.modelBundleId || workerHost ? { steps: source.steps, cfg: source.cfg } : samplingForBundle(source, null, choice.bundle)
+      const modelBundleId = workerHost ? source.modelBundleId : choice.bundle.id
       // The run keeps what it was really generated with, so running it again repeats it.
       const snapshot = generatedSnapshot(source, generating)
-      const runSource: ProjectCanvas = { ...source, ...sampling, seed, modelBundleId: choice.bundle.id }
+      const runSource: ProjectCanvas = { ...source, ...sampling, seed, modelBundleId }
       if (snapshot) runSource.generated = snapshot
       else delete runSource.generated
       // An editable source remembers the seed this run used, so 种子 shows it
@@ -157,7 +181,7 @@ export function useGenerate(options: {
               .filter((canvas) => !stale.has(canvas.id))
               .map((canvas) =>
                 canvas.id === source.id
-                  ? { ...canvas, ...sampling, width: source.width, height: source.height, seed, modelBundleId: choice.bundle!.id }
+                  ? { ...canvas, ...sampling, width: source.width, height: source.height, seed, modelBundleId }
                   : canvas,
               )
           : canvases
@@ -178,6 +202,7 @@ export function useGenerate(options: {
         seed,
         remoteHost,
         remoteModelPath,
+        modelName: workerHost ? workerHost.name || choice.bundle.name : choice.bundle.name,
       }
     },
     [],
@@ -236,7 +261,7 @@ export function useGenerate(options: {
               // Lineage starts at the source, as the scheduler expects.
               canvasLineage: canvasLineage(source, run.canvases),
               modelBinding: { bundleId: run.bundle.id, ...run.bundle.components },
-              modelName: run.bundle.name,
+              modelName: run.modelName,
               deviceId: remoteHost ? source.deviceId || undefined : undefined,
               deviceUuid: remoteHost ? undefined : source.deviceUuid || undefined,
               hostId: remoteHost?.id,
@@ -303,13 +328,22 @@ export function useGenerate(options: {
 
   const generate = useCallback(
     (canvasId?: string, seedMode: SeedMode = 'auto', runOptions: { smaller?: boolean } = {}): Promise<RunResult> => {
-      // The canvas and its settings are taken now, at the click, whatever happens before its turn.
-      const prepared = prepare(canvasId ?? latest.current.project.selectedRef.current, seedMode, runOptions)
-      if ('error' in prepared) return Promise.resolve(fail(prepared.error))
-      const go = (): Promise<RunResult> => send(prepared)
-      const result = chain.current.then(go, go)
-      chain.current = result.catch(() => undefined)
-      return result
+      const id = canvasId ?? latest.current.project.selectedRef.current
+      const start = (): Promise<RunResult> => {
+        // The canvas and its settings are taken now, at the click, whatever happens before its turn.
+        const prepared = prepare(id, seedMode, runOptions)
+        if ('error' in prepared) return Promise.resolve(fail(prepared.error))
+        const go = (): Promise<RunResult> => send(prepared)
+        const result = chain.current.then(go, go)
+        chain.current = result.catch(() => undefined)
+        return result
+      }
+      // LoRA set to 自动前置 / 自动后置 add their trigger words when the prompt is compiled: read them once first.
+      if (loraProfileStore.loaded()) return start()
+      return loraProfileStore
+        .load()
+        .catch(() => undefined)
+        .then(start)
     },
     [prepare, send, fail],
   )

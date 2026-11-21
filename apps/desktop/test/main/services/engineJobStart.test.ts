@@ -6,6 +6,19 @@ import { cliEngineFeatures } from '@shared/cliEngine'
 import { codedError, errorCode } from '@main/lib/codedError'
 import { useTempDataRoot } from '@test/helpers/tempDir'
 
+const connectWorkerHost = vi.hoisted(() => vi.fn())
+const resolveRemoteWorkerAdapters = vi.hoisted(() => vi.fn())
+const workerHost = { id: 'host-worker', kind: 'ssh', remoteBackend: 'worker-daemon' }
+vi.mock('@main/services/workerHostManager', () => ({
+  connectWorkerHost,
+  isWorkerDaemonHost: (host: unknown) => host === workerHost,
+  listActiveWorkerProfiles: () => [{ id: 'render', hostId: 'host-worker' }],
+}))
+vi.mock('@main/services/trainingHosts', () => ({
+  getTrainingHost: (_settings: unknown, id: string) => (id === 'host-worker' ? workerHost : undefined),
+}))
+vi.mock('@main/services/remoteWorker', () => ({ resolveRemoteWorkerAdapters }))
+
 const startEngineJob = vi.hoisted(() => vi.fn())
 const getEngineFeatures = vi.hoisted(() => vi.fn())
 const resolveCanvasAdapters = vi.hoisted(() => vi.fn())
@@ -36,6 +49,8 @@ function put(path: string): string {
 
 beforeEach(async () => {
   vi.resetModules()
+  connectWorkerHost.mockReset()
+  resolveRemoteWorkerAdapters.mockReset()
   startEngineJob.mockReset().mockImplementation(async (input: unknown) => ({ id: 'job-1', input }))
   getEngineFeatures.mockReset().mockResolvedValue(features)
   resolveCanvasAdapters.mockReset().mockResolvedValue([{ path: '/m/lora.safetensors', strength: 1 }])
@@ -55,6 +70,46 @@ const base = {
 }
 
 describe('startRequestedEngineJob', () => {
+  it('resolves worker adapters without invoking the local engine', async () => {
+    const profile = { id: 'render', hostId: 'host-worker', kind: 'worker-daemon', label: 'Worker', baseUrl: 'http://127.0.0.1:1234' }
+    connectWorkerHost.mockResolvedValue(profile)
+    resolveRemoteWorkerAdapters.mockResolvedValue([{ path: 'style.safetensors', strength: 1 }])
+    await start.startRequestedEngineJob({ ...base, hostId: 'host-worker', modelBinding: { bundleId: 'remote-worker:render' } })
+    expect(connectWorkerHost).toHaveBeenCalledWith(workerHost)
+    expect(resolveRemoteWorkerAdapters).toHaveBeenCalledWith(profile, base.adapters)
+    expect(resolveCanvasAdapters).not.toHaveBeenCalled()
+    expect(getEngineFeatures).not.toHaveBeenCalled()
+    expect(startEngineJob).toHaveBeenCalledWith(expect.objectContaining({ adapters: [{ path: 'style.safetensors', strength: 1 }] }))
+  })
+
+  it.each([undefined, { bundleId: 'ordinary-local-model' }])('routes a worker host without a virtual model (%j)', async (modelBinding) => {
+    const profile = { id: 'render', hostId: 'host-worker' }
+    connectWorkerHost.mockResolvedValue(profile)
+    resolveRemoteWorkerAdapters.mockResolvedValue([{ path: 'style.safetensors', strength: 1 }])
+    await start.startRequestedEngineJob({ ...base, hostId: 'host-worker', deviceUuid: 'GPU-local', modelBinding })
+    expect(connectWorkerHost).toHaveBeenCalledWith(workerHost)
+    expect(resolveRemoteWorkerAdapters).toHaveBeenCalledWith(profile, base.adapters)
+    expect(resolveCanvasAdapters).not.toHaveBeenCalled()
+    expect(getEngineFeatures).not.toHaveBeenCalled()
+    expect(startEngineJob).toHaveBeenCalledWith(
+      expect.objectContaining({ hostId: 'host-worker', deviceUuid: undefined, adapters: [{ path: 'style.safetensors', strength: 1 }] }),
+    )
+  })
+
+  it('resolves the legacy virtual model to its active host', async () => {
+    connectWorkerHost.mockResolvedValue({ id: 'render', hostId: 'host-worker' })
+    resolveRemoteWorkerAdapters.mockResolvedValue([])
+    await start.startRequestedEngineJob({ ...base, modelBinding: { bundleId: 'remote-worker:render' } })
+    expect(startEngineJob).toHaveBeenCalledWith(expect.objectContaining({ hostId: 'host-worker' }))
+  })
+
+  it('rejects advanced inputs selected on a worker host', async () => {
+    await expect(
+      start.startRequestedEngineJob({ ...base, hostId: 'host-worker', initImage: { path: '/image.png', strength: 0.5 } }),
+    ).rejects.toMatchObject({ code: 'E_WORKER_UNSUPPORTED' })
+    expect(startEngineJob).not.toHaveBeenCalled()
+  })
+
   it('starts a plain job without LoRAs without asking the engine anything', async () => {
     resolveCanvasAdapters.mockResolvedValue([])
     await start.startRequestedEngineJob({ ...base, adapters: [] })
