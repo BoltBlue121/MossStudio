@@ -1,4 +1,6 @@
 // The zero-dependency stdio bridge external MCP clients launch (tools/mcp/mossstudio-mcp-stdio.mjs).
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { anySignal, createBridge, defaultDiscoveryPaths, forwardJsonRpcLine } from '../../../../../tools/mcp/mossstudio-mcp-stdio.mjs'
 
@@ -107,6 +109,7 @@ describe('tools/mcp stdio bridge', () => {
 
   it('finds the discovery file the app names, before any guessed location', () => {
     expect(defaultDiscoveryPaths({ MOSSSTUDIO_MCP_DISCOVERY: '/data/mcp-server.json' }, 'linux')).toEqual(['/data/mcp-server.json'])
-    expect(defaultDiscoveryPaths({ MOSSSTUDIO_DATA: '/d' }, 'linux')[0]).toBe('/d/mcp-server.json')
+    const data = join(tmpdir(), 'moss-data')
+    expect(defaultDiscoveryPaths({ MOSSSTUDIO_DATA: data }, process.platform)[0]).toBe(join(data, 'mcp-server.json'))
   })
 })
