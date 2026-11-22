@@ -57,6 +57,7 @@ Decisions are ADRs in [decisions/](decisions/README.md), one per choice, never e
 | The Trainer stays an external Python tool; training runs in the main window | [0002](decisions/0002-trainer-backend.md), amended by [0015](decisions/0015-training-in-the-main-window.md) (no trainer window) |
 | How these docs are organised | [0013](decisions/0013-documentation-structure-and-language.md) |
 | External Agents use MossStudio over MCP; the 助手 keeps its own tools | [0016](decisions/0016-external-agents-over-mcp.md) |
+| Static Studio node and tool registries behind an optional board picker | [0017](decisions/0017-studio-tool-hub-and-node-registry.md) |
 
 ## Records and history
 

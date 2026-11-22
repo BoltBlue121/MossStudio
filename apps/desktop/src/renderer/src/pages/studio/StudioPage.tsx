@@ -40,6 +40,7 @@ import { ParamsPanel } from './ParamsPanel'
 import { ProjectSwitcher } from './ProjectSwitcher'
 import { canvasDescription, compileCanvasPrompt, withDescription } from './prompt'
 import type { BoardTool } from './RegionLayer'
+import { StudioPanels, type PanelId } from './StudioPanels'
 import { GbcPanel } from './GbcPanel'
 import { sizeLike, withParsedRegions } from './pictureRegions'
 import type { GbcPicture } from '@shared/gbc'
@@ -181,8 +182,11 @@ export function StudioPage(): React.JSX.Element {
   const [remoteHostId, setRemoteHostId] = useState(() => readStorage(HOST_KEY) ?? '')
   const [tool, setTool] = useState<BoardTool>('select')
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null)
-  /** 助手 opens beside the board from the title bar; closed, the board takes the room. */
-  const [assistantOpen, setAssistantOpen] = useState(false)
+  const [activePanelId, setActivePanelId] = useState<PanelId | null>(null)
+  const assistantOpen = activePanelId === 'assistant'
+  const gbcOpen = activePanelId === 'gbc' && settings?.gbcEnabled === true
+  // Forget a disabled panel: re-enabling the feature must not reopen it.
+  if (activePanelId === 'gbc' && !gbcOpen) setActivePanelId(null)
   /** 助手 is the built-in chat or the 协同 panel for external Agents; the choice is remembered. */
   const [assistantMode, setAssistantMode] = useState<'builtin' | 'collab'>(() =>
     readStorage(ASSISTANT_MODE_KEY) === 'collab' ? 'collab' : 'builtin',
@@ -191,8 +195,6 @@ export function StudioPage(): React.JSX.Element {
     setAssistantMode(mode)
     writeStorage(ASSISTANT_MODE_KEY, mode)
   }
-  /** 解析 opens beside the board; it and 助手 share the right side. */
-  const [gbcOpen, setGbcOpen] = useState(false)
   const [widths, setWidths] = useState(initialWidths)
   const [viewer, setViewer] = useState<{ canvasId: string; index: number } | null>(null)
   const [adapterPickerOpen, setAdapterPickerOpen] = useState(false)
@@ -1035,10 +1037,7 @@ export function StudioPage(): React.JSX.Element {
               size="xs"
               aria-pressed={gbcOpen}
               data-gbc-toggle
-              onClick={() => {
-                setGbcOpen((open) => !open)
-                setAssistantOpen(false)
-              }}
+              onClick={() => setActivePanelId(gbcOpen ? null : 'gbc')}
               className="no-drag ml-1"
             >
               <ScanLine className="size-3.5" aria-hidden="true" strokeWidth={1.6} />
@@ -1050,10 +1049,7 @@ export function StudioPage(): React.JSX.Element {
             size="xs"
             aria-pressed={assistantOpen}
             data-assistant-toggle
-            onClick={() => {
-              setAssistantOpen((open) => !open)
-              setGbcOpen(false)
-            }}
+            onClick={() => setActivePanelId(assistantOpen ? null : 'assistant')}
             className="no-drag ml-1"
           >
             <Sparkles className="size-3.5" aria-hidden="true" strokeWidth={1.6} />
@@ -1115,6 +1111,8 @@ export function StudioPage(): React.JSX.Element {
       <main aria-label="画布" className="min-w-120 flex-1">
         <Board
           ref={board}
+          toolHubEnabled={shown && project.loaded && settings?.toolHubEnabled === true}
+          onOpenGbc={() => setActivePanelId('gbc')}
           projectKey={String(project.sessionKey)}
           canvases={project.canvases}
           selectedCanvasId={project.selectedCanvasId}
@@ -1230,52 +1228,53 @@ export function StudioPage(): React.JSX.Element {
         />
       </main>
 
-      {/* Stays mounted while closed, so a running conversation survives. */}
-      <div hidden={!assistantOpen || gbcOpen} className="contents">
-        <StudioSidebar
-          side="right"
-          label="助手"
-          width={widths.right}
-          onWidthChange={(right) => setWidths((value) => ({ ...value, right }))}
-        >
-          <div className="flex h-full min-h-0 flex-col p-4">
-            {assistantMode === 'collab' && externalAgents ? (
-              <CollabPanel
-                board={{
-                  projectId: project.projectId,
-                  projectName: project.projectName,
-                  canvas: selected,
-                  modelName: bundle.bundle?.name,
-                  selectedRegionId,
-                }}
-                projectKey={project.sessionKey}
-                visible={assistantOpen && !gbcOpen}
-                onStandalone={() => chooseAssistantMode('builtin')}
-                projects={project.projects}
-                onCreateProject={project.createProject}
-              />
-            ) : (
-              <Assistant board={assistantUndo} onCollab={externalAgents ? () => chooseAssistantMode('collab') : undefined} />
-            )}
-          </div>
-        </StudioSidebar>
-      </div>
-
-      {gbcOpen ? (
-        <StudioSidebar
-          side="right"
-          label="解析"
-          width={widths.right}
-          onWidthChange={(right) => setWidths((value) => ({ ...value, right }))}
-        >
-          <GbcPanel
-            canvases={project.canvases}
-            onMakeCanvas={makeCanvasFromParse}
-            onUseAsReference={selected?.kind === 'layout' ? useParsedAsReference : undefined}
-            onClose={() => setGbcOpen(false)}
-          />
-        </StudioSidebar>
-      ) : null}
+      <StudioPanels
+        active={activePanelId}
+        assistant={
+          <StudioSidebar
+            side="right"
+            label="助手"
+            width={widths.right}
+            onWidthChange={(right) => setWidths((value) => ({ ...value, right }))}
+          >
+            <div className="flex h-full min-h-0 flex-col p-4">
+              {assistantMode === 'collab' && externalAgents ? (
+                <CollabPanel
+                  board={{
+                    projectId: project.projectId,
+                    projectName: project.projectName,
+                    canvas: selected,
+                    modelName: bundle.bundle?.name,
+                    selectedRegionId,
+                  }}
+                  projectKey={project.sessionKey}
+                  visible={assistantOpen}
+                  onStandalone={() => chooseAssistantMode('builtin')}
+                  projects={project.projects}
+                  onCreateProject={project.createProject}
+                />
+              ) : (
+                <Assistant board={assistantUndo} onCollab={externalAgents ? () => chooseAssistantMode('collab') : undefined} />
+              )}
+            </div>
+          </StudioSidebar>
+        }
+        gbc={
+          <StudioSidebar
+            side="right"
+            label="解析"
+            width={widths.right}
+            onWidthChange={(right) => setWidths((value) => ({ ...value, right }))}
+          >
+            <GbcPanel
+              canvases={project.canvases}
+              onMakeCanvas={makeCanvasFromParse}
+              onUseAsReference={selected?.kind === 'layout' ? useParsedAsReference : undefined}
+              onClose={() => setActivePanelId(null)}
+            />
+          </StudioSidebar>
+        }
+      />
 
       <GalleryPicker
         open={galleryTarget !== null}
