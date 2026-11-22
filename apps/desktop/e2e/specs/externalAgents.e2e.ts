@@ -122,14 +122,50 @@ describe('LoRA trigger words', () => {
 describe('Worker 远程主机 on', () => {
   const app = useApp()
 
-  it('the host dialog offers the Worker mode with its own fields', async () => {
-    const page = await app.open({ scenario: 'workerHost', route: '/settings/devices' })
+  it.each(['light', 'dark'] as const)('clears a saved Worker workflow back to the service default (%s)', async (theme) => {
+    const page = await app.open({ scenario: 'workerHost', route: '/settings/devices', theme })
     await page.getByRole('button', { name: 'GPU Worker 更多操作' }).click()
     await page.getByRole('menuitem', { name: '编辑' }).click()
     const dialog = page.getByRole('dialog', { name: '编辑 SSH 主机' })
     await dialog.waitFor()
     expect(await dialog.getByRole('group', { name: '运行方式' }).count()).toBe(1)
     expect(await dialog.getByLabel('服务信息文件').inputValue()).toBe('/srv/worker/discovery.json')
+    const workflow = dialog.getByLabel('工作流')
+    expect(await workflow.inputValue()).toBe('explicit-wf')
+    await workflow.fill('')
+    expect(await workflow.getAttribute('placeholder')).toBe('留空自动使用远端服务默认')
+    await dialog.getByRole('button', { name: '保存并测试' }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: 'GPU Worker 更多操作' }).click()
+    await page.getByRole('menuitem', { name: '编辑' }).click()
+    expect(await workflow.inputValue()).toBe('')
+  })
+
+  it('offers only negotiated Worker sampling and lets a saved canvas clear its other choices', async () => {
+    const page = await app.open({ scenario: 'workerHost', route: '/studio', defer: true })
+    await seedLoraBoard(page, { workerHost: true })
+    await page.evaluate(() => {
+      window.__mock.state.projects[0]!.canvases[0]!.sampling = { sampler: 'euler', shift: 4, stepCache: 'off', cfgTruncation: 0 }
+    })
+    await app.start()
+    await page
+      .getByRole('button', { name: /高级设置/ })
+      .first()
+      .click()
+    const clear = page.getByRole('button', { name: '清除不支持的采样设置' })
+    await clear.waitFor()
+    for (const field of ['Shift', 'CFG 截断', '步缓存', '高清修复']) expect(await page.getByLabel(field, { exact: true }).count()).toBe(0)
+    const generate = page.locator('[data-studio-generate]')
+    expect(await generate.isDisabled()).toBe(true)
+    expect(await app.calls('http:POST /api/engine-jobs')).toEqual([])
+    await clear.click()
+    const sampler = page.getByRole('combobox', { name: '采样器' })
+    expect(await sampler.inputValue()).toBe('euler')
+    await page.getByRole('combobox', { name: '调度器' }).selectOption('karras')
+    await generate.click()
+    await expect
+      .poll(() => app.calls('http:POST /api/engine-jobs'))
+      .toMatchObject([{ hostId: 'worker-1', sampling: { sampler: 'euler', scheduler: 'karras' } }])
   })
 
   it('the LoRA picker lists the Worker’s own LoRA when it is the 运行位置', async () => {

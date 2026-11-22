@@ -22,6 +22,7 @@ import { bestBundleFor, cliGpuUuids, generationGpus, isFileBundle } from '@share
 import { Events, Ipc, type EventChannel } from '@shared/channels'
 import { combinationBundle } from '@shared/modelCombos'
 import { isModelFileName } from '@shared/modelImport'
+import { isWorkerSamplingKey } from '@shared/remoteWorker'
 import { isSharedModelId } from '@shared/sharedModels'
 import { MANGA_SCHEMA_VERSION, seriesSummary, type MangaSeries, type MangaSeriesSave } from '@shared/manga/model'
 import {
@@ -41,6 +42,7 @@ import type { UpdateBusyReason, UpdateRestartResult, UpdaterState } from '@share
 import { enginePlanFor } from './machines'
 import type {
   DownloadTask,
+  EngineFeatures,
   EngineGpuProbeSnapshot,
   IpcError,
   IpcResult,
@@ -892,6 +894,10 @@ function defaultHandlers(): Map<string, Handler> {
       status: 'unchecked',
       devices: [],
       ...config,
+      workerWorkflow:
+        'workerWorkflow' in config
+          ? config.workerWorkflow?.trim() || undefined
+          : state.hosts.find((h) => h.id === config.id)?.workerWorkflow,
       id: config.id ?? 'fixture-ssh',
       kind: 'ssh',
       hasPassword: config.authMethod === 'password' && Boolean(password),
@@ -964,9 +970,22 @@ function defaultHandlers(): Map<string, Handler> {
 
   // Studio inputs: engine features, imported pictures, painted masks, control adapters
   // Like main: an SSH host gets uploaded image inputs, but no control adapters or live previews yet.
-  h.set(Ipc.engineFeatures, (payload, { state }) => {
+  h.set(Ipc.engineFeatures, (payload, { state }): EngineFeatures | null => {
     const { hostId } = p<{ deviceUuid?: string; hostId?: string }>(payload)
     if (!state.engineFeatures || !hostId) return state.engineFeatures
+    if (state.hosts.find((host) => host.id === hostId)?.remoteBackend === 'worker-daemon') {
+      const { lora, samplers, values } = state.engineFeatures
+      return {
+        preview: false,
+        imageInput: false,
+        control: false,
+        references: false,
+        hires: false,
+        lora,
+        samplers,
+        values: samplers ? Object.fromEntries(Object.entries(values).filter(([key]) => isWorkerSamplingKey(key))) : {},
+      }
+    }
     return { ...state.engineFeatures, control: false, preview: false }
   })
   h.set(Ipc.studioImportImage, (payload) => {
