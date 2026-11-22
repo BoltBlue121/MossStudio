@@ -1,4 +1,5 @@
-import { ChevronRight, Copy, Image as ImageIcon, MoreHorizontal, Palette, PenLine, SlidersHorizontal } from 'lucide-react'
+import { openImagePreview } from '../../components/common/ImageLightbox'
+import { ChevronRight, Copy, Image as ImageIcon, MoreHorizontal, Palette, PenLine, SlidersHorizontal, ZoomIn } from 'lucide-react'
 import { memo, useEffect, useRef, useState } from 'react'
 import type { ImageResizeMode, ProjectCanvas, ProjectLayer } from '@shared/types'
 import { Button, IconButton, Pill, cn } from '../../components/ui'
@@ -290,6 +291,10 @@ function CanvasCardView(props: CanvasCardProps): React.JSX.Element {
   )
   // While painting the mask, the start picture shows even over earlier results.
   const painting = Boolean(props.mask?.interactive && props.initPicture)
+  const visibleFrame = useRef<CardJobView['preview']>(undefined)
+  const image = isImage && canvas.imagePath ? { path: canvas.imagePath } : null
+  const background = canvas.backgroundPath ? { path: canvas.backgroundPath } : null
+  const face = preview ?? (painting ? props.initPicture : current) ?? image ?? props.initPicture ?? background
   const pictureSize = usePictureSize(props.mask ? props.initPicture?.path : undefined, props.initPicture?.size ?? null)
   const [editing, setEditing] = useState(false)
   const body = useRef<HTMLDivElement>(null)
@@ -301,16 +306,7 @@ function CanvasCardView(props: CanvasCardProps): React.JSX.Element {
   const editingRegion = editable && props.editingRegionId ? canvas.layers.find((layer) => layer.id === props.editingRegionId) : undefined
   // An empty face (nothing generated, no start picture or underlay) shows the description instead.
   // A 风格 always shows its description.
-  const blankFace =
-    isStyle ||
-    (canvas.kind === 'layout' &&
-      !preview &&
-      !current &&
-      !painting &&
-      !props.initPicture &&
-      !canvas.backgroundPath &&
-      !view.active &&
-      !props.parsing)
+  const blankFace = isStyle || (canvas.kind === 'layout' && !face && !view.active && !props.parsing)
   // The header speaks only while something is happening or went wrong. A 画面's
   // footer holds its filmstrip, so its header says how far the run is.
   const loud = view.active || view.state === 'failed' || view.state === 'lost'
@@ -369,6 +365,19 @@ function CanvasCardView(props: CanvasCardProps): React.JSX.Element {
         ) : null}
         {/* A menu choice acts on its own; the click must not reach the card and select it again. */}
         <div className="contents" onClick={(event) => event.stopPropagation()}>
+          {face && !painting ? (
+            <IconButton
+              label={`放大预览：${canvas.title}`}
+              className="pointer-events-none absolute left-1 top-8 z-10 size-6 bg-raised opacity-0 focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/card:pointer-events-auto group-hover/card:opacity-100"
+              onClick={() => {
+                const frame = face === preview && visibleFrame.current?.path === preview.path ? visibleFrame.current : face
+                const gallery = face === current ? outputs.map(({ path }) => ({ path, artwork: true, title: canvas.title })) : undefined
+                openImagePreview({ ...frame, title: canvas.title, gallery })
+              }}
+            >
+              <ZoomIn className="size-4" strokeWidth={1.6} />
+            </IconButton>
+          ) : null}
           <Popover
             align="end"
             label={`${canvas.title} 操作`}
@@ -445,11 +454,9 @@ function CanvasCardView(props: CanvasCardProps): React.JSX.Element {
           setEditing(true)
         }}
       >
-        {preview ? (
-          <LivePreview path={preview.path} seq={preview.seq} alt={`${canvas.title} 的实时预览`} />
-        ) : painting && props.initPicture ? (
-          <StartPicture path={props.initPicture.path} resize={props.initPicture.resize} canvas={canvas} />
-        ) : current ? (
+        {preview && face === preview ? (
+          <LivePreview key={preview.path} {...preview} alt={`${canvas.title} 的实时预览`} visible={visibleFrame} />
+        ) : current && face === current ? (
           <button
             type="button"
             aria-label={`查看 ${canvas.title} 的结果`}
@@ -463,12 +470,12 @@ function CanvasCardView(props: CanvasCardProps): React.JSX.Element {
           >
             <OutputImage path={current.path} alt={canvas.title} />
           </button>
-        ) : isImage && canvas.imagePath ? (
-          <OutputImage path={canvas.imagePath} alt={canvas.title} className="absolute inset-0" />
-        ) : props.initPicture ? (
+        ) : image && face === image ? (
+          <OutputImage path={image.path} alt={canvas.title} className="absolute inset-0" />
+        ) : props.initPicture && face === props.initPicture ? (
           <StartPicture path={props.initPicture.path} resize={props.initPicture.resize} canvas={canvas} />
-        ) : canvas.backgroundPath ? (
-          <img src={cloverUrl(canvas.backgroundPath)} alt="" draggable={false} className="absolute inset-0 size-full object-contain" />
+        ) : face ? (
+          <img src={cloverUrl(face.path)} alt="" draggable={false} className="absolute inset-0 size-full object-contain" />
         ) : null}
 
         {props.mask && pictureSize && !preview && (painting || !current) ? (

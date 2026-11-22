@@ -12,7 +12,8 @@ const withExternalAgents = () =>
 import { ToastProvider } from '@renderer/components/ui'
 import { ApiError } from '@renderer/lib/api'
 import { prettyArgs } from '@renderer/pages/studio/assistant/ApprovalDock'
-import { MAX_ATTACHMENT_BYTES, planAttachments } from '@renderer/pages/studio/assistant/AttachmentTray'
+import { AttachmentTray, MAX_ATTACHMENT_BYTES, planAttachments, useAttachments } from '@renderer/pages/studio/assistant/AttachmentTray'
+import { ImageLightbox } from '@renderer/components/common/ImageLightbox'
 import { folderTail } from '@renderer/pages/studio/assistant/CollabStatusBar'
 import { COMPACT_PACKS, effectivePacks, listPackRows, togglePack, toolProfileLine } from '@renderer/pages/studio/assistant/CollabToolbar'
 import {
@@ -330,6 +331,32 @@ describe('CollabPanel', () => {
     return host
   }
 
+  it('keeps an SVG attachment removable but offers zoom only on raster thumbnails', async () => {
+    function Tray() {
+      return createElement(AttachmentTray, { state: useAttachments() })
+    }
+    const view = mount(createElement('div', null, createElement(Tray), createElement(ImageLightbox)))
+    const input = view.querySelector('input[type="file"]')!
+    Object.defineProperty(input, 'files', {
+      value: [new File(['<svg/>'], 'vector.svg', { type: 'image/svg+xml' }), new File(['photo'], 'photo.png', { type: 'image/png' })],
+    })
+    act(() => {
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await settle()
+    const svg = view.querySelector('[data-attachment="vector.svg"]')!
+    expect(svg.querySelector('img')?.alt).toBe('vector.svg')
+    expect(svg.querySelector('button[aria-label^="放大预览"]')).toBeNull()
+    act(() => view.querySelector<HTMLButtonElement>('[aria-label="放大预览：photo.png"]')!.click())
+    expect(document.querySelector<HTMLImageElement>('dialog img')?.src).toBe(
+      view.querySelector<HTMLImageElement>('img[alt="photo.png"]')!.src,
+    )
+    expect(document.querySelector('dialog h2')?.textContent).toBe('photo.png')
+    act(() => document.querySelector<HTMLButtonElement>('dialog [aria-label="关闭"]')!.click())
+    act(() => svg.querySelector<HTMLButtonElement>('[aria-label="移除图片 vector.svg"]')!.click())
+    expect(view.querySelector('[data-attachment="vector.svg"]')).toBeNull()
+  })
+
   it('shows the compact header, connects an ACP Agent and switches to the built-in assistant', async () => {
     const backend = createMockBackend(withExternalAgents())
     backend.install()
@@ -505,6 +532,24 @@ describe('CollabPanel', () => {
       { backendId: 'codex-acp', cwd: 'F:\\work\\harbor', createCwd: true, projectId: 'p-new' },
     ])
     expect(readSessionBinding('codex-acp', 'p-new').pinnedIds).toEqual(['fixture-agent-session'])
+  })
+
+  it('renders only embedded raster pictures in an Agent reply, not remote URLs or filesystem paths', async () => {
+    const { backend, view } = mountWithFolders()
+    const data = 'data:image/png;base64,iVBORw0KGgo='
+    backend.handle(Ipc.agentHubMessages, () => ({
+      messages: [
+        {
+          seq: 1,
+          role: 'assistant',
+          text: `![image](${data}) ![remote](https://remote.invalid/p.png) ![file](file:///secret/p.png) ![svg](data:image/svg+xml;base64,AAAA)`,
+        },
+      ],
+    }))
+    await settle()
+    const log = view.querySelector('[role="log"]')!
+    expect([...log.querySelectorAll('img')].map((el) => el.getAttribute('src'))).toEqual([data])
+    expect(log.querySelector('img')?.closest('button')).not.toBeNull()
   })
 
   it('does not pick a conversation of another folder for a project that has none', async () => {

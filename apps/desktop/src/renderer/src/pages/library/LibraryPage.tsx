@@ -423,6 +423,7 @@ export function LibraryPage(): React.JSX.Element {
       {selected ? (
         <DetailPanel
           item={selected}
+          items={items}
           position={selectedIndex + 1}
           total={total}
           canPrevious={selectedIndex > 0}

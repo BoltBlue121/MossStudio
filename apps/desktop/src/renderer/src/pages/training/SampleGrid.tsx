@@ -1,3 +1,4 @@
+import { PreviewButton } from '../../components/common/ImageLightbox'
 import { cloverUrl } from '../../lib/clover'
 import { cn } from '../../components/ui'
 import type { SampleColumn } from './sampleGridModel'
@@ -90,20 +91,25 @@ export function SampleGrid({
                     </span>
                   )
                 const picture = <img src={cloverUrl(image)} alt="" draggable={false} className="size-full object-cover" />
-                return pick ? (
-                  <button
-                    key={column.step}
-                    type="button"
-                    aria-label={`${prompt}，${column.label}`}
-                    onClick={pick}
-                    className={cn(cell, 'bg-[var(--image-placeholder)] transition-opacity hover:opacity-90')}
-                  >
-                    {picture}
-                  </button>
-                ) : (
-                  <span key={column.step} className={cn(cell, 'bg-[var(--image-placeholder)]')}>
-                    {picture}
-                  </span>
+                return (
+                  <div key={column.step} className={cn(cell, 'relative group')}>
+                    {pick ? (
+                      <button type="button" aria-label={`${prompt}，${column.label}`} onClick={pick} className="size-full">
+                        {picture}
+                      </button>
+                    ) : null}
+                    <PreviewButton
+                      path={image}
+                      title={`${prompt}，${column.label}`}
+                      className={
+                        pick
+                          ? 'absolute right-1 top-1 size-auto rounded-md bg-raised px-1.5 text-caption text-ink opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+                          : undefined
+                      }
+                    >
+                      {pick ? '放大' : picture}
+                    </PreviewButton>
+                  </div>
                 )
               })}
             </div>
