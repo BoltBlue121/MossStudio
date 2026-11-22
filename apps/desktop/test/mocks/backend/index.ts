@@ -18,6 +18,7 @@
  * and are listed in `backend.unhandled`, unless `fallback: 'empty'` is passed
  * (the legacy UI-harness behaviour: `[]`, or `null` for appInfo/envScan).
  */
+import { schemas, type ImageEditChannel } from '@shared/schemas'
 import { bestBundleFor, cliGpuUuids, generationGpus, isFileBundle } from '@shared/bundleFit'
 import { Events, Ipc, type EventChannel } from '@shared/channels'
 import { combinationBundle } from '@shared/modelCombos'
@@ -261,6 +262,31 @@ function defaultHandlers(): Map<string, Handler> {
     return { id, registered: action === 'register' }
   })
 
+  const edits = new Map<string, ImageEditChannel>()
+  const editHandler = (ipc: string, handler: (payload: unknown) => unknown) =>
+    h.set(ipc, (payload, { state }) => {
+      if (!state.settings.externalImageEditEnabled) throw new MockIpcError('E_FEATURE_OFF', '请先打开外接重绘')
+      return handler(payload)
+    })
+  editHandler(Ipc.imageEditChannelsList, () => [...edits.values()])
+  editHandler(Ipc.imageEditChannelsSave, (payload) => {
+    const { id = crypto.randomUUID(), apiKey, ...fields } = schemas.imageEditChannelsSave.parse(payload),
+      old = edits.get(id)
+    const row: ImageEditChannel = {
+      ...fields,
+      id,
+      revision: crypto.randomUUID(),
+      hasKey: apiKey === undefined ? !!old?.hasKey && new URL(old.baseUrl).origin === new URL(fields.baseUrl).origin : !!apiKey,
+    }
+    edits.set(id, row)
+    return row
+  })
+  editHandler(Ipc.imageEditChannelsRemove, (payload) => edits.delete(schemas.imageEditChannelsRemove.parse(payload).id))
+  editHandler(Ipc.imageEditDiscoverModels, () => ['image-test', 'text-test'])
+  editHandler(Ipc.imageEditRun, (payload) => {
+    const { projectId } = schemas.imageEditRun.parse(payload)
+    return { path: `/projects/${projectId}/assets/edited.png`, width: 512, height: 512 }
+  })
   // 外部 Agent: every channel answers E_FEATURE_OFF while the switch is off, as main does.
   const external =
     (handler: Handler): Handler =>

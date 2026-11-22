@@ -13,6 +13,7 @@ describe('optional features', () => {
       'gbcEnabled',
       'lanWebEnabled',
       'externalAgentsEnabled',
+      'externalImageEditEnabled',
     ])
     for (const feature of FEATURES) expect(feature.description.length).toBeGreaterThan(8)
   })

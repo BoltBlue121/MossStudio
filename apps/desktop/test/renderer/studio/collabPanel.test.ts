@@ -1,6 +1,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { useApp } from '@renderer/store'
 import { Ipc } from '@shared/channels'
 import { canvasFixture, settingsFixture } from '@test/mocks/backend/fixtures'
 import { createMockBackend } from '@test/mocks/backend'
@@ -224,6 +225,8 @@ describe('collab panel helpers', () => {
   it('lists every built-in pack and turns pack ticks into a custom profile starting from what the mode showed', () => {
     // 14 MossStudio packs plus the shared remote.hosts pack.
     expect(listPackRows()).toHaveLength(15)
+    expect(listPackRows(true).map((row) => row.id)).toContain('image.edit')
+    expect(listPackRows().map((row) => row.id)).not.toContain('image.edit')
     expect(listPackRows().map((row) => row.id)).toContain('remote.hosts')
     expect(effectivePacks({ mode: 'compact', packs: [] })).toEqual(COMPACT_PACKS)
     const next = togglePack({ mode: 'compact', packs: [] }, 'studio.ask')
@@ -330,6 +333,40 @@ describe('CollabPanel', () => {
     return host
   }
 
+  it('copies the checked image edit pack only while its live opt-in is on', async () => {
+    const backend = createMockBackend(withExternalAgents())
+    backend.install()
+    localStorage.setItem('mossstudio.collab.toolProfile', 'custom')
+    localStorage.setItem('mossstudio.collab.toolPacks', '["image.edit"]')
+    const previous = useApp.getState().settings
+    const settings = settingsFixture({ externalAgentsEnabled: true, externalImageEditEnabled: true })
+    useApp.setState({ settings })
+    const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    try {
+      const view = mount(
+        createElement(CollabPanel, {
+          board: { projectId: 'p', projectName: 'P', canvas: null },
+          projectKey: 1,
+          visible: true,
+          onStandalone: () => {},
+        }),
+      )
+      await settle()
+      act(() => view.querySelector<HTMLButtonElement>('[data-tool-packs]')!.click())
+      const copySkill = () => act(async () => document.querySelector<HTMLButtonElement>('[data-copy-workbench-skill]')!.click())
+      await copySkill()
+      expect(copy.mock.lastCall?.[0]).toContain('image.edit.run')
+      act(() => useApp.setState({ settings: { ...settings, externalImageEditEnabled: false } }))
+      await copySkill()
+      expect(copy.mock.lastCall?.[0]).not.toContain('image.edit.run')
+      act(() => useApp.setState({ settings: { ...settings, externalAgentsEnabled: false } }))
+      await copySkill()
+      expect(copy.mock.lastCall?.[0]).not.toContain('image.edit.run')
+    } finally {
+      copy.mockRestore()
+      act(() => useApp.setState({ settings: previous }))
+    }
+  })
   it('shows the compact header, connects an ACP Agent and switches to the built-in assistant', async () => {
     const backend = createMockBackend(withExternalAgents())
     backend.install()

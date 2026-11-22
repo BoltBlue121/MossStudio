@@ -33,6 +33,7 @@ export type MainCapabilityHandler = (
     callId: string
     action: ActionDescriptor
     source: CapabilityCallSource
+    signal?: AbortSignal
     conversationId?: string
   },
 ) => unknown | Promise<unknown>
@@ -281,7 +282,8 @@ export function createMainCapabilityDispatcher(options: MainCapabilityDispatcher
     const handler = options.mainHandlers[descriptor.id]
     if (!handler) return record(descriptor, fail(`能力 ${descriptor.title} 尚未绑定主进程处理器`))
     try {
-      const data = await handler(args, { callId, action: descriptor, source, conversationId: request.conversationId })
+      const { conversationId, signal } = request
+      const data = await handler(args, { callId, action: descriptor, source, conversationId, signal })
       return record(descriptor, mutating ? serializeResult(data, { summary }) : serializeResult(data))
     } catch (error) {
       return record(descriptor, fail(error instanceof Error ? error.message : String(error)))

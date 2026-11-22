@@ -89,6 +89,7 @@ export interface CanvasCardProps {
    */
   menu?: readonly CardMenuEntry[]
   onMenuSelect?: (label: string) => void
+  onEditPicture?: (path: string) => void
   /**
    * While a wire is out and this card can take it: the inputs it could fill,
    * one socket each on the left edge, top to bottom; `active` is the one the
@@ -290,6 +291,7 @@ function CanvasCardView(props: CanvasCardProps): React.JSX.Element {
   )
   // While painting the mask, the start picture shows even over earlier results.
   const painting = Boolean(props.mask?.interactive && props.initPicture)
+  const editPath = !preview && !painting && props.onEditPicture ? (current?.path ?? (isImage ? canvas.imagePath : undefined)) : undefined
   const pictureSize = usePictureSize(props.mask ? props.initPicture?.path : undefined, props.initPicture?.size ?? null)
   const [editing, setEditing] = useState(false)
   const body = useRef<HTMLDivElement>(null)
@@ -329,6 +331,7 @@ function CanvasCardView(props: CanvasCardProps): React.JSX.Element {
   return (
     <article
       data-canvas-card={canvas.id}
+      data-edit-path={editPath}
       data-canvas-kind={canvas.kind}
       data-node={canvas.upscale ? 'upscale' : undefined}
       aria-label={`${canvas.title}${selected || props.marked ? '，已选中' : ''}`}
@@ -393,6 +396,16 @@ function CanvasCardView(props: CanvasCardProps): React.JSX.Element {
           >
             {(close) => (
               <>
+                {editPath && props.onEditPicture && (
+                  <MenuItem
+                    onSelect={() => {
+                      close()
+                      props.onEditPicture?.(editPath)
+                    }}
+                  >
+                    外接重绘…
+                  </MenuItem>
+                )}
                 {tidyEntries(props.menu ?? []).map((action, index) =>
                   'gap' in action ? (
                     <MenuGap key={`gap-${index}`} />

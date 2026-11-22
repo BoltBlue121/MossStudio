@@ -8,14 +8,14 @@ import { paths } from '../lib/paths'
  * and GitHub tokens, one entry per provider id. ai/agent.json only says whether a key is saved;
  * the value never reaches the renderer, the LAN page or agent.json.
  */
-const load = (): Record<string, string> => (readJsonObject(paths.aiCredentials()) ?? {}) as Record<string, string>
+const load = (file: string): Record<string, string> => (readJsonObject(file) ?? {}) as Record<string, string>
 
-export function hasAiKey(id: string): boolean {
-  return Boolean(load()[id])
+export function hasAiKey(id: string, file = paths.aiCredentials()): boolean {
+  return Boolean(load(file)[id])
 }
 
-export function getAiKey(id: string): string | undefined {
-  const encrypted = load()[id]
+export function getAiKey(id: string, file = paths.aiCredentials()): string | undefined {
+  const encrypted = load(file)[id]
   return encrypted ? safeStorage.decryptString(Buffer.from(encrypted, 'base64')) : undefined
 }
 
@@ -24,14 +24,13 @@ export function getAiKey(id: string): string | undefined {
  * as empty: a read error throws, and an unparseable file is moved aside, so a save never
  * silently drops the other providers' keys.
  */
-function loadForWrite(): Record<string, string> {
-  const file = paths.aiCredentials()
+function loadForWrite(file: string): Record<string, string> {
   if (!existsSync(file)) return {}
   const credentials = readJsonObject(file)
   if (credentials) return credentials as Record<string, string>
   readFileSync(file) // rethrows a read error (a lock, no access) rather than treating it as corrupt
   renameSync(file, `${file}.unreadable-${Date.now()}`)
-  console.warn('[ai] ai-credentials.json could not be parsed; moved aside')
+  console.warn('[credentials] unreadable vault moved aside')
   return {}
 }
 
@@ -39,8 +38,8 @@ function loadForWrite(): Record<string, string> {
  * Save or (with null) remove keys in one write. fsync'd: the key migration drops the plain
  * copies from agent.json only after this returns, so it must be on disk first.
  */
-export function saveAiKeys(keys: Record<string, string | null>): void {
-  const credentials = loadForWrite()
+export function saveAiKeys(keys: Record<string, string | null>, file = paths.aiCredentials()): void {
+  const credentials = loadForWrite(file)
   for (const [id, key] of Object.entries(keys)) {
     if (!key) {
       delete credentials[id]
@@ -54,5 +53,5 @@ export function saveAiKeys(keys: Record<string, string | null>): void {
     }
     credentials[id] = safeStorage.encryptString(key).toString('base64')
   }
-  writeJsonAtomic(paths.aiCredentials(), credentials)
+  writeJsonAtomic(file, credentials, 0o600)
 }

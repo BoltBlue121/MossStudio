@@ -70,6 +70,7 @@ export const DEFAULT_SETTINGS: Settings = {
   trainingEnabled: false,
   gbcEnabled: false,
   externalAgentsEnabled: false,
+  externalImageEditEnabled: false,
   workerHostsEnabled: false,
   gbcProviderId: null,
   languageProviderId: null,
@@ -151,6 +152,7 @@ export function getSettings(): Settings {
         console.warn('[settings] language model migration', error)
       }
     }
+    cache.externalImageEditEnabled = parsed.externalImageEditEnabled === true
     migrateLegacyEngineSettings(cache, parsed as Record<string, unknown>)
     // MossInfer 2.0 (server protocol 2) removed the auto tier: load requires
     // reference | high | turbo. Map legacy configs to the recommended default.

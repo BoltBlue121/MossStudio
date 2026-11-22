@@ -160,6 +160,7 @@ export interface BoardProps {
   /** A new 风格 node; at a board point when given. */
   onAddStyle: (at?: Point) => void
   /** 导入图片… / 从作品选择… from the right-click menu: pictures placed at a board point. */
+  onEditPicture?: (path: string) => void
   onImportPictures: (at: Point) => void
   onPicturesFromGallery: (at: Point) => void
   /**
@@ -846,6 +847,8 @@ export function Board(props: BoardProps): React.JSX.Element {
   }
 
   /** A card's menu, the same under its ⋯ and on right-click. */
+  const editEntries = (path?: string): BoardMenuEntry[] =>
+    path && props.onEditPicture ? [{ label: '外接重绘…', onSelect: () => props.onEditPicture?.(path) }] : []
   const cardMenu = (canvas: ProjectCanvas, run: ProjectCanvas, item: StripItem | undefined, film: Filmstrip | null): BoardMenuEntry[] => {
     const actions = cardActions(canvas, run, item)
     const danger = (entry: BoardMenuEntry): boolean => !('gap' in entry) && entry.tone === 'danger'
@@ -974,14 +977,14 @@ export function Board(props: BoardProps): React.JSX.Element {
     if (connect.draft) return
     const rect = viewport.current?.getBoundingClientRect()
     const at = { x: clientX - (rect?.left ?? 0), y: clientY - (rect?.top ?? 0) }
-    const cardId = target.closest<HTMLElement>('article[data-canvas-card]')?.dataset.canvasCard
-    const card = cardId ? cards.find((canvas) => canvas.id === cardId) : undefined
+    const face = target.closest<HTMLElement>('article[data-canvas-card]')?.dataset
+    const card = face && cards.find((canvas) => canvas.id === face.canvasCard)
     // A filmstrip thumbnail is one picture: its menu gets the picture out of MossStudio.
     const stripKey = target.closest<HTMLElement>('[data-strip-item]')?.dataset.stripItem
     const stripped =
       card && stripKey ? filmstripOf(card, props.canvases).items.find((item) => `${item.runId}/${item.output}` === stripKey) : undefined
     if (stripped?.path) {
-      setContextMenu({ at, label: '图片操作', entries: pictures.menu(stripped.path) })
+      setContextMenu({ at, label: '图片操作', entries: [...editEntries(stripped.path), ...pictures.menu(stripped.path)] })
       return
     }
     const regionId = target.closest<HTMLElement>('[data-region-id]')?.dataset.regionId
@@ -1005,7 +1008,7 @@ export function Board(props: BoardProps): React.JSX.Element {
     if (card) {
       if (card.id !== props.selectedCanvasId) props.onSelectCanvas(card.id)
       const { run, item, film } = shownOf(card)
-      setContextMenu({ at, label: `${card.title} 操作`, entries: cardMenu(card, run, item, film) })
+      setContextMenu({ at, label: `${card.title} 操作`, entries: [...editEntries(face.editPath), ...cardMenu(card, run, item, film)] })
       return
     }
     const wireId =
@@ -1261,6 +1264,7 @@ export function Board(props: BoardProps): React.JSX.Element {
                 return shown
               })}
               onMenuSelect={on.menuSelect}
+              onEditPicture={props.onEditPicture}
               // While a box is drawn, only the cards it will pick are ringed.
               selected={isSelected && (!boxPick || picked.has(canvas.id))}
               marked={picked.has(canvas.id)}

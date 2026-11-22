@@ -109,6 +109,7 @@ export function settingsFixture(patch: Partial<Settings> = {}): Settings {
     trainingEnabled: false,
     gbcEnabled: false,
     externalAgentsEnabled: false,
+    externalImageEditEnabled: false,
     workerHostsEnabled: false,
     gbcProviderId: null,
     languageProviderId: null,

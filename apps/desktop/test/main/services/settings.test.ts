@@ -187,6 +187,7 @@ describe('getSettings', () => {
     writeSettings({ theme: 'dark', remoteHostsEnabled: true })
     const settings = (await load()).getSettings()
     expect(settings.externalAgentsEnabled).toBe(false)
+    expect(settings.externalImageEditEnabled).toBe(false)
     expect(settings.workerHostsEnabled).toBe(false)
   })
 

@@ -67,7 +67,28 @@ const mangaWithPage = (page: Record<string, unknown>): unknown => ({
   chapters: [{ ...newManga.chapters[0]!, pages: [{ id: 'p', ...page }] }],
 })
 
+const id = '12345678-1234-4123-8123-123456789abc'
+const channel = { name: 'Mine', protocol: 'openai-edits', baseUrl: 'https://api.example/v1', model: 'model' }
+const run = { channelId: id, revision: id, path: 'picture.png', projectId: 'p', prompt: 'draw' }
 const cases = {
+  imageEditChannelsList: { valid: {}, rejects: { secret: { key: 'x' } } },
+  imageEditChannelsSave: {
+    valid: channel,
+    rejects: {
+      http: { ...channel, baseUrl: 'http://api.example' },
+      query: { ...channel, baseUrl: 'https://api.example/?key=x' },
+      extra: { ...channel, hasKey: true },
+    },
+  },
+  imageEditChannelsRemove: { valid: { id }, rejects: { missing: {} } },
+  imageEditDiscoverModels: {
+    valid: { protocol: channel.protocol, baseUrl: channel.baseUrl },
+    rejects: { extra: { ...channel, approved: true } },
+  },
+  imageEditRun: {
+    valid: run,
+    rejects: { approval: { ...run, approved: true }, traversal: { ...run, projectId: '../p' }, prompt: { ...run, prompt: ' ' } },
+  },
   remoteWorkerLoras: {
     valid: { hostId: 'host' },
     accepts: { provider: { providerId: 'worker-host', candidates: true }, both: { hostId: 'host', providerId: 'worker-host' } },
@@ -1136,6 +1157,11 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
 const STRICT = new Set<keyof Schemas>([
+  'imageEditChannelsList',
+  'imageEditChannelsSave',
+  'imageEditChannelsRemove',
+  'imageEditDiscoverModels',
+  'imageEditRun',
   'engineSystemCuda',
   'mossInferCudaLibs',
   'loraProfilesList',

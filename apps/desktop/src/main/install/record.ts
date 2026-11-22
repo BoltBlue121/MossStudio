@@ -42,10 +42,10 @@ function sleep(ms: number): void {
  * while another process (the launcher, an antivirus scan) has the target open, so it
  * is retried for about a second.
  */
-export function writeJsonAtomic(file: string, value: unknown): void {
+export function writeJsonAtomic(file: string, value: unknown, mode?: number): void {
   mkdirSync(dirname(file), { recursive: true })
   const temp = join(dirname(file), `.${basename(file)}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`)
-  const fd = openSync(temp, 'w')
+  const fd = openSync(temp, 'wx', mode)
   try {
     writeSync(fd, `${JSON.stringify(value, null, 2)}\n`)
     fsyncSync(fd)

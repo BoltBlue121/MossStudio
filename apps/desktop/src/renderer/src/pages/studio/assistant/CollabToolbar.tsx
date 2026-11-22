@@ -7,6 +7,7 @@ import {
   type CapabilityId,
   type ToolProfileId,
 } from '@shared/capabilities'
+import { useApp } from '../../../store'
 import { Checkbox } from '../../../components/common/Checkbox'
 import { Popover } from '../../../components/common/Popover'
 import { Button, Select, cn, useCopyText, useToast } from '../../../components/ui'
@@ -61,24 +62,24 @@ const PACK_ROWS: readonly PackRow[] = BUILTIN_CAPABILITY_REGISTRY.listPacks({ en
   actionCount: pack.actions.length,
 }))
 
-export function listPackRows(): readonly PackRow[] {
-  return PACK_ROWS
+export function listPackRows(imageEdit = false): readonly PackRow[] {
+  return PACK_ROWS.filter((row) => imageEdit || row.id !== 'image.edit')
 }
 
-const allPackIds = (): CapabilityId[] => PACK_ROWS.map((row) => row.id)
+const allPackIds = (imageEdit = false): CapabilityId[] => listPackRows(imageEdit).map((row) => row.id)
 
 /** The packs a mode actually exposes, for the ticks in the pack list. */
-export function effectivePacks(state: ToolProfileState): readonly CapabilityId[] {
-  if (state.mode === 'custom') return state.packs
+export function effectivePacks(state: ToolProfileState, imageEdit = false): readonly CapabilityId[] {
+  if (state.mode === 'custom') return state.packs.filter((id) => imageEdit || id !== 'image.edit')
   if (state.mode === 'compact') return COMPACT_PACKS
-  return allPackIds()
+  return allPackIds(imageEdit)
 }
 
 /** Ticking a pack always lands in `custom`, starting from what the current mode showed. */
-export function togglePack(state: ToolProfileState, id: CapabilityId): ToolProfileState {
-  const current = effectivePacks(state)
+export function togglePack(state: ToolProfileState, id: CapabilityId, imageEdit = false): ToolProfileState {
+  const current = effectivePacks(state, imageEdit)
   const next = current.includes(id) ? current.filter((pack) => pack !== id) : [...current, id]
-  return { mode: 'custom', packs: allPackIds().filter((pack) => next.includes(pack)) }
+  return { mode: 'custom', packs: allPackIds(imageEdit).filter((pack) => next.includes(pack)) }
 }
 
 export function readToolProfile(): ToolProfileState {
@@ -89,7 +90,7 @@ export function readToolProfile(): ToolProfileState {
     if (raw && (PROFILE_ORDER as readonly string[]).includes(raw)) mode = raw as ToolProfileId
     const stored: unknown = JSON.parse(localStorage.getItem(TOOL_PACKS_KEY) ?? 'null')
     if (Array.isArray(stored)) {
-      const known = new Set<string>(allPackIds())
+      const known = new Set<string>(allPackIds(true))
       packs = stored.filter((id): id is CapabilityId => typeof id === 'string' && known.has(id))
     }
   } catch {
@@ -112,10 +113,21 @@ export function toolProfileLine(state: ToolProfileState): string {
   return state.mode === 'custom' ? `Tools allowed: ${state.packs.join(', ') || 'none'}` : `Tools allowed: the ${state.mode} set`
 }
 
+export function useToolFlags() {
+  const s = useApp((state) => state.settings)
+  return {
+    gbcEnabled: s?.gbcEnabled === true,
+    trainingEnabled: s?.trainingEnabled === true,
+    remoteHostsEnabled: s?.remoteHostsEnabled === true,
+    workerHostsEnabled: s?.remoteHostsEnabled === true && s.workerHostsEnabled === true,
+    externalImageEditEnabled: s?.externalAgentsEnabled === true && s.externalImageEditEnabled === true,
+  }
+}
 /** The tool Skill matching a profile, built from the same registry the MCP server serves. */
-export function projectedToolset(state: ToolProfileState) {
+export function projectedToolset(state: ToolProfileState, enabledFlags: Record<string, boolean>) {
   return projectCapabilities(BUILTIN_CAPABILITY_REGISTRY, {
     profile: state.mode,
+    enabledFlags,
     ...(state.mode === 'custom' ? { enabledPacks: state.packs } : {}),
   })
 }
@@ -150,8 +162,10 @@ export function CollabToolbar({
 }): React.JSX.Element {
   const copyText = useCopyText()
   const toast = useToast()
-  const rows = listPackRows()
-  const ticked = new Set(effectivePacks(profile))
+  const flags = useToolFlags(),
+    imageEdit = flags.externalImageEditEnabled
+  const rows = listPackRows(imageEdit)
+  const ticked = new Set(effectivePacks(profile, imageEdit))
 
   return (
     <Popover
@@ -200,7 +214,7 @@ export function CollabToolbar({
                 </option>
               ))}
             </Select>
-            <Button size="xs" tone="ghost" onClick={() => onProfileChange({ mode: 'custom', packs: allPackIds() })}>
+            <Button size="xs" tone="ghost" onClick={() => onProfileChange({ mode: 'custom', packs: allPackIds(imageEdit) })}>
               全选
             </Button>
             <Button size="xs" tone="ghost" onClick={() => onProfileChange({ mode: 'custom', packs: [...COMPACT_PACKS] })}>
@@ -213,7 +227,7 @@ export function CollabToolbar({
               <Checkbox
                 key={row.id}
                 checked={ticked.has(row.id)}
-                onCheckedChange={() => onProfileChange(togglePack(profile, row.id))}
+                onCheckedChange={() => onProfileChange(togglePack(profile, row.id, imageEdit))}
                 label={row.title}
                 description={`${row.actionCount} 项动作`}
                 className="gap-2 rounded-md px-2 py-1.5"
@@ -227,7 +241,7 @@ export function CollabToolbar({
               data-copy-workbench-skill
               title="复制与当前工具集一致的 Skill 说明"
               onClick={() => {
-                const projected = projectedToolset(profile)
+                const projected = projectedToolset(profile, flags)
                 void copyText(
                   projected.skill.markdown,
                   `已复制 ${PROFILE_LABELS[profile.mode]} Skill（${projected.actions.length} 项能力）`,

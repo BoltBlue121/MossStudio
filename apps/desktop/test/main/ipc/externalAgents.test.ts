@@ -51,6 +51,26 @@ describe('设置 › 功能 › 外部 Agent', () => {
     expect(existsSync(paths.mcpDir())).toBe(false)
   })
 
+  it('gates the five dedicated redraw channels independently; generic IPC stays read only', async () => {
+    const id = 'ccbb1936-c34f-4207-8a4a-844a5a3e3df3',
+      draft = { protocol: 'openai-chat', baseUrl: 'https://image.example/v1' },
+      input = { channelId: id, revision: id, projectId: 'test', path: 'test.png', prompt: 'a' }
+    updateSettings({ externalImageEditEnabled: false, externalAgentsEnabled: true })
+    for (const [ch, p] of [
+      [Ipc.imageEditChannelsList, {}],
+      [Ipc.imageEditChannelsSave, { ...draft, name: 'mine', model: 'model' }],
+      [Ipc.imageEditDiscoverModels, draft],
+      [Ipc.imageEditChannelsRemove, { id }],
+      [Ipc.imageEditRun, input],
+    ] as const)
+      expect(await invoke(ch, p)).toMatchObject({ ok: false, error: { code: 'E_FEATURE_OFF' } })
+    expect(existsSync(paths.imageEditChannels())).toBe(false)
+    expect(existsSync(paths.imageEditCredentials())).toBe(false)
+    updateSettings({ externalImageEditEnabled: true, externalAgentsEnabled: false })
+    expect(await invoke(Ipc.imageEditChannelsList, {})).toMatchObject({ ok: true })
+    updateSettings({ externalAgentsEnabled: true })
+    expect(await invoke(Ipc.capabilitiesExecute, { name: 'image.edit.run', arguments: input })).toMatchObject({ data: { ok: false } })
+  })
   it('starts the MCP server and its discovery file when turned on, and removes both when turned off', async () => {
     await syncExternalAgents({ ...DEFAULT_SETTINGS })
     expect(getActiveMcpServer()).toBeNull()

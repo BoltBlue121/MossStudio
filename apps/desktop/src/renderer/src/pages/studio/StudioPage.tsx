@@ -32,6 +32,7 @@ import {
   type RegionInput,
 } from './canvases'
 import { clampDimension, isSeedLocked, nearestQuality, qualityPreset, samplingForBundle, SEED_MAX } from './defaults'
+import { ImageEditDialog } from './ImageEditDialog'
 import { InspectorPanel } from './InspectorPanel'
 import type { InputsWiring } from './InputsSection'
 import { ACTIVE_JOB_STATES } from './jobStatus'
@@ -172,6 +173,11 @@ export function StudioPage(): React.JSX.Element {
   const shown = useIsShown(root)
   const notifyError = useCallback((message: string) => toast.push(message, 'error'), [toast])
   const project = useStudioProject({ jobs, onError: notifyError, active: shown })
+  const [edit, setEdit] = useState<{ path: string; session: number } | null>(null)
+  const openEdit = useCallback((path: string) => setEdit({ path, session: project.sessionKey }), [project.sessionKey])
+  useEffect(() => {
+    if (!shown || settings?.externalImageEditEnabled !== true) setEdit(null)
+  }, [shown, settings?.externalImageEditEnabled])
   const selected = project.selectedCanvas
 
   const [savedBundleId, setPreferredBundleId] = useState<string | null>(() => readStorage(BUNDLE_KEY))
@@ -1113,7 +1119,11 @@ export function StudioPage(): React.JSX.Element {
       </StudioSidebar>
 
       <main aria-label="画布" className="min-w-120 flex-1">
+        {shown && settings?.externalImageEditEnabled === true && edit?.session === project.sessionKey && (
+          <ImageEditDialog key={edit.path} path={edit.path} project={project} onClose={() => setEdit(null)} />
+        )}
         <Board
+          onEditPicture={settings?.externalImageEditEnabled === true ? openEdit : undefined}
           ref={board}
           projectKey={String(project.sessionKey)}
           canvases={project.canvases}

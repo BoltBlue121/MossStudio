@@ -2,7 +2,13 @@ import type { Settings } from '@shared/types'
 
 /** Optional features. Each is off by default and turned on in 设置 › 功能. */
 export type FeatureKey =
-  'remoteHostsEnabled' | 'workerHostsEnabled' | 'trainingEnabled' | 'gbcEnabled' | 'lanWebEnabled' | 'externalAgentsEnabled'
+  | 'remoteHostsEnabled'
+  | 'workerHostsEnabled'
+  | 'trainingEnabled'
+  | 'gbcEnabled'
+  | 'lanWebEnabled'
+  | 'externalAgentsEnabled'
+  | 'externalImageEditEnabled'
 
 export interface FeatureInfo {
   key: FeatureKey
@@ -44,6 +50,7 @@ export const FEATURES: FeatureInfo[] = [
     label: '外部 Agent',
     description: '让 Codex、Claude Code 等 Agent 通过 MCP 在创作页上画图，并在助手旁协同。',
   },
+  { key: 'externalImageEditEnabled', label: '外接重绘', description: '通过自己选择的图像服务重绘图片。' },
 ]
 
 export function featureEnabled(settings: Pick<Settings, FeatureKey> | null | undefined, key: FeatureKey): boolean {

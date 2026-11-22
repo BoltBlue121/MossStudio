@@ -12,6 +12,7 @@ const AGENT_PICTURE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp'])
 
 /** The arguments of each action that name a file on this computer. */
 export const AGENT_PATH_ARGS: Readonly<Record<string, 'path' | 'files'>> = {
+  'image.edit.run': 'path',
   'studio.projects.import_image': 'path',
   'studio.gbc.parse_image': 'path',
   'studio.gbc.start_job': 'files',

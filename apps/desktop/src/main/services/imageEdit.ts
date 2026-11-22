@@ -1,0 +1,133 @@
+import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { open, realpath, stat as pathStat } from 'node:fs/promises'
+import { dirname, join, relative } from 'node:path'
+import { isNetworkPath, pathLinksToNetwork } from '../lib/localPath'
+import { z } from 'zod'
+import { editChannel, type schemas, type ImageEditChannel } from '@shared/schemas'
+import { agentPicturePath } from '../capabilities/agentPaths'
+import { readJsonObject, writeJsonAtomic } from '../install/record'
+import { codedError } from '../lib/codedError'
+import { IMAGE_BYTES, publicImageUrl } from '../lib/imageEditHttp'
+import { paths } from '../lib/paths'
+import { hasAiKey, getAiKey, saveAiKeys } from './aiCredentials'
+import { queryChannel } from './imageEditProtocols'
+import { getProject, projectAssetsDir } from './projects'
+import { getSettings } from './settings'
+import { importImageBytes } from './studioAssets'
+
+function enabled(agent = false) {
+  const s = getSettings()
+  if (s.externalImageEditEnabled !== true || (agent && s.externalAgentsEnabled !== true))
+    throw codedError('E_FEATURE_OFF', '请先在设置中打开对应功能')
+}
+function records() {
+  enabled()
+  const file = paths.imageEditChannels()
+  return existsSync(file) ? z.array(editChannel).parse(readJsonObject(file)?.channels) : []
+}
+const vault = paths.imageEditCredentials
+// Bind ciphertext to its origin even if only one of the two atomic writes survives a crash.
+const slot = (c: { id?: string; baseUrl: string }) => `${c.id}@${publicImageUrl(c.baseUrl).origin}`
+export function listImageChannels(): ImageEditChannel[] {
+  return records().map((c) => ({ ...c, hasKey: hasAiKey(slot(c), vault()) }))
+}
+export function saveImageChannel({ id, apiKey, ...fields }: z.infer<typeof schemas.imageEditChannelsSave>) {
+  const rows = records(),
+    old = rows.find((c) => c.id === id)
+  if (id && !old) throw new Error('渠道已移除')
+  const c = { ...fields, baseUrl: publicImageUrl(fields.baseUrl).href, id: id ?? randomUUID(), revision: randomUUID() }
+  const changes: Record<string, string | null> = {}
+  if (old && slot(old) !== slot(c)) {
+    changes[slot(old)] = null
+    changes[slot(c)] = null
+  }
+  if (apiKey !== undefined) changes[slot(c)] = apiKey
+  if (Object.keys(changes).length) saveAiKeys(changes, vault())
+  writeJsonAtomic(paths.imageEditChannels(), { channels: [c, ...rows.filter((r) => r.id !== id)] })
+  return { ...c, hasKey: hasAiKey(slot(c), vault()) }
+}
+export function removeImageChannel(id: string) {
+  const rows = records(),
+    old = rows.find((c) => c.id === id)
+  if (!old) return
+  saveAiKeys({ [slot(old)]: null }, vault())
+  writeJsonAtomic(paths.imageEditChannels(), { channels: rows.filter((c) => c.id !== id) })
+}
+const stamp = (s: import('node:fs').Stats) => `${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`
+export async function bindImageEdit(args: Record<string, unknown>) {
+  enabled(true)
+  const rows = listImageChannels(),
+    c = args.channelId ? rows.find((r) => r.id === args.channelId) : rows[0]
+  if (!c) throw new Error('请先在设置中添加重绘渠道')
+  const sourceStamp = stamp(await pathStat(String(args.path)))
+  return { ...args, sourceStamp, channelId: c.id, revision: c.revision, destination: `${publicImageUrl(c.baseUrl).origin} · ${c.model}` }
+}
+function connection(id: string, revision: string, agent = false) {
+  const check = () => {
+    enabled(agent)
+    const c = listImageChannels().find((r) => r.id === id && r.revision === revision)
+    if (!c) throw new Error('渠道已更改，请重新确认')
+    return c
+  }
+  const c = check(),
+    key = getAiKey(slot(c), vault())
+  if (!key) throw new Error('请先为渠道设置 API Key')
+  return { c, key, guard: check }
+}
+export async function discoverImageModels(draft: z.infer<typeof schemas.imageEditDiscoverModels>) {
+  enabled()
+  publicImageUrl(draft.baseUrl)
+  const old = draft.id ? listImageChannels().find((r) => r.id === draft.id) : undefined
+  const guard = () => {
+    enabled()
+    if (old && !listImageChannels().some((r) => r.id === old.id && r.revision === old.revision)) throw new Error('渠道已更改')
+  }
+  const key = draft.apiKey === undefined && old && slot(old) === slot(draft) ? getAiKey(slot(old), vault()) : draft.apiKey
+  if (!key) throw new Error('请先输入该站点的 API Key')
+  try {
+    return await queryChannel({ ...draft, model: '' }, key, guard)
+  } catch {
+    throw new Error('无法探测模型，请检查渠道设置或手填模型名')
+  }
+}
+export async function runImageEdit(input: z.infer<typeof schemas.imageEditRun>, approval?: { sourceStamp: string; signal?: AbortSignal }) {
+  const signal = approval?.signal
+  const { c, key, guard } = connection(input.channelId, input.revision, !!approval)
+  const checkProject = async () => {
+    signal?.throwIfAborted()
+    const dir = projectAssetsDir(input.projectId)
+    const doc = join(dirname(dir), 'project.json')
+    const unsafe = async (p: string) => isNetworkPath(p) || (await pathLinksToNetwork(p)) || !!relative(await realpath(p), p)
+    if ((await unsafe(dir)) || (await unsafe(doc)) || getProject(input.projectId)?.id !== input.projectId)
+      throw new Error('项目位置已改变，请重新打开项目')
+  }
+  await checkProject()
+  const file = await open(await agentPicturePath(input.path), 'r')
+  let bytes: Buffer
+  try {
+    const stat = await file.stat()
+    if (approval && approval.sourceStamp !== stamp(stat)) throw new Error('图片已更改，请重新确认')
+    if (!stat.isFile() || !stat.size || stat.size > IMAGE_BYTES) throw new Error('图片文件太大或不可读')
+    bytes = Buffer.alloc(stat.size)
+    let n = 0
+    while (n < bytes.length) {
+      const { bytesRead } = await file.read(bytes, n, bytes.length - n, n)
+      if (!bytesRead) throw new Error('图片已更改')
+      n += bytesRead
+    }
+    if (stamp(await pathStat(await agentPicturePath(input.path))) !== stamp(stat)) throw new Error('图片已更改')
+  } finally {
+    await file.close()
+  }
+  guard()
+  const result = await queryChannel(c, key, guard, { bytes, prompt: input.prompt, signal }).catch(() => {
+    signal?.throwIfAborted()
+    throw new Error('重绘失败，请检查图片、渠道设置和返回格式')
+  })
+  if (!Buffer.isBuffer(result)) throw new Error('渠道未返回图片')
+  await checkProject()
+  guard()
+  signal?.throwIfAborted()
+  return importImageBytes(input.projectId, result, signal)
+}
