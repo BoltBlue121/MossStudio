@@ -1,5 +1,6 @@
 import { UI_SCALES } from './uiScale'
 import { z } from 'zod'
+import { DIMENSION_STEP, MAX_DIMENSION, MIN_DIMENSION, PIXEL_BUDGET_MESSAGE, withinPixelBudget } from './imageGeometry'
 import { agentCardAnswerSchema } from './agent/cards'
 import { UPDATE_CHANNELS } from './install'
 import { mangaSeriesSaveSchema } from './manga/model'
@@ -973,23 +974,25 @@ export const schemas = {
   sshTerminalInput: z.object({ id: z.string().min(1).max(120), data: z.string().max(65536) }),
   sshTerminalClose: z.object({ id: z.string().min(1).max(120) }),
 
-  jobStart: z.object({
-    instanceId: z.string().min(1).max(120),
-    prompt: z.string().max(32768),
-    negativePrompt: z.string().max(8192).default(''),
-    width: z.number().int().min(256).max(2048).multipleOf(16),
-    height: z.number().int().min(256).max(2048).multipleOf(16),
-    steps: z.number().int().min(1).max(100),
-    cfg: z.number().min(0).max(20),
-    seed: z.number().int().min(0).max(4294967295),
-    profile: z.enum(['base', 'dmd8']).default('base'),
-    mode: z.enum(['runner', 'simulate']).default('runner'),
-    caseId: z.string().max(80).optional(),
-    caseName: z.string().max(120).optional(),
-    workspace: z.literal('clover').optional(),
-    deviceId: z.string().max(120).optional(),
-    kind: z.enum(['inference', 'training']).optional(),
-  }),
+  jobStart: z
+    .object({
+      instanceId: z.string().min(1).max(120),
+      prompt: z.string().max(32768),
+      negativePrompt: z.string().max(8192).default(''),
+      width: z.number().int().min(MIN_DIMENSION).max(MAX_DIMENSION).multipleOf(DIMENSION_STEP),
+      height: z.number().int().min(MIN_DIMENSION).max(MAX_DIMENSION).multipleOf(DIMENSION_STEP),
+      steps: z.number().int().min(1).max(100),
+      cfg: z.number().min(0).max(20),
+      seed: z.number().int().min(0).max(4294967295),
+      profile: z.enum(['base', 'dmd8']).default('base'),
+      mode: z.enum(['runner', 'simulate']).default('runner'),
+      caseId: z.string().max(80).optional(),
+      caseName: z.string().max(120).optional(),
+      workspace: z.literal('clover').optional(),
+      deviceId: z.string().max(120).optional(),
+      kind: z.enum(['inference', 'training']).optional(),
+    })
+    .refine(withinPixelBudget, PIXEL_BUDGET_MESSAGE),
 
   jobId: z.object({ id: z.string().min(1).max(120) }),
 

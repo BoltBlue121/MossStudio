@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   MAX_DIMENSION,
+  MAX_PIXELS,
   MIN_DIMENSION,
+  MP_TIERS,
   QUALITY_PRESETS,
   SEED_MAX,
+  SIZE_PRESETS,
   clampDimension,
+  megapixelLabel,
   nearestQuality,
   nextCanvasTitle,
   nextProjectName,
@@ -15,6 +19,8 @@ import {
   randomSeed,
   samplingForBundle,
   seedForRun,
+  sizeChoiceFor,
+  sizeForMegapixels,
   sizePresetFor,
   smallerSize,
 } from '@renderer/pages/studio/defaults'
@@ -24,8 +30,28 @@ describe('studio/defaults size presets', () => {
     expect(sizePresetFor(1024, 1024)).toBe('1:1')
     expect(sizePresetFor(1152, 864)).toBe('4:3')
     expect(sizePresetFor(864, 1152)).toBe('3:4')
+    expect(sizePresetFor(1248, 832)).toBe('3:2')
+    expect(sizePresetFor(832, 1248)).toBe('2:3')
     expect(sizePresetFor(1280, 720)).toBe('16:9')
+    expect(sizePresetFor(720, 1280)).toBe('9:16')
     expect(sizePresetFor(512, 512)).toBe('custom')
+  })
+
+  it('offers six ordered megapixel tiers within the 4.2 MP budget for all 7 aspect ratios', () => {
+    for (const preset of SIZE_PRESETS) {
+      expect(sizeForMegapixels(preset.id, 1)).toEqual({ width: preset.width, height: preset.height })
+      let prevPixels = 0
+      for (const mp of MP_TIERS) {
+        const size = sizeForMegapixels(preset.id, mp)
+        expect(size.width % 16).toBe(0)
+        expect(size.height % 16).toBe(0)
+        expect(size.width * size.height).toBeLessThanOrEqual(MAX_PIXELS)
+        expect(size.width * size.height).toBeGreaterThan(prevPixels)
+        expect(sizeChoiceFor(size.width, size.height)).toMatchObject({ id: preset.id, mp })
+        prevPixels = size.width * size.height
+      }
+    }
+    expect(megapixelLabel(1024, 1024)).toBe('1.05 MP')
   })
 
   it('snaps typed sizes to the 16-pixel grid inside the supported range', () => {
@@ -43,9 +69,9 @@ describe('studio/defaults quality presets', () => {
     expect(smallerSize(1024, 1024)).toEqual({ width: 768, height: 768 })
     expect(smallerSize(1280, 720)).toEqual({ width: 960, height: 544 })
     expect(smallerSize(864, 1152)).toEqual({ width: 656, height: 864 })
-    // Never below the engine's smallest side; at the bottom there is no step left.
-    expect(smallerSize(300, 1024)).toEqual({ width: MIN_DIMENSION, height: 768 })
-    expect(smallerSize(MIN_DIMENSION, MIN_DIMENSION)).toBeNull()
+    // Never below the OOM step-down floor (256); at the bottom there is no step left.
+    expect(smallerSize(300, 1024)).toEqual({ width: 256, height: 768 })
+    expect(smallerSize(256, 256)).toBeNull()
   })
 
   it('maps 快速/标准/精细 to 8/20/50 steps with an explicit profile', () => {
