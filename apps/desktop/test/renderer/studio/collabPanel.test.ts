@@ -222,17 +222,28 @@ describe('collab panel helpers', () => {
   })
 
   it('lists every built-in pack and turns pack ticks into a custom profile starting from what the mode showed', () => {
-    // 14 MossStudio packs plus the shared remote.hosts pack.
-    expect(listPackRows()).toHaveLength(15)
+    // 14 MossStudio packs + remote.hosts + 2 toggleable MOSS Skill packs (standard & layout).
+    expect(listPackRows()).toHaveLength(17)
     expect(listPackRows().map((row) => row.id)).toContain('remote.hosts')
+    expect(listPackRows().map((row) => row.id)).toContain('skill.moss.standard')
+    expect(listPackRows().map((row) => row.id)).toContain('skill.moss.layout')
     expect(effectivePacks({ mode: 'compact', packs: [] })).toEqual(COMPACT_PACKS)
+    expect(effectivePacks({ mode: 'moss-standard', packs: [] })).toContain('skill.moss.standard')
+    expect(effectivePacks({ mode: 'moss-standard', packs: [] })).not.toContain('skill.moss.layout')
+    expect(effectivePacks({ mode: 'moss-standard', packs: [] })).not.toContain('studio.board.regions')
+    expect(effectivePacks({ mode: 'moss-layout', packs: [] })).toContain('skill.moss.standard')
+    expect(effectivePacks({ mode: 'moss-layout', packs: [] })).toContain('skill.moss.layout')
+    expect(effectivePacks({ mode: 'moss-layout', packs: [] })).toContain('studio.board.regions')
     const next = togglePack({ mode: 'compact', packs: [] }, 'studio.ask')
     expect(next.mode).toBe('custom')
     expect(next.packs).not.toContain('studio.ask')
     expect(next.packs).toHaveLength(COMPACT_PACKS.length - 1)
-    expect(togglePack({ mode: 'atomic', packs: [] }, 'training.jobs').packs).toHaveLength(14)
+    expect(togglePack({ mode: 'atomic', packs: [] }, 'training.jobs').packs).toHaveLength(16)
     expect(toolProfileLine({ mode: 'custom', packs: ['studio.ask'] })).toBe('Tools allowed: studio.ask')
-    expect(toolProfileLine({ mode: 'atomic', packs: [] })).toBe('Tools allowed: the atomic set')
+    expect(toolProfileLine({ mode: 'moss-standard', packs: [] })).toContain('skill.moss.standard')
+    expect(toolProfileLine({ mode: 'moss-standard', packs: [] })).not.toContain('skill.moss.layout')
+    expect(toolProfileLine({ mode: 'moss-layout', packs: [] })).toContain('skill.moss.layout')
+    expect(toolProfileLine({ mode: 'atomic', packs: [] })).toContain('Tools allowed: the atomic set')
   })
 
   it('works out the new project folder and refuses names that would escape it', () => {

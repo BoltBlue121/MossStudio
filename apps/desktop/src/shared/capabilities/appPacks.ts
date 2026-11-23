@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { mangaSeriesSaveSchema } from '../manga/model'
 import { TRAINING_KINDS, TRAINING_LENGTHS, trainingRecipeSchema } from '../training'
+import { MOSS_LAYOUT_DESIGN_SKILL_MD, MOSS_PROMPTCRAFT_SKILL_MD } from './officialSkills'
 import { CAPABILITY_PROTOCOL_VERSION, type BuiltinCapabilityPack } from './protocol'
 
 /**
@@ -266,7 +267,7 @@ export const APP_ACTION_SCHEMAS = {
       .optional()
       .describe('Which guide to read: tools, promptcraft, layout, or all (default).'),
     profile: z
-      .enum(['compact', 'atomic', 'proposal-only', 'custom'])
+      .enum(['compact', 'moss-standard', 'moss-layout', 'atomic', 'proposal-only', 'custom'])
       .optional()
       .describe('Optional Tool Profile to synthesize the Skill guide for.'),
     enabledPacks: z
@@ -1364,6 +1365,42 @@ export const APP_CAPABILITY_PACKS: readonly BuiltinCapabilityPack[] = [
           '- Ask the engine what it supports (`system.engine.features`) instead of assuming GPU or sampler capabilities.',
           '- Every capability call is recorded in the audit trail and can be inspected via `system.audit.recent`.',
         ].join('\n'),
+      },
+    ],
+  },
+  {
+    protocolVersion: CAPABILITY_PROTOCOL_VERSION,
+    id: 'skill.moss.standard',
+    title: 'MOSS 普通提示词 Skill',
+    version: '1.0.0',
+    requiresPacks: [],
+    actions: [],
+    contexts: [],
+    skills: [
+      {
+        id: 'skill.moss.standard.guide',
+        requiresActions: [],
+        order: 90,
+        audience: ['tools', 'resources'],
+        markdown: MOSS_PROMPTCRAFT_SKILL_MD,
+      },
+    ],
+  },
+  {
+    protocolVersion: CAPABILITY_PROTOCOL_VERSION,
+    id: 'skill.moss.layout',
+    title: 'MOSS Layout 构图 Skill',
+    version: '1.0.0',
+    requiresPacks: [],
+    actions: [],
+    contexts: [],
+    skills: [
+      {
+        id: 'skill.moss.layout.guide',
+        requiresActions: [],
+        order: 95,
+        audience: ['tools', 'resources'],
+        markdown: MOSS_LAYOUT_DESIGN_SKILL_MD,
       },
     ],
   },

@@ -101,6 +101,27 @@ describe('外部 Agent on', () => {
     await expect.poll(() => app.calls('agent-hub:resolve-approval')).toEqual([{ id: 'approval-1', decision: 'reject' }])
     await expect.poll(() => overlay.count()).toBe(0)
   })
+
+  it('the 工具集 popover manages MOSS 普通 and Layout Skills and switches between their two presets', async () => {
+    const page = await openStudio(app, 'externalAgents')
+    await openCollab(page)
+    const panel = page.locator('[data-collab-panel]')
+    await panel.locator('[data-tool-packs]').click()
+    const dialog = page.getByRole('dialog', { name: '工具集' })
+    await dialog.waitFor()
+    await expect.poll(() => dialog.getByText('MOSS 普通提示词 Skill').isVisible()).toBe(true)
+    await expect.poll(() => dialog.getByText('MOSS Layout 构图 Skill').isVisible()).toBe(true)
+
+    const profileSelect = dialog.getByLabel('协同工具集')
+    await profileSelect.selectOption('moss-standard')
+    await expect.poll(() => app.calls('mcp:set-profile').then((calls) => calls.at(-1))).toEqual({ profile: 'moss-standard' })
+    await expect.poll(() => dialog.getByRole('checkbox', { name: /MOSS 普通提示词 Skill/ }).isChecked()).toBe(true)
+    await expect.poll(() => dialog.getByRole('checkbox', { name: /MOSS Layout 构图 Skill/ }).isChecked()).toBe(false)
+
+    await profileSelect.selectOption('moss-layout')
+    await expect.poll(() => app.calls('mcp:set-profile').then((calls) => calls.at(-1))).toEqual({ profile: 'moss-layout' })
+    await expect.poll(() => dialog.getByRole('checkbox', { name: /MOSS Layout 构图 Skill/ }).isChecked()).toBe(true)
+  })
 })
 
 describe('LoRA trigger words', () => {

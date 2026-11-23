@@ -352,9 +352,18 @@ export function createCapabilityRegistry(initialPacks: readonly (BuiltinCapabili
       })
     const activeActionIds = new Set<CapabilityId>(actions.map((action) => action.id))
     const audienceFilter = options.audience?.length ? new Set(options.audience) : null
+    // Zero-action Skill packs (`skill.*`) have no actions in `activeActionIds`, so gate them on activePacks directly.
+    const activePackIds = new Set<CapabilityId>(
+      activePacks({
+        enabledFlags: options.enabledFlags,
+        enabledPacks: options.enabledPacks,
+        includeExternal: options.includeExternal,
+      }).map((stored) => stored.descriptor.id),
+    )
 
     const fragments: SkillFragment[] = []
     for (const stored of packs.values()) {
+      if (!activePackIds.has(stored.descriptor.id)) continue
       for (const fragment of stored.descriptor.skills) {
         if (!fragment.requiresActions.every((requiredId) => activeActionIds.has(requiredId))) continue
         if (audienceFilter && !fragment.audience.some((item) => audienceFilter.has(item))) continue
@@ -398,5 +407,5 @@ export function createCapabilityRegistry(initialPacks: readonly (BuiltinCapabili
 
 function isBuiltinPack(pack: BuiltinCapabilityPack | CapabilityPack): pack is BuiltinCapabilityPack {
   const first = pack.actions[0]
-  return Boolean(first && 'inputSchema' in first)
+  return first ? 'inputSchema' in first : true
 }

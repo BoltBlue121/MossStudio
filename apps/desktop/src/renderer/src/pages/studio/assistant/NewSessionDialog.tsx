@@ -7,6 +7,13 @@ import { workspaceKey } from './sessionBindings'
 const NO_PROJECT = '__none__'
 const NEW_PROJECT = '__new__'
 const TYPED_FOLDER = ''
+const CUSTOM_PRESET = '__custom__'
+
+const BUILTIN_AGENT_PRESETS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: '', label: '不使用预设（Agent 默认）' },
+  { value: 'moss-studio-standard', label: 'MossStudio 画师 · 普通提示词预设' },
+  { value: 'moss-studio-layout', label: 'MossStudio 画师 · Layout 构图预设' },
+]
 
 type FolderMode = 'existing' | 'create'
 
@@ -335,16 +342,35 @@ export function NewSessionDialog({
         </Field>
         <div className="rounded-lg bg-well">
           <Advanced summary="高级选项">
-            <div className="px-3.5 pb-3">
+            <div className="flex flex-col gap-2 px-3.5 pb-3">
               <Field label="Agent 预设（可选）">
+                <Select
+                  value={BUILTIN_AGENT_PRESETS.some((item) => item.value === preset) ? preset : CUSTOM_PRESET}
+                  onValueChange={(value) => {
+                    if (value === CUSTOM_PRESET) {
+                      if (BUILTIN_AGENT_PRESETS.some((item) => item.value === preset)) setPreset('custom')
+                      return
+                    }
+                    setPreset(value)
+                  }}
+                >
+                  {BUILTIN_AGENT_PRESETS.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                  <option value={CUSTOM_PRESET}>手动输入预设 ID…</option>
+                </Select>
+              </Field>
+              {!BUILTIN_AGENT_PRESETS.some((item) => item.value === preset) ? (
                 <Input
                   value={preset}
                   maxLength={80}
                   spellCheck={false}
-                  placeholder="不使用预设"
+                  placeholder="输入自定义 Agent 预设 ID"
                   onChange={(event) => setPreset(event.target.value)}
                 />
-              </Field>
+              ) : null}
             </div>
           </Advanced>
         </div>
