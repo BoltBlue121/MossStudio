@@ -2,12 +2,18 @@ import type { CanvasAdapter, CanvasImageLink, ProjectCanvas, ProjectLayer } from
 import { normalizeCanvasAdapters } from '@shared/adapters'
 import { nextFreeSpot } from './boardLayout'
 import { createLayoutCanvas, resizeCanvas, settingsFrom, type CanvasSettings } from './canvases'
-import { MAX_DIMENSION, MIN_DIMENSION, DIMENSION_STEP, nextNodeTitle } from './defaults'
+import { MIN_DIMENSION, DIMENSION_STEP, nextNodeTitle } from './defaults'
 import { linkSourceCanvas, setLink } from './links'
 import { canvasDescription, withDescription } from './prompt'
 import type { Blocker } from './readiness'
 import { cleanSampling } from './sampling'
 import { boardCanvases, givesPicture, pictureLink, pinRun, runsOf, spotBeside } from './runs'
+
+/**
+ * 放大 and 起始图 shaping keep the classic 2048-pixel long edge: they derive a size
+ * from a picture, while the wider range (up to 4096) is only for the size picker.
+ */
+const SHAPED_MAX_EDGE = 2048
 
 /**
  * The 风格 and 放大 nodes. A 风格 (`kind: 'style'`) holds a description and
@@ -68,12 +74,15 @@ export function pictureSize(canvases: readonly ProjectCanvas[], link: CanvasImag
 
 const step = (value: number): number => Math.max(MIN_DIMENSION, Math.round(value / DIMENSION_STEP) * DIMENSION_STEP)
 
-/** A 放大's size: `scale` times the 原图, the long edge kept within MAX_DIMENSION, on the engine's grid. */
+/** A 放大's size: `scale` times the 原图, the long edge kept within SHAPED_MAX_EDGE, on the engine's grid. */
 export function upscaleSize(size: { width: number; height: number }, scale: number): { width: number; height: number } {
   const width = size.width * scale
   const height = size.height * scale
-  const fit = Math.min(1, MAX_DIMENSION / Math.max(width, height))
-  return { width: Math.min(MAX_DIMENSION, step(width * fit)), height: Math.min(MAX_DIMENSION, step(height * fit)) }
+  const fit = Math.min(1, SHAPED_MAX_EDGE / Math.max(width, height))
+  return {
+    width: Math.min(SHAPED_MAX_EDGE, step(width * fit)),
+    height: Math.min(SHAPED_MAX_EDGE, step(height * fit)),
+  }
 }
 
 /** A 放大 sized from its 原图 (unchanged when the 原图 or its size is not known yet). */
@@ -87,7 +96,7 @@ export function withUpscaleSize(canvas: ProjectCanvas, canvases: readonly Projec
 
 /**
  * A size of `picture`'s shape with about the pixels of `current`, on the
- * engine's grid and within MAX_DIMENSION. Grid sizes rarely match a shape
+ * engine's grid and within SHAPED_MAX_EDGE. Grid sizes rarely match a shape
  * exactly, so of the short edges within 10% of the ideal one it takes the
  * closest shape, then the closest pixel count (4:3 at 1024 × 1024 is 1152 × 864).
  */
@@ -101,15 +110,15 @@ export function shapedSize(
     return { width: turned.height, height: turned.width }
   }
   const ratio = picture.width / picture.height
-  const fit = Math.min(1, MAX_DIMENSION / Math.sqrt(current.width * current.height * Math.max(ratio, 1 / ratio)))
+  const fit = Math.min(1, SHAPED_MAX_EDGE / Math.sqrt(current.width * current.height * Math.max(ratio, 1 / ratio)))
   const area = current.width * current.height * fit * fit
   const ideal = Math.sqrt(area / ratio)
   let best = { width: current.width, height: current.height }
   let bestShape = Infinity
   let bestArea = Infinity
   for (let tried = step(ideal * 0.9); tried <= step(ideal * 1.1); tried += DIMENSION_STEP) {
-    const height = Math.min(MAX_DIMENSION, tried)
-    const width = Math.min(MAX_DIMENSION, step(height * ratio))
+    const height = Math.min(SHAPED_MAX_EDGE, tried)
+    const width = Math.min(SHAPED_MAX_EDGE, step(height * ratio))
     const shape = Math.abs(Math.log(width / height / ratio))
     const off = Math.abs(width * height - area)
     if (shape < bestShape - 1e-9 || (shape <= bestShape + 1e-9 && off < bestArea)) {
@@ -159,7 +168,7 @@ export function nodeBlockers(canvas: ProjectCanvas, canvases: readonly ProjectCa
 
 /** Whether a picture of this size can still be enlarged. */
 export function upscaleRoom(size: { width: number; height: number }): boolean {
-  return Math.max(size.width, size.height) < MAX_DIMENSION
+  return Math.max(size.width, size.height) < SHAPED_MAX_EDGE
 }
 
 function tooBig(size: { width: number; height: number }): string {
