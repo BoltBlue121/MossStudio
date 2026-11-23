@@ -302,7 +302,7 @@ function defaultHandlers(): Map<string, Handler> {
   )
   h.set(
     Ipc.agentHubModels,
-    external(() => ({ models: [] })),
+    external((_, { state }) => ({ models: state.agents.models })),
   )
   h.set(
     Ipc.agentHubSessionStats,

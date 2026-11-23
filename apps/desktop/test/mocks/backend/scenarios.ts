@@ -99,10 +99,12 @@ export interface MockAgentsState {
     detail: string
   }>
   workerLoras: Array<{ id: string; name: string; sizeBytes: number; registered: boolean; triggers?: string[] }>
+  /** What the Agent answers its model list with (agent-hub:models). */
+  models: Array<{ id: string; label: string; provider?: string }>
 }
 
 export function agentsStateFixture(patch: Partial<MockAgentsState> = {}): MockAgentsState {
-  return { backends: [], sessions: [], messages: {}, approvals: [], clients: [], workerLoras: [], ...patch }
+  return { backends: [], sessions: [], messages: {}, approvals: [], clients: [], workerLoras: [], models: [], ...patch }
 }
 
 export interface MockBackendState {
