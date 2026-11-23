@@ -337,7 +337,12 @@ function defaultHandlers(): Map<string, Handler> {
   for (const channel of [Ipc.agentHubDisconnect, Ipc.agentHubSend, Ipc.agentHubStop])
     h.set(
       channel,
-      external(() => true),
+      external((_, { state }) => {
+        // A scenario can ask the next send to fail the way a dropped Agent does.
+        const failure = channel === Ipc.agentHubSend ? state.agents.sendError : undefined
+        if (failure) throw new MockIpcError('E_AGENT_STREAM', failure)
+        return true
+      }),
     )
   h.set(
     Ipc.capabilitiesList,

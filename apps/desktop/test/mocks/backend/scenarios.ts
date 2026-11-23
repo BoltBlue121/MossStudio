@@ -99,6 +99,8 @@ export interface MockAgentsState {
     detail: string
   }>
   workerLoras: Array<{ id: string; name: string; sizeBytes: number; registered: boolean; triggers?: string[] }>
+  /** When set, the next agent-hub:send fails with this message (a dropped connection). */
+  sendError?: string
 }
 
 export function agentsStateFixture(patch: Partial<MockAgentsState> = {}): MockAgentsState {

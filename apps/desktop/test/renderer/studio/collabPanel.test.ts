@@ -28,7 +28,7 @@ import {
   normalizeStats,
   sanitizeMessageText,
 } from '@renderer/pages/studio/assistant/collabClient'
-import { CollabPanel, agentShortName } from '@renderer/pages/studio/assistant/CollabPanel'
+import { CollabPanel, agentShortName, connectionLost } from '@renderer/pages/studio/assistant/CollabPanel'
 import { capabilityLabel, contextChips, formatBoardContext } from '@renderer/pages/studio/assistant/collabContext'
 import { GlobalApprovalOverlay } from '@renderer/pages/studio/assistant/GlobalApprovalOverlay'
 import { joinProjectPath, newFolderProblem, parentFolder } from '@renderer/pages/studio/assistant/NewSessionDialog'
@@ -59,7 +59,12 @@ const settle = async (): Promise<void> => {
 /** Types into a React-controlled field the way a person does. */
 function fill(field: Element | null, value: string): void {
   if (!field) throw new Error('field not found')
-  const proto = field instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype
+  const proto =
+    field instanceof HTMLSelectElement
+      ? HTMLSelectElement.prototype
+      : field instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype
   act(() => {
     Object.getOwnPropertyDescriptor(proto, 'value')!.set!.call(field, value)
     field.dispatchEvent(new Event(field instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }))
@@ -552,5 +557,64 @@ describe('CollabPanel', () => {
     await settle()
     expect(backend.callsTo(Ipc.agentHubResolveApproval)).toEqual([{ id: 'ap1', decision: 'approve' }])
     expect(view.querySelector('[data-global-approval-overlay]')).toBeNull()
+  })
+
+  it('stops claiming an Agent is connected once its connection drops, and offers the one step back', async () => {
+    const backend = createMockBackend(withExternalAgents())
+    backend.install()
+    backend.handle(Ipc.agentHubBackends, () => [
+      {
+        id: 'codex-acp',
+        label: 'Codex ACP',
+        kind: 'acp',
+        available: true,
+        connected: backend.state.agents.sendError === undefined,
+      },
+    ])
+    backend.handle(Ipc.agentHubSessions, () => [{ id: 's1', title: '海报一', cwd: 'F:\\work\\poster', updatedAt: 3 }])
+    backend.handle(Ipc.agentHubMessages, () => ({ messages: [], hasMore: false, asOfSeq: 0 }))
+    backend.handle(Ipc.agentHubConnect, () => ({ id: 'codex-acp', label: 'Codex ACP', kind: 'acp', available: true, connected: true }))
+    bindSession('codex-acp', 'p', 's1')
+    const view = mount(
+      createElement(CollabPanel, {
+        board: { projectId: 'p', projectName: 'P', canvas: null },
+        projectKey: 1,
+        visible: true,
+        onStandalone: () => {},
+      }),
+    )
+    await settle()
+    expect(view.querySelector('[data-collab-status]')?.getAttribute('data-activity')).toBe('idle')
+    expect(view.querySelector('[data-collab-reconnect]')).toBeNull()
+
+    // The Agent's process exited: sending fails the way the hub reports it.
+    const asked = backend.callsTo(Ipc.agentHubBackends).length
+    backend.state.agents.sendError = 'DSH 连接已断开，请重新连接桌面端'
+    fill(view.querySelector('textarea[aria-label="发给 Codex 的消息"]'), '你好')
+    const send = [...view.querySelectorAll('button')].find((button) => button.textContent === '发给 Codex')!
+    await act(async () => (send as HTMLButtonElement).click())
+    await settle()
+
+    // The warning is shown, the hub is asked again, and the status bar stops lying.
+    expect(view.querySelector('[data-notice="warn"]')?.textContent).toContain('连接已断开')
+    expect(backend.callsTo(Ipc.agentHubBackends).length).toBe(asked + 1)
+    expect(view.querySelector('[data-collab-status]')?.getAttribute('data-activity')).toBe('offline')
+
+    // One click brings it back, without hunting for the Agent switcher.
+    await act(async () => (view.querySelector('[data-collab-reconnect]') as HTMLButtonElement).click())
+    await settle()
+    expect(backend.callsTo(Ipc.agentHubConnect)).toEqual([{ backendId: 'codex-acp' }])
+    expect(view.querySelector('[data-notice="warn"]')).toBeNull()
+  })
+
+  it('tells a refused request apart from a dropped connection, so only the second offers a reconnect', () => {
+    expect(connectionLost(new ApiError({ code: 'E_DSH_DISCONNECTED', message: '请先连接 DSH Desktop' }))).toBe(true)
+    expect(connectionLost(new ApiError({ code: 'E_AGENT_STREAM', message: 'Agent 这次没有回复成功，请稍后重试。' }))).toBe(false)
+    // An ACP Agent whose process exited says so in words, with no code of its own.
+    expect(connectionLost(new Error('Agent 尚未连接，请先连接后端'))).toBe(true)
+    expect(connectionLost(new Error('socket disconnected'))).toBe(true)
+    expect(connectionLost('DSH 消息流已中断，请重新连接')).toBe(true)
+    expect(connectionLost(new Error('这个 Agent 暂时不能切换模型'))).toBe(false)
+    expect(connectionLost(undefined)).toBe(false)
   })
 })

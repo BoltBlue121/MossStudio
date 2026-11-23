@@ -52,6 +52,25 @@ const BACKEND_KEY = 'mossstudio.collab.backend'
 const POLL_MS = 2000
 const SESSIONS_POLL_MS = 10_000
 const NO_PROJECTS: readonly CanvasProjectOption[] = []
+/** What an Agent says when its connection is gone rather than the request being wrong. */
+const LOST_CODES = /DISCONNECT|NOT_CONNECTED|NO_CONNECTION|CONNECTION_LOST/
+const LOST_WORDS = /连接已断开|消息流已中断|连接中断|请先连接|重新连接|尚未连接|not connected|disconnected/i
+
+/**
+ * Whether a failure means "the Agent is no longer connected", which the panel
+ * can fix by reconnecting, or just "this request was refused", which it cannot.
+ * The DSH Desktop driver says `E_DSH_DISCONNECTED`, an ACP Agent whose process
+ * exited says 「Agent 尚未连接」, and anything else is judged by its wording.
+ * A failed turn (`E_AGENT_STREAM`) is not a lost connection: it is reported and
+ * left alone, so a bad reply never offers a reconnect.
+ */
+export function connectionLost(reason: unknown): boolean {
+  if (!reason) return false
+  if (typeof reason === 'string') return LOST_WORDS.test(reason)
+  const error = reason as { code?: unknown; message?: unknown }
+  if (typeof error.code === 'string' && LOST_CODES.test(error.code)) return true
+  return typeof error.message === 'string' && LOST_WORDS.test(error.message)
+}
 
 function readBackend(): string {
   try {
@@ -223,10 +242,35 @@ export function CollabPanel({
   const backend = backends.find((item) => item.id === backendId) ?? backends[0] ?? FALLBACK_BACKENDS[0]!
 
   const fail = useCallback(
-    (reason: unknown) => setError(reason instanceof Error && reason.message ? reason.message : '无法连接 Agent，请确认它仍在运行后重试。'),
-    [],
+    (reason: unknown) => {
+      setError(reason instanceof Error && reason.message ? reason.message : '无法连接 Agent，请确认它仍在运行后重试。')
+      // An Agent whose connection dropped is no longer connected: the head, the
+      // status bar and the connect card must stop claiming it is.
+      if (connectionLost(reason)) void loadBackends()
+    },
+    [loadBackends],
   )
   const clearError = useCallback(() => setError(''), [])
+
+  const [reconnecting, setReconnecting] = useState(false)
+  const backendIdRef = useRef(backend.id)
+  backendIdRef.current = backend.id
+  /** The one step back after a drop, without hunting for the Agent switcher. */
+  const reconnect = useCallback(async () => {
+    if (reconnecting) return
+    setReconnecting(true)
+    try {
+      const id = backendIdRef.current
+      const info = await client.connect({ backendId: id })
+      setBackends((list) => list.map((item) => (item.id === id ? (info ?? { ...item, connected: true }) : item)))
+      setError('')
+    } catch (reason) {
+      fail(reason)
+    } finally {
+      setReconnecting(false)
+    }
+  }, [client, fail, reconnecting])
+  const mayReconnect = connectionLost(error)
 
   const dock = (
     <ApprovalDock
@@ -312,7 +356,20 @@ export function CollabPanel({
           />
         </div>
       ) : null}
-      {error ? <Notice tone="warn">{error}</Notice> : null}
+      {error ? (
+        <Notice
+          tone="warn"
+          action={
+            mayReconnect ? (
+              <Button data-collab-reconnect size="xs" disabled={reconnecting} onClick={() => void reconnect()}>
+                {reconnecting ? '重连中…' : '重新连接'}
+              </Button>
+            ) : undefined
+          }
+        >
+          {error}
+        </Notice>
+      ) : null}
       <CollabStatusBar
         backendLabel={backend.label}
         connected={backend.connected}
