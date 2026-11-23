@@ -19,6 +19,7 @@ export const Ipc = {
   agentHubSessionStats: 'agent-hub:session-stats',
   agentHubConnect: 'agent-hub:connect',
   agentHubDisconnect: 'agent-hub:disconnect',
+  agentHubProjects: 'agent-hub:projects',
   agentHubSessions: 'agent-hub:sessions',
   agentHubCreateSession: 'agent-hub:create-session',
   agentHubMessages: 'agent-hub:messages',

@@ -82,12 +82,10 @@ import {
 
 /** What main's agent hub, MCP client installer and Worker daemon answer. */
 export interface MockAgentsState {
-  backends: Array<{ id: string; label: string; kind: 'acp'; available: boolean; connected: boolean; resumable?: boolean }>
+  backends: import('@shared/agentHub').AgentBackendInfo[]
+  projects?: import('@shared/agentHub').AgentProject[]
   sessions: Array<{ id: string; title: string; cwd?: string; projectId?: string; updatedAt?: number; running?: boolean }>
-  messages: Record<
-    string,
-    { messages: Array<{ seq: number; role: 'user' | 'assistant'; text: string }>; hasMore: boolean; asOfSeq: number }
-  >
+  messages: Record<string, import('@shared/agentHub').AgentMessagePage>
   approvals: PendingCapabilityApproval[]
   clients: Array<{
     id: 'codex' | 'claude-code'
@@ -418,7 +416,8 @@ export function scenario(name: ScenarioName = 'ready', patch: Partial<MockBacken
       settings: settingsFixture({ onboardingState: 'completed', externalAgentsEnabled: true }),
       agents: agentsStateFixture({
         backends: [
-          { id: 'codex-acp', label: 'Codex ACP', kind: 'acp', available: true, connected: true, resumable: true },
+          { id: 'dsh-desktop', label: 'DSH Desktop', kind: 'dsh-desktop', available: false, connected: false },
+          { id: 'codex-acp', label: 'Codex ACP', kind: 'acp', available: true, preferred: true, connected: true, resumable: true },
           { id: 'custom-acp', label: '自定义 ACP', kind: 'acp', available: true, connected: false },
         ],
         sessions: [{ id: 'session-1', title: '海报', cwd: 'F:\\work\\poster', updatedAt: Date.parse(FIXTURE_NOW) }],

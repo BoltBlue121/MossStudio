@@ -101,6 +101,45 @@ describe('外部 Agent on', () => {
     await expect.poll(() => app.calls('agent-hub:resolve-approval')).toEqual([{ id: 'approval-1', decision: 'reject' }])
     await expect.poll(() => overlay.count()).toBe(0)
   })
+
+  it('connects DSH Desktop with a local pairing URL and scopes conversations by workspace', async () => {
+    const page = await app.open({ scenario: 'externalAgents', route: '/studio', defer: true })
+    await seedLoraBoard(page, { workerHost: false })
+    await page.evaluate(() => {
+      localStorage.removeItem('mossstudio.collab.backend')
+      window.__mock.state.agents.backends = [
+        {
+          id: 'dsh-desktop',
+          label: 'DSH Desktop',
+          kind: 'dsh-desktop',
+          available: true,
+          preferred: true,
+          connected: false,
+          resumable: true,
+        },
+        { id: 'codex-acp', label: 'Codex ACP', kind: 'acp', available: true, connected: false },
+      ]
+      window.__mock.state.agents.projects = [
+        { id: 'ws-1', title: 'Poster', cwd: 'F:\\work\\poster', sessionIds: ['session-1'] },
+        { id: 'ws-empty', title: 'Empty', cwd: 'F:\\work\\empty', sessionIds: [] },
+      ]
+    })
+    await app.start()
+    await page.locator('article[data-canvas-card="c1"]').first().waitFor()
+    await openCollab(page)
+    const panel = page.locator('[data-collab-panel]')
+    await panel.getByLabel('本机配对地址').fill('http://127.0.0.1:52497/?token=demo_token')
+    await panel.getByRole('button', { name: '连接 DSH Desktop' }).click()
+    await expect
+      .poll(() => app.calls('agent-hub:connect').then((calls) => calls.at(-1)))
+      .toEqual({ backendId: 'dsh-desktop', pairingUrl: 'http://127.0.0.1:52497/?token=demo_token' })
+    const workspaceSelect = panel.getByLabel('DSH 工作区')
+    await workspaceSelect.waitFor()
+    await workspaceSelect.selectOption('ws-1')
+    await expect.poll(() => panel.getByText('画一张海边的海报').isVisible()).toBe(true)
+    await workspaceSelect.selectOption('ws-empty')
+    await expect.poll(() => panel.getByLabel('工作区对话').isDisabled()).toBe(true)
+  })
 })
 
 describe('LoRA trigger words', () => {

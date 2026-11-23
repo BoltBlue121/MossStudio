@@ -14,6 +14,7 @@ useTempDataRoot()
 const EXTERNAL_CHANNELS: Record<string, unknown> = {
   [Ipc.agentHubBackends]: undefined,
   [Ipc.agentHubConnect]: { backendId: 'codex-acp' },
+  [Ipc.agentHubProjects]: { backendId: 'dsh-desktop' },
   [Ipc.agentHubApprovals]: undefined,
   [Ipc.capabilitiesList]: undefined,
   [Ipc.capabilitiesExecute]: { name: 'system.guide.read' },
