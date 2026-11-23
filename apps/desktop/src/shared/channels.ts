@@ -1,6 +1,7 @@
 export const Ipc = {
   remoteWorkerLoras: 'remote-worker:loras',
   remoteWorkerLoraRegister: 'remote-worker:lora-register',
+  remoteWorkerModels: 'remote-worker:models',
   mcpClientsStatus: 'mcp:clients-status',
   mcpClientInstall: 'mcp:client-install',
   mcpClientUninstall: 'mcp:client-uninstall',

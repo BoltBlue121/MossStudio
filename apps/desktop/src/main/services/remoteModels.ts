@@ -1,7 +1,11 @@
+import type { RemoteWorkerModelItem } from '@shared/remoteWorker'
 import type { AdapterEntry, Catalog, DownloadTask, ModelEntry, TrainingHost } from '@shared/types'
+import { codedError } from '../lib/codedError'
 import { posixQuote, remoteAbsolute, sshExec } from './ssh'
 import { startRemoteDownload } from './remoteDownloads'
 import { assertSafeSteps, planRemoteDelete, type RemoteEntryFiles } from './remoteModelDelete'
+import { deleteRemoteWorkerModels, listRemoteWorkerLoras, listRemoteWorkerModels } from './remoteWorker'
+import { connectWorkerHost, isWorkerDaemonHost } from './workerHostManager'
 
 export async function prepareRemoteDefaultModel(
   host: TrainingHost,
@@ -26,6 +30,8 @@ export interface RemoteModelInventory {
   files: number
   models: RemoteModelInventoryEntry[]
   adapters: RemoteModelInventoryEntry[]
+  workerModels?: RemoteWorkerModelItem[]
+  defaultModelId?: string | null
 }
 
 function modelMatches(entry: ModelEntry, files: string[]): string | undefined {
@@ -125,7 +131,60 @@ function inventoryFrom(catalog: Catalog, files: string[]): Pick<RemoteModelInven
   return { models, adapters }
 }
 
+async function scanWorkerDaemonModels(host: TrainingHost, catalog: Catalog): Promise<RemoteModelInventory> {
+  const profile = await connectWorkerHost(host)
+  const [workerInventory, lorasResult] = await Promise.all([
+    listRemoteWorkerModels(profile, false),
+    listRemoteWorkerLoras(profile, true).catch(() => ({ items: [] })),
+  ])
+  if (workerInventory.unsupported) {
+    throw codedError('E_WORKER_UNSUPPORTED', '该远端 Worker 服务暂不支持模型清单接口，请升级远端 Worker 守护进程')
+  }
+  const installedComponents = new Map<string, string | undefined>()
+  for (const component of workerInventory.components) {
+    if (component.installed) installedComponents.set(component.id, component.path)
+  }
+  // If a full BF16 text encoder (qwen35-encoder) is already present on the worker,
+  // it satisfies the text-encoder requirement for single-file ComfyUI bundles too.
+  const hasFullTe = installedComponents.has('qwen35-encoder')
+  const fullTePath = installedComponents.get('qwen35-encoder')
+  const installedBundleIds = new Set(workerInventory.models.map((item) => item.catalogBundleId).filter((id): id is string => Boolean(id)))
+  const satisfiedByBundle = new Set<string>()
+  for (const bundle of catalog.bundles) {
+    if (!installedBundleIds.has(bundle.id)) continue
+    for (const part of [bundle.components.dit, bundle.components.textEncoder, bundle.components.vae, bundle.support]) {
+      if (part) satisfiedByBundle.add(part)
+    }
+  }
+  const models: RemoteModelInventoryEntry[] = catalog.models.map((entry) => {
+    if (installedComponents.has(entry.id)) {
+      return { id: entry.id, installed: true, path: installedComponents.get(entry.id) }
+    }
+    if (hasFullTe && entry.role === 'text_encoder' && entry.format === 'comfyui') {
+      return { id: entry.id, installed: true, path: fullTePath }
+    }
+    if (satisfiedByBundle.has(entry.id)) {
+      return { id: entry.id, installed: true, path: workerInventory.root }
+    }
+    return { id: entry.id, installed: false }
+  })
+  const loraNames = new Set(lorasResult.items.map((item) => item.name.toLowerCase()))
+  const adapters: RemoteModelInventoryEntry[] = catalog.adapters.map((entry) => {
+    const matched = entry.files.length > 0 && entry.files.every((file) => loraNames.has(file.split('/').at(-1)!.toLowerCase()))
+    return { id: entry.id, installed: matched, path: matched ? entry.files[0] : undefined }
+  })
+  return {
+    root: workerInventory.root ?? '',
+    files: workerInventory.models.length + workerInventory.components.length,
+    models,
+    adapters,
+    workerModels: workerInventory.models,
+    defaultModelId: workerInventory.defaultModelId ?? null,
+  }
+}
+
 export async function scanRemoteModels(host: TrainingHost, catalog: Catalog, modelsRoot?: string): Promise<RemoteModelInventory> {
+  if (isWorkerDaemonHost(host)) return scanWorkerDaemonModels(host, catalog)
   const { root, files } = await listRemoteModelFiles(host, modelsRoot)
   return { root, files: files.length, ...inventoryFrom(catalog, files) }
 }
@@ -140,6 +199,10 @@ export async function deleteRemoteModels(
   catalog: Catalog,
   ids: readonly string[],
 ): Promise<{ removed: string[]; kept: string[] }> {
+  if (isWorkerDaemonHost(host)) {
+    const profile = await connectWorkerHost(host)
+    return deleteRemoteWorkerModels(profile, ids)
+  }
   const { root, files } = await listRemoteModelFiles(host)
   const inventory = inventoryFrom(catalog, files)
   const located: Array<RemoteEntryFiles & { installed: boolean }> = [

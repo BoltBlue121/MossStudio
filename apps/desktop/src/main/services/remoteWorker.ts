@@ -2,8 +2,17 @@ import { mkdir, writeFile, rm } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { AdapterResolutionError, type ResolvedLora } from '@shared/adapters'
-import { isWorkerLoraId, parseWorkerSelection, type RemoteWorkerProfile, type RemoteWorkerLoraItem } from '@shared/remoteWorker'
-import type { JobParams } from '@shared/types'
+import {
+  isWorkerLoraId,
+  isWorkerModelId,
+  parseWorkerSelection,
+  type RemoteWorkerComponentItem,
+  type RemoteWorkerLoraItem,
+  type RemoteWorkerModelInventory,
+  type RemoteWorkerModelItem,
+  type RemoteWorkerProfile,
+} from '@shared/remoteWorker'
+import type { DownloadTask, JobParams } from '@shared/types'
 import { codedError } from '../lib/codedError'
 import { renameWithRetry } from '../lib/atomicWrite'
 import { readImageHeader } from './imageHeaders'
@@ -59,7 +68,9 @@ export async function requestWorkerDaemon<T = unknown>(
   } catch {
     throw codedError('E_WORKER_NETWORK', '远端请求失败或超时，请检查连接')
   }
-  if (!response.ok) throw codedError('E_WORKER_HTTP', `远端请求失败（HTTP ${response.status}）`)
+  if (!response.ok) {
+    throw Object.assign(codedError('E_WORKER_HTTP', `远端请求失败（HTTP ${response.status}）`), { status: response.status })
+  }
   const limit = options.bytes ? 128 * 1024 * 1024 : 8 * 1024 * 1024
   const reader = response.body?.getReader()
   const chunks: Uint8Array[] = []
@@ -138,25 +149,257 @@ export async function changeRemoteWorkerLora(
   if (row?.id !== id || row.registered !== (action === 'register')) throw badInventory()
   return { id, registered: row.registered }
 }
+function isWorkerHttpStatus(error: unknown, status: number): boolean {
+  return Boolean(
+    error && typeof error === 'object' && 'code' in error && error.code === 'E_WORKER_HTTP' && 'status' in error && error.status === status,
+  )
+}
+
 export async function resolveRemoteWorkerAdapters(
   profile: RemoteWorkerProfile,
   input: unknown,
   fetchImpl?: typeof fetch,
 ): Promise<ResolvedLora[]> {
   const adapters = parseWorkerSelection(input === undefined ? [] : input)
-  if (!adapters.length) return []
+  // Strength 0 disables a LoRA on the canvas without removing it; never block or transmit disabled LoRAs.
+  const active = adapters.filter((adapter) => adapter.strength > 0)
+  if (!active.length) return []
   const { items } = await listRemoteWorkerLoras(profile, false, fetchImpl)
   const allowed = new Set(items.map((item) => item.id))
-  return adapters.map((adapter) => {
+  return active.map((adapter) => {
     const path = adapter.path ?? adapter.id
     if (!allowed.has(path)) throw new AdapterResolutionError('所选 LoRA 尚未在远端登记，请刷新后重新选择')
     return { path, strength: adapter.strength }
   })
 }
 
+const VALID_TIERS = new Set(['reference', 'high', 'turbo'])
+
+function parseWorkerModelItem(entry: unknown): RemoteWorkerModelItem | null {
+  if (!entry || typeof entry !== 'object') return null
+  const row = entry as Record<string, unknown>
+  if (!isWorkerModelId(row.id) || typeof row.name !== 'string' || !row.name.trim()) return null
+  const tier = typeof row.tier === 'string' && VALID_TIERS.has(row.tier) ? (row.tier as RemoteWorkerModelItem['tier']) : undefined
+  const rawDefaults = row.defaults && typeof row.defaults === 'object' ? (row.defaults as Record<string, unknown>) : undefined
+  const defaults =
+    rawDefaults && (typeof rawDefaults.steps === 'number' || typeof rawDefaults.cfg === 'number')
+      ? {
+          ...(typeof rawDefaults.steps === 'number' && Number.isFinite(rawDefaults.steps) ? { steps: rawDefaults.steps } : {}),
+          ...(typeof rawDefaults.cfg === 'number' && Number.isFinite(rawDefaults.cfg) ? { cfg: rawDefaults.cfg } : {}),
+        }
+      : undefined
+  return {
+    id: row.id,
+    name: row.name.trim().slice(0, 200),
+    description: typeof row.description === 'string' ? row.description.slice(0, 600) : undefined,
+    variant: Array.isArray(row.variant)
+      ? row.variant.filter((v): v is string => typeof v === 'string' && v.length <= 40).slice(0, 8)
+      : undefined,
+    precision: typeof row.precision === 'string' ? row.precision.slice(0, 40) : undefined,
+    tier,
+    profile: typeof row.profile === 'string' ? row.profile.slice(0, 64) : undefined,
+    catalogBundleId: typeof row.catalogBundleId === 'string' && isWorkerModelId(row.catalogBundleId) ? row.catalogBundleId : undefined,
+    sizeBytes: typeof row.sizeBytes === 'number' && Number.isSafeInteger(row.sizeBytes) && row.sizeBytes >= 0 ? row.sizeBytes : undefined,
+    installed: row.installed !== false,
+    deletable: row.deletable === true,
+    defaults,
+  }
+}
+
+export async function listRemoteWorkerModels(
+  profile: RemoteWorkerProfile,
+  rescan = false,
+  fetchImpl?: typeof fetch,
+): Promise<RemoteWorkerModelInventory> {
+  let response: Record<string, unknown>
+  try {
+    response = await requestWorkerDaemon<Record<string, unknown>>(profile, rescan ? '/v1/models/rescan' : '/v1/models', {
+      method: rescan ? 'POST' : 'GET',
+      ...(rescan ? { body: {} } : {}),
+      fetchImpl,
+      timeoutMs: rescan ? 60_000 : 15_000,
+    })
+  } catch (error) {
+    // Legacy daemons without `/v1/models` answer HTTP 404: fall back cleanly to single-model mode.
+    if (isWorkerHttpStatus(error, 404)) return { models: [], components: [], defaultModelId: null, unsupported: true }
+    throw error
+  }
+  const rawModels = Array.isArray(response?.models) ? response.models : []
+  const rawComponents = Array.isArray(response?.components) ? response.components : []
+  const seenModels = new Set<string>()
+  const models: RemoteWorkerModelItem[] = []
+  for (const row of rawModels.slice(0, 256)) {
+    const item = parseWorkerModelItem(row)
+    if (!item || seenModels.has(item.id)) continue
+    seenModels.add(item.id)
+    models.push(item)
+  }
+  const components: RemoteWorkerComponentItem[] = []
+  for (const row of rawComponents.slice(0, 256)) {
+    if (!row || typeof row !== 'object') continue
+    const item = row as Record<string, unknown>
+    if (typeof item.id !== 'string' || !item.id || item.id.length > 160) continue
+    components.push({
+      id: item.id,
+      installed: item.installed !== false,
+      path: typeof item.path === 'string' ? item.path.slice(0, 4096) : undefined,
+      sizeBytes:
+        typeof item.sizeBytes === 'number' && Number.isSafeInteger(item.sizeBytes) && item.sizeBytes >= 0 ? item.sizeBytes : undefined,
+    })
+  }
+  return {
+    root: typeof response?.root === 'string' ? response.root.slice(0, 4096) : undefined,
+    defaultModelId: typeof response?.defaultModelId === 'string' ? response.defaultModelId : null,
+    models,
+    components,
+  }
+}
+
+export async function deleteRemoteWorkerModels(
+  profile: RemoteWorkerProfile,
+  ids: readonly string[],
+  fetchImpl?: typeof fetch,
+): Promise<{ removed: string[]; kept: string[] }> {
+  const clean = ids.filter((id) => typeof id === 'string' && id.trim().length > 0).slice(0, 64)
+  if (!clean.length) throw codedError('E_WORKER_MODELS', '请选择要删除的模型')
+  let response: { removed?: unknown; kept?: unknown }
+  try {
+    response = await requestWorkerDaemon<{ removed?: unknown; kept?: unknown }>(profile, '/v1/models/delete', {
+      method: 'POST',
+      body: { ids: clean },
+      fetchImpl,
+      timeoutMs: 30_000,
+    })
+  } catch (error) {
+    if (isWorkerHttpStatus(error, 404)) {
+      throw codedError('E_WORKER_UNSUPPORTED', '该远端 Worker 服务暂不支持模型删除接口，请升级远端 Worker 守护进程')
+    }
+    throw error
+  }
+  return {
+    removed: Array.isArray(response?.removed) ? response.removed.filter((v): v is string => typeof v === 'string') : [],
+    kept: Array.isArray(response?.kept) ? response.kept.filter((v): v is string => typeof v === 'string') : [],
+  }
+}
+
+const VALID_DL_STATES = new Set<DownloadTask['state']>(['queued', 'running', 'paused', 'verifying', 'done', 'error', 'canceled'])
+
+function mapWorkerDownloadTask(profile: RemoteWorkerProfile, raw: unknown): DownloadTask | null {
+  if (!raw || typeof raw !== 'object') return null
+  const row = raw as Record<string, unknown>
+  if (typeof row.id !== 'string' || !row.id) return null
+  const state =
+    typeof row.state === 'string' && VALID_DL_STATES.has(row.state as DownloadTask['state'])
+      ? (row.state as DownloadTask['state'])
+      : 'queued'
+  const kind: DownloadTask['kind'] = row.kind === 'adapter' ? 'adapter' : 'model'
+  return {
+    id: row.id,
+    hostId: profile.hostId,
+    hostName: profile.label,
+    kind,
+    targetId: typeof row.targetId === 'string' ? row.targetId : row.id,
+    label: typeof row.label === 'string' ? row.label : typeof row.targetId === 'string' ? row.targetId : row.id,
+    state,
+    bytes: typeof row.bytes === 'number' && Number.isFinite(row.bytes) ? row.bytes : 0,
+    totalBytes: typeof row.totalBytes === 'number' && Number.isFinite(row.totalBytes) ? row.totalBytes : 0,
+    speedBps: typeof row.speedBps === 'number' && Number.isFinite(row.speedBps) ? row.speedBps : 0,
+    filesDone: typeof row.filesDone === 'number' && Number.isFinite(row.filesDone) ? row.filesDone : 0,
+    filesTotal: typeof row.filesTotal === 'number' && Number.isFinite(row.filesTotal) ? row.filesTotal : 0,
+    currentFile: typeof row.currentFile === 'string' ? row.currentFile : undefined,
+    remotePath: typeof row.remotePath === 'string' ? row.remotePath : undefined,
+    error: typeof row.error === 'string' ? row.error : undefined,
+    updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : new Date().toISOString(),
+  }
+}
+
+export async function listRemoteWorkerDownloads(profile: RemoteWorkerProfile, fetchImpl?: typeof fetch): Promise<DownloadTask[]> {
+  let response: { items?: unknown }
+  try {
+    response = await requestWorkerDaemon<{ items?: unknown }>(profile, '/v1/downloads', {
+      fetchImpl,
+      timeoutMs: 10_000,
+    })
+  } catch (error) {
+    if (isWorkerHttpStatus(error, 404)) return []
+    throw error
+  }
+  const rows = Array.isArray(response?.items) ? response.items : []
+  return rows.map((row) => mapWorkerDownloadTask(profile, row)).filter((task): task is DownloadTask => task !== null)
+}
+
+export interface StartRemoteWorkerDownloadInput {
+  targetId: string
+  label: string
+  kind: DownloadTask['kind']
+  repo: string
+  revision?: string
+  files?: string[]
+  sizeBytes?: number
+  endpoint?: string
+  token?: string
+}
+
+export async function startRemoteWorkerDownload(
+  profile: RemoteWorkerProfile,
+  input: StartRemoteWorkerDownloadInput,
+  fetchImpl?: typeof fetch,
+): Promise<DownloadTask> {
+  let response: unknown
+  try {
+    response = await requestWorkerDaemon<unknown>(profile, '/v1/downloads', {
+      method: 'POST',
+      body: {
+        targetId: input.targetId,
+        label: input.label,
+        kind: input.kind,
+        repo: input.repo,
+        revision: input.revision || 'main',
+        files: input.files ?? [],
+        sizeBytes: input.sizeBytes ?? 0,
+        ...(input.endpoint ? { endpoint: input.endpoint } : {}),
+        ...(input.token ? { token: input.token } : {}),
+      },
+      fetchImpl,
+      timeoutMs: 20_000,
+    })
+  } catch (error) {
+    if (isWorkerHttpStatus(error, 404)) {
+      throw codedError('E_WORKER_UNSUPPORTED', '该远端 Worker 服务暂不支持远端下载接口，请升级远端 Worker 守护进程')
+    }
+    throw error
+  }
+  const task = mapWorkerDownloadTask(profile, response)
+  if (!task) throw codedError('E_WORKER_RESPONSE', '远端未返回有效的下载任务')
+  return task
+}
+
+export async function controlRemoteWorkerDownload(
+  profile: RemoteWorkerProfile,
+  taskId: string,
+  operation: 'pause' | 'resume' | 'cancel',
+  fetchImpl?: typeof fetch,
+): Promise<DownloadTask[]> {
+  try {
+    await requestWorkerDaemon<unknown>(profile, `/v1/downloads/${encodeURIComponent(taskId)}/${operation}`, {
+      method: 'POST',
+      body: {},
+      fetchImpl,
+      timeoutMs: 15_000,
+    })
+  } catch (error) {
+    if (isWorkerHttpStatus(error, 404)) {
+      throw codedError('E_WORKER_UNSUPPORTED', '该远端 Worker 服务暂不支持远端下载接口，请升级远端 Worker 守护进程')
+    }
+    throw error
+  }
+  return listRemoteWorkerDownloads(profile, fetchImpl)
+}
+
 interface WorkerJob {
   id: string
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  error?: { code?: string; message?: string }
   progress?: { phase?: string; step?: number; total_steps?: number; fraction?: number; eta_seconds?: number }
 }
 const active = new Map<string, { profile: RemoteWorkerProfile; remoteId: string; fetchImpl?: typeof fetch }>()
@@ -177,6 +420,7 @@ export interface RunRemoteWorkerJobOptions {
   profile: RemoteWorkerProfile
   jobId: string
   params: JobParams
+  model?: string
   output: string
   fetchImpl?: typeof fetch
   pollMs?: number
@@ -184,7 +428,7 @@ export interface RunRemoteWorkerJobOptions {
   onEvent: (event: Record<string, unknown>) => void
 }
 export async function runRemoteWorkerJob(options: RunRemoteWorkerJobOptions): Promise<number> {
-  const { profile, jobId, params, output, fetchImpl, onEvent } = options
+  const { profile, jobId, params, model, output, fetchImpl, onEvent } = options
   const deadline = Date.now() + (options.deadlineMs ?? 30 * 60_000)
   if (params.initImage || params.mask || params.control || params.references || params.visionReferences || params.sampling?.hires)
     throw codedError('E_WORKER_UNSUPPORTED', '远端暂不支持此任务的图片输入或二次采样，请使用文生图')
@@ -194,6 +438,7 @@ export async function runRemoteWorkerJob(options: RunRemoteWorkerJobOptions): Pr
     (params.adapters ?? []).map((item) => ({ id: item.path, strength: item.strength })),
     fetchImpl,
   )
+  const selectedModel = model && isWorkerModelId(model) ? model : undefined
   const remote = await requestWorkerDaemon<WorkerJob>(profile, '/v1/jobs', {
     method: 'POST',
     fetchImpl,
@@ -207,7 +452,7 @@ export async function runRemoteWorkerJob(options: RunRemoteWorkerJobOptions): Pr
       cfg: params.cfg,
       seed: params.seed,
       ...(params.sampling ?? {}),
-      profile: profile.workflow ?? 'default',
+      ...(selectedModel ? { model: selectedModel } : { profile: profile.workflow ?? 'default' }),
       loras: loras.map(({ path, strength }) => ({ id: path, strength })),
     },
   })
@@ -238,7 +483,12 @@ export async function runRemoteWorkerJob(options: RunRemoteWorkerJobOptions): Pr
       }
       if (job.status === 'failed') {
         terminal = true
-        onEvent({ type: 'error', code: 'E_WORKER_JOB', message: '远端生成失败，请检查远端服务' })
+        const detail = typeof job.error?.message === 'string' && job.error.message.trim() ? job.error.message.trim().slice(0, 400) : ''
+        onEvent({
+          type: 'error',
+          code: 'E_WORKER_JOB',
+          message: detail ? `远端生成失败：${detail}` : '远端生成失败，请检查远端服务',
+        })
         return 1
       }
       if (job.status === 'cancelled') {

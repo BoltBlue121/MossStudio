@@ -6,7 +6,7 @@ import {
   workerHostProviderId,
   workerHostsOn,
 } from './services/workerHostManager'
-import { listRemoteWorkerLoras, changeRemoteWorkerLora } from './services/remoteWorker'
+import { listRemoteWorkerLoras, changeRemoteWorkerLora, listRemoteWorkerModels } from './services/remoteWorker'
 import { mergeLoraMeta } from './services/loraProfiles'
 import { resolveAdapterFile } from './services/models'
 import type { CapabilityId } from '@shared/capabilities'
@@ -421,6 +421,10 @@ export function registerIpc(): void {
     const result = await changeRemoteWorkerLora(await workerProfileFor({ hostId, providerId }), id, action)
     invalidateCatalog()
     return result
+  })
+  handle(Ipc.remoteWorkerModels, schemas.remoteWorkerModels, async ({ hostId, providerId, rescan }) => {
+    const profile = await workerProfileFor({ hostId, providerId })
+    return listRemoteWorkerModels(profile, Boolean(rescan))
   })
   handle(Ipc.loraProfilesList, schemas.loraProfilesList, () => listLoraProfiles())
   handle(Ipc.loraProfilesSave, schemas.loraProfilesSave, async (input) => {

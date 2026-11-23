@@ -260,6 +260,12 @@ function defaultHandlers(): Map<string, Handler> {
     if (item) item.registered = action === 'register'
     return { id, registered: action === 'register' }
   })
+  h.set(Ipc.remoteWorkerModels, (_, { state }) => ({
+    root: '/srv/worker/models',
+    defaultModelId: state.agents.workerModels[0]?.id ?? null,
+    models: state.agents.workerModels,
+    components: [],
+  }))
 
   // 外部 Agent: every channel answers E_FEATURE_OFF while the switch is off, as main does.
   const external =

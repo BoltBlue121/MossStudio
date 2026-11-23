@@ -44,8 +44,9 @@ import { GbcPanel } from './GbcPanel'
 import { sizeLike, withParsedRegions } from './pictureRegions'
 import type { GbcPicture } from '@shared/gbc'
 import { deriveReadiness, resolveBundle, type Blocker } from './readiness'
-import { isWorkerDaemonHost, workerAdapterEntries, workerAdapterFor, workerBundleChoice } from './remoteWorkerLoras'
+import { isWorkerDaemonHost, resolveWorkerBundle, workerAdapterEntries, workerAdapterFor, workerModelBundles } from './remoteWorkerLoras'
 import { useWorkerLoras } from './useWorkerLoras'
+import { useWorkerModels } from './useWorkerModels'
 import { usePreparation } from '../../lib/usePreparation'
 import { useBoardAssets } from './useBoardAssets'
 import { useEngineFeatures } from './useEngineFeatures'
@@ -210,11 +211,14 @@ export function StudioPage(): React.JSX.Element {
     writeStorage(HOST_KEY, next || null)
   }, [])
   const remoteHost = remoteEnabled ? (hosts.find((host) => host.id === remoteHostId) ?? null) : null
-  // A Worker daemon picked as 运行位置 runs like an SSH host, with the model and LoRA it has itself.
+  // A Worker daemon picked as 运行位置 reports its own detected models and registered LoRAs.
   const workerHost = isWorkerDaemonHost(remoteHost) ? remoteHost : null
+  const workerModels = useWorkerModels(workerHost?.id ?? null)
   const workerLoras = useWorkerLoras(workerHost?.id ?? null)
   const workerAdapters = useMemo(() => (workerLoras.items ? workerAdapterEntries(workerLoras.items) : null), [workerLoras.items])
-  const bundle = workerHost ? workerBundleChoice(workerHost, catalog) : resolveBundle(catalog, selected?.modelBundleId, preferredBundleId)
+  const bundle = workerHost
+    ? resolveWorkerBundle(workerHost, workerModels.inventory, selected?.modelBundleId, preferredBundleId, catalog)
+    : resolveBundle(catalog, selected?.modelBundleId, preferredBundleId)
   // Board: wires, imported pictures and masks.
   const boardFeatures = useEngineFeatures(
     selected ? { deviceUuid: selected.deviceUuid, hostId: remoteHost?.id } : { hostId: remoteHost?.id },
@@ -294,6 +298,7 @@ export function StudioPage(): React.JSX.Element {
     catalog,
     preferredBundleId,
     remoteHost,
+    workerModels: workerHost ? workerModels.inventory : null,
     workerAdapters,
     controlAdapters,
     controlAdaptersLoaded,
@@ -1068,6 +1073,17 @@ export function StudioPage(): React.JSX.Element {
           regionCount={selected?.layers.length ?? 0}
           catalog={catalog}
           bundle={bundle}
+          workerModels={
+            workerHost
+              ? {
+                  models: workerModels.inventory?.models ?? [],
+                  unsupported: workerModels.inventory?.unsupported,
+                  loading: workerModels.loading,
+                  error: workerModels.error,
+                  reload: workerModels.reload,
+                }
+              : null
+          }
           workerAdapters={workerHost ? workerAdapters : undefined}
           settings={settings}
           gpuInventory={gpuInventory}
@@ -1083,9 +1099,11 @@ export function StudioPage(): React.JSX.Element {
           full={selectedFull}
           onChange={changeSelected}
           onPickBundle={(id) => {
-            // A few-step model (Turbo) brings its own steps and CFG.
+            // A few-step model (Turbo / Heal) brings its own steps and CFG.
             const from = bundle.bundle
-            const to = catalog?.bundles.find((item) => item.id === id)
+            const to = workerHost
+              ? workerModelBundles(workerModels.inventory?.models ?? []).find((item) => item.id === id)
+              : catalog?.bundles.find((item) => item.id === id)
             changeSelected((canvas) => ({ ...canvas, ...samplingForBundle(canvas, from, to), modelBundleId: id || undefined }))
             setPreferredBundleId(id)
             writeStorage(BUNDLE_KEY, id || null)

@@ -9,6 +9,8 @@ import { atomicWriteJson, getSettings, readJson } from './settings'
 import { getTrainingHost, listTrainingHosts, updateTrainingHostModelPath } from './trainingHosts'
 import { posixQuote, sshExec } from './ssh'
 import { resolveFiles, safePath, selectFiles, type ModelFile } from './modelFiles'
+import { controlRemoteWorkerDownload, listRemoteWorkerDownloads, startRemoteWorkerDownload } from './remoteWorker'
+import { connectWorkerHost, isWorkerDaemonHost, listActiveWorkerProfiles } from './workerHostManager'
 import rawWorkerSource from './remoteModelWorker.sh?raw'
 
 const workerSource = rawWorkerSource.replace(/\r\n/g, '\n')
@@ -407,15 +409,18 @@ function updateTasks(host: TrainingHost, tasks: DownloadTask[]): DownloadTask[] 
   atomicWriteJson(cacheFile(), cache)
   for (const task of incoming) {
     if (JSON.stringify(task) === JSON.stringify(before.get(task.id))) continue
-    if (
-      task.state === 'done' &&
-      before.get(task.id)?.state !== 'done' &&
-      task.targetId === 'default-sft' &&
-      task.remotePath &&
-      !incoming.some((other) => other.targetId === 'default-sft' && other.state === 'done' && other.updatedAt > task.updatedAt)
-    ) {
-      updateTrainingHostModelPath(host.id, task.remotePath)
-      emit(Events.hostsChanged, { id: host.id })
+    if (task.state === 'done' && before.get(task.id)?.state !== 'done') {
+      if (isWorkerDaemonHost(host)) {
+        emit(Events.modelsChanged, { reason: 'remote-download', hostId: host.id })
+        emit(Events.hostsChanged, { id: host.id })
+      } else if (
+        task.targetId === 'default-sft' &&
+        task.remotePath &&
+        !incoming.some((other) => other.targetId === 'default-sft' && other.state === 'done' && other.updatedAt > task.updatedAt)
+      ) {
+        updateTrainingHostModelPath(host.id, task.remotePath)
+        emit(Events.hostsChanged, { id: host.id })
+      }
     }
     emit(Events.download, task)
   }
@@ -429,6 +434,11 @@ export async function refreshRemoteDownloads(hostId: string): Promise<DownloadTa
   if (!host || host.kind !== 'ssh') throw new Error('远端设备不存在')
   const pending = serial(host, async () => {
     try {
+      if (isWorkerDaemonHost(host)) {
+        const profile = await connectWorkerHost(host)
+        const tasks = await listRemoteWorkerDownloads(profile)
+        return updateTasks(host, tasks)
+      }
       let entries = await worker(host)
       const activeLegacy = entries.filter(
         (entry) => entry.legacy && entry.desired === 'running' && ['queued', 'running', 'verifying'].includes(entry.task.state),
@@ -463,9 +473,17 @@ export function startRemoteDownloadMonitor(): void {
   monitorStarted = true
   listRemoteDownloads()
   const poll = async (): Promise<void> => {
+    const activeWorkerIds = new Set(listActiveWorkerProfiles().map((profile) => profile.hostId))
     await Promise.allSettled(
       listTrainingHosts(getSettings())
-        .filter((host) => host.kind === 'ssh')
+        .filter((host) => {
+          if (host.kind !== 'ssh') return false
+          if (!isWorkerDaemonHost(host)) return true
+          return (
+            activeWorkerIds.has(host.id) ||
+            Boolean(cache?.some((task) => task.hostId === host.id && ['queued', 'running', 'verifying'].includes(task.state)))
+          )
+        })
         .map((host) => refreshRemoteDownloads(host.id)),
     )
     setTimeout(() => {
@@ -481,6 +499,25 @@ export async function startRemoteDownload(
   kind: DownloadTask['kind'] = 'model',
 ): Promise<DownloadTask> {
   return serial(host, async () => {
+    if (isWorkerDaemonHost(host)) {
+      const profile = await connectWorkerHost(host)
+      const network = networkFor(host)
+      const created = await startRemoteWorkerDownload(profile, {
+        targetId: model.id,
+        label: model.name,
+        kind,
+        repo: model.repo,
+        revision: model.revision || 'main',
+        files: model.files ?? [],
+        sizeBytes: model.sizeBytes ?? 0,
+        endpoint: network.endpoint,
+        token: network.token,
+      })
+      const tasks = await listRemoteWorkerDownloads(profile).catch(() => [created])
+      const updated = updateTasks(host, tasks)
+      startRemoteDownloadMonitor()
+      return updated.find((item) => item.id === created.id) ?? created
+    }
     const task: DownloadTask = {
       id: `remote:${host.id}:${model.id}:${digest(`${host.modelsRoot || '~/.mossstudio/models'}:${model.repo}@${model.revision || 'main'}`).slice(0, 12)}`,
       hostId: host.id,
@@ -540,6 +577,12 @@ export async function controlRemoteDownload(
   const host = getTrainingHost(getSettings(), hostId)
   if (!host || host.kind !== 'ssh') throw new Error('远端设备不存在')
   return serial(host, async () => {
+    if (isWorkerDaemonHost(host)) {
+      const profile = await connectWorkerHost(host)
+      const tasks = await controlRemoteWorkerDownload(profile, taskId, operation)
+      startRemoteDownloadMonitor()
+      return updateTasks(host, tasks)
+    }
     const entry = (await worker(host)).find((item) => item.task.id === taskId)
     if (!entry) throw new Error('远端下载任务不存在')
     const desired = { pause: 'paused', resume: 'running', cancel: 'canceled' }[operation]
