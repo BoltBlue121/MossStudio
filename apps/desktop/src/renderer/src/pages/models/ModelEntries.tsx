@@ -316,9 +316,17 @@ export function DeleteModelDialog({
   onClose: () => void
 }): React.JSX.Element {
   const toast = useToast()
-  const full = bundle
+  const workerMeta =
+    bundle && location.workerDaemon
+      ? location.inventory?.workerModels?.find((item) => item.id === bundle.id || item.catalogBundleId === bundle.id)
+      : undefined
+  const computed = bundle
     ? bundleDeletePlan(bundle, bundles, models, location.isModelInstalled, location.tasks)
     : { ids: [], bytes: 0, kept: [] }
+  const full =
+    bundle && workerMeta?.deletable && computed.ids.length === 0
+      ? { ids: [workerMeta.id], bytes: workerMeta.sizeBytes ?? 0, kept: [] }
+      : computed
   const providerOf = (id: string) => models.find((model) => model.id === id)?.provider
   // A combination goes with the downloads only it needs; the person's own files stay in the library.
   const custom = Boolean(bundle?.custom)

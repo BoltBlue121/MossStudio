@@ -23,6 +23,7 @@ export function useWorkerModels(hostId: string | null): WorkerModelsState {
   const [error, setError] = useState<string | null>(null)
   const [trigger, setTrigger] = useState<{ round: number; rescan: boolean }>({ round: 0, rescan: false })
   const seq = useRef(0)
+  const lastHost = useRef<string | null>(null)
 
   const reload = useCallback((rescan = false) => {
     setTrigger((prev) => ({ round: prev.round + 1, rescan }))
@@ -30,12 +31,15 @@ export function useWorkerModels(hostId: string | null): WorkerModelsState {
 
   useEffect(() => {
     const request = ++seq.current
+    const hostChanged = lastHost.current !== hostId
+    lastHost.current = hostId
     setError(null)
     if (!hostId) {
       setInventory(null)
       setLoading(false)
       return
     }
+    if (hostChanged) setInventory(null)
     setLoading(true)
     call<RemoteWorkerModelInventory>(Ipc.remoteWorkerModels, { hostId, rescan: trigger.rescan })
       .then((value) => {

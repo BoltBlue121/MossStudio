@@ -232,6 +232,7 @@ function CanvasParams({
     : sizePreset === 'custom'
       ? `${canvas.width} × ${canvas.height}`
       : sizePreset
+  const activeAdapters = adapters.filter((adapter) => adapter.strength > 0)
   // Model, size and LoRA as separate pieces; the spaces keep the plain text readable ("MOSS-Image SFT INT8 1:1").
   const hasRealWorkerModel = Boolean(workerHost && bundle.bundle && !bundle.bundle.id.startsWith('remote-worker:'))
   const legacyWorkerDaemon = Boolean(workerHost && workerModels?.unsupported)
@@ -240,7 +241,7 @@ function CanvasParams({
       {hasRealWorkerModel && bundle.bundle ? (
         <>
           <ModelName item={bundle.bundle} />
-          <Pill className="shrink-0">{workerHost!.name}</Pill>
+          <span className="shrink-0 text-ink-2">· {workerHost!.name}</span>
         </>
       ) : workerHost ? (
         <span className="truncate">远端主机 · {workerHost.name}</span>
@@ -250,10 +251,10 @@ function CanvasParams({
         <span>没有模型</span>
       )}{' '}
       <span className="shrink-0 text-ink-2">{sizeLabel}</span>
-      {adapters.length ? (
+      {activeAdapters.length ? (
         <>
           {' '}
-          <span className="shrink-0 text-ink-2">LoRA {adapters.length}</span>
+          <span className="shrink-0 text-ink-2">LoRA {activeAdapters.length}</span>
         </>
       ) : null}
     </>

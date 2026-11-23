@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { RemoteWorkerModelInventory } from '@shared/remoteWorker'
 import type { ModelBundle, ModelEntry } from '@shared/types'
 import { bundleBlocker } from '../../../src/renderer/src/pages/models/logic'
+import { applyLoraAutoTriggers } from '../../../src/renderer/src/pages/studio/prompt'
 import { missingWorkerAdapters, resolveWorkerBundle, workerAdapterEntries } from '../../../src/renderer/src/pages/studio/remoteWorkerLoras'
 
 const HOST = { id: 'ssh-gpu-1', name: 'GPU Worker', workerProviderId: 'worker-gpu-1' }
@@ -47,6 +48,21 @@ describe('Worker real model resolution and strength=0 LoRAs', () => {
       entries,
     )
     expect(missing.map((m) => m.id)).toEqual(['unregistered_active.safetensors'])
+  })
+
+  it('skips auto-inserting trigger words for strength=0 LoRAs', () => {
+    const prompt = applyLoraAutoTriggers(
+      'a portrait',
+      [
+        { id: 'disabled.safetensors', strength: 0 },
+        { id: 'active.safetensors', strength: 0.8 },
+      ],
+      {
+        'disabled.safetensors': { triggers: ['@disabled_style'], autoInsert: 'prefix' },
+        'active.safetensors': { triggers: ['@active_style'], autoInsert: 'prefix' },
+      },
+    )
+    expect(prompt).toBe('@active_style, a portrait')
   })
 
   it('resolves real models from worker inventory and falls back cleanly for legacy daemons', () => {
