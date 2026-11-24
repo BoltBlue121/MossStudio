@@ -496,7 +496,10 @@ export function IconButton({ label, children, className, ...rest }: ComponentPro
   )
 }
 
-/** Two to five mutually exclusive choices. The chosen one is raised. */
+/**
+ * Mutually exclusive choices; the chosen one is raised. Up to five sit in one row;
+ * more (尺寸 has eight) wrap into a grid through `className`.
+ */
 export function Segmented<T extends string>({
   value,
   options,

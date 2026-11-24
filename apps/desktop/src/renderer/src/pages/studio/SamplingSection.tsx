@@ -10,6 +10,7 @@ import {
   enumOptions,
   enumValues,
   hiresChoice,
+  hiresScaleFits,
   hiresSize,
   withHiresPatch,
   withHiresScale,
@@ -113,8 +114,8 @@ export function SamplingSection({
                   if (value !== 'off') onChange((current) => withHiresScale(current, Number(value)))
                 }}
                 options={[
-                  { value: '1.5', label: '×1.5', hint: sizeHint(canvas, 1.5) },
-                  { value: '2', label: '×2', hint: sizeHint(canvas, 2) },
+                  { value: '1.5', label: '×1.5', hint: sizeHint(canvas, 1.5), disabled: !hiresScaleFits(canvas, 1.5) },
+                  { value: '2', label: '×2', hint: sizeHint(canvas, 2), disabled: !hiresScaleFits(canvas, 2) },
                   { value: 'custom', label: '自定义' },
                 ]}
               />
