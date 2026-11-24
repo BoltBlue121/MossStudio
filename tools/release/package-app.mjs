@@ -82,9 +82,6 @@ function stageApp(tempDir, { os, arch }) {
   mkdirSync(workspaceDesktop, { recursive: true })
   for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']) copyFileSync(join(REPO_ROOT, name), join(workspace, name))
   copyFileSync(join(DESKTOP_DIR, 'package.json'), join(workspaceDesktop, 'package.json'))
-  // pnpm selects Sharp's optional native libraries separately from dugite's installer.
-  const root = readJson(join(workspace, 'package.json'))
-  writeFileSync(join(workspace, 'package.json'), JSON.stringify({ ...root, pnpm: { ...root.pnpm, supportedArchitectures: { os: [os], cpu: [arch] } } }))
   const [command, args] = pnpmCommand(['--filter', '@clover/desktop', 'install', '--prod', '--frozen-lockfile', '--config.node-linker=hoisted'])
   // npm_config_arch makes dugite fetch git for the target arch (darwin-x64 built on arm64).
   run(command, args, { cwd: workspace, env: { ...process.env, npm_config_arch: arch } })
@@ -172,7 +169,7 @@ async function packageApp({ platform, versions, out }) {
         appCopyright: `Copyright © ${new Date().getFullYear()} CloverIris`,
         win32metadata: { CompanyName: 'CloverIris', ProductName: 'MossStudio', FileDescription: 'MossStudio', InternalName: 'MossStudio', OriginalFilename: 'MossStudio.exe' },
         icon,
-        asar: { unpack: '**/{.**,**}/**/*.node', unpackDir: 'node_modules/{dugite/git,@img}' },
+        asar: { unpack: '**/{.**,**}/**/*.node', unpackDir: 'node_modules/dugite/git' },
         prune: false,
         derefSymlinks: true,
         overwrite: true,

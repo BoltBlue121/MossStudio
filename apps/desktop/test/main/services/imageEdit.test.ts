@@ -7,8 +7,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import * as https from 'node:https'
 import * as dns from 'node:dns/promises'
-import { safeStorage } from 'electron'
-import sharp from 'sharp'
+import { nativeImage, safeStorage } from 'electron'
 import { useTempDataRoot } from '@test/helpers/tempDir'
 import { paths } from '@main/lib/paths'
 import { saveProject, projectAssetsDir } from '@main/services/projects'
@@ -218,6 +217,8 @@ describe('external redraw boundaries', () => {
   })
   it.each(['jpeg', 'webp'] as const)('decodes a real %s response and stores an engine-readable asset', async (format) => {
     const { input } = fixture()
+    // Electron is faked here; the real nativeImage decodes this WebP to the 2 × 3 PNG.
+    vi.spyOn(nativeImage, 'createFromBuffer').mockReturnValue({ isEmpty: () => false, toPNG: () => bytes } as never)
     peer({ data: [{ b64_json: samples[format] }] })
     const result = await edit.runImageEdit(input)
     expect(result).toMatchObject({ width: 2, height: 3 })
@@ -225,17 +226,11 @@ describe('external redraw boundaries', () => {
     if (format === 'webp') expect(saved.subarray(0, 8)).toEqual(bytes.subarray(0, 8))
     else expect(saved).toEqual(Buffer.from(samples.jpeg, 'base64'))
   })
-  it('imports an EXIF-rotated WebP as a PNG with the displayed dimensions', async () => {
+  it('does not import a WebP reply Electron cannot decode', async () => {
     const { input } = fixture()
-    const webp = await sharp({ create: { width: 18, height: 12, channels: 3, background: 'teal' } })
-      .withMetadata({ orientation: 6 })
-      .webp()
-      .toBuffer()
-    expect(await sharp(webp).metadata()).toMatchObject({ format: 'webp', width: 18, height: 12, orientation: 6 })
-    peer({ data: [{ b64_json: webp.toString('base64') }] })
-    const result = await edit.runImageEdit(input)
-    expect(result).toMatchObject({ width: 12, height: 18 })
-    expect(await sharp(result.path).metadata()).toMatchObject({ format: 'png', width: 12, height: 18 })
+    peer({ data: [{ b64_json: samples.webp }] })
+    await expect(edit.runImageEdit(input)).rejects.toThrow()
+    expect(readdirSync(projectAssetsDir(input.projectId))).toEqual(['source.png'])
   })
   it.each(['png', 'jpeg', 'webp'] as const)('does not publish a %s with a valid size but missing pixels', async (format) => {
     const { input } = fixture()
@@ -266,10 +261,8 @@ describe('external redraw boundaries', () => {
     header.writeUIntLE(width - 1, 24, 3)
     header.writeUIntLE(height - 1, 27, 3)
     peer({ data: [{ b64_json: header.toString('base64') }] })
-    const { queryChannel } = await import('@main/services/imageEditProtocols')
-    const decode = vi.fn(() => Promise.resolve(bytes))
-    const c = edit.listImageChannels()[0]!
-    await expect(queryChannel(c, key, () => {}, { bytes, prompt: input.prompt }, decode)).rejects.toThrow()
+    const decode = vi.spyOn(nativeImage, 'createFromBuffer')
+    await expect(edit.runImageEdit(input)).rejects.toThrow()
     expect(decode).not.toHaveBeenCalled()
     expect(readdirSync(projectAssetsDir(input.projectId))).toEqual(['source.png'])
   })

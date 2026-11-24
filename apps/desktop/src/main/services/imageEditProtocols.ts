@@ -18,25 +18,16 @@ function header(bytes: Buffer) {
     throw new Error('请选择大小和尺寸合适的 PNG、JPEG 或 WebP 图片')
   return h
 }
-async function decodePicture(bytes: Buffer, h: ImageHeader) {
-  // Some pixel decoders accept a missing end marker after the last scanline.
+// Decoders accept a picture cut off after its last scanline, so a truncated reply would import as a damaged picture.
+function complete(bytes: Buffer, h: ImageHeader) {
   if (h.format === 'png' && bytes.subarray(-12).toString('hex') !== '0000000049454e44ae426082') throw new Error('PNG 不完整')
   if (h.format === 'jpeg' && bytes.readUInt16BE(bytes.length - 2) !== 0xffd9) throw new Error('JPEG 不完整')
   if (h.format === 'webp' && bytes.readUInt32LE(4) + 8 !== bytes.length) throw new Error('WebP 不完整')
-  const { default: sharp } = await import('sharp')
-  const image = sharp(bytes, { limitInputPixels: PIXELS, failOn: 'warning' }).autoOrient()
-  const metadata = await image.metadata()
-  const { format, pages = 1, autoOrient } = metadata
-  // Unlike JPEG, readImageHeader reports WebP dimensions before EXIF rotation.
-  const { width, height } = h.format === 'webp' ? metadata : autoOrient
-  if (format !== h.format || pages !== 1 || width !== h.width || height !== h.height) throw new Error('图片元数据不符')
-  const { info, data } = await (h.format === 'webp' ? image.png() : image.raw()).toBuffer({ resolveWithObject: true })
-  if (info.width !== autoOrient.width || info.height !== autoOrient.height) throw new Error('图片尺寸不符')
-  return h.format === 'webp' ? data : bytes
+  return bytes
 }
 type Endpoint = Pick<ImageEditChannel, 'protocol' | 'baseUrl' | 'model'>
 type Redraw = { bytes: Buffer; prompt: string; signal?: AbortSignal }
-export async function queryChannel(c: Endpoint, key: string, guard: () => void, input?: Redraw, decode = decodePicture) {
+export async function queryChannel(c: Endpoint, key: string, guard: () => void, input?: Redraw) {
   const gemini = c.protocol === 'gemini-native'
   const headers: Record<string, string> = gemini ? { 'x-goog-api-key': key } : { Authorization: `Bearer ${key}` }
   const base = c.baseUrl.replace(/\/+$/, '') + '/'
@@ -86,5 +77,5 @@ export async function queryChannel(c: Endpoint, key: string, guard: () => void, 
   const h = header(out)
   if (out.toString('base64') !== b64 || (declared !== undefined && declared !== `image/${h.format}`)) throw new Error('图片编码或类型无效')
   input.signal?.throwIfAborted()
-  return decode(out, h)
+  return complete(out, h)
 }
