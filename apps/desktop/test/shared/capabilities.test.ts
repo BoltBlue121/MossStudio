@@ -273,6 +273,28 @@ describe('shared/capabilities protocol and registry', () => {
     expect(picked.skill.fragmentIds).not.toContain('skill.moss.standard.guide')
   })
 
+  it('names only arguments the actions really take where a guide spells out a call', () => {
+    const checked: string[] = []
+    for (const guide of [MOSS_PROMPTCRAFT_SKILL_MD, MOSS_LAYOUT_DESIGN_SKILL_MD]) {
+      // An Agent must read plain Markdown code spans, not the escapes of the source.
+      expect(guide).not.toContain('\\`')
+      // A call is written as `action.id` (`arg`, `arg: value`, …).
+      for (const [, actionId, args] of guide.matchAll(/`((?:studio|models|remote|system)\.[\w.]+)` \(([^)]*)\)/g)) {
+        const action = BUILTIN_CAPABILITY_REGISTRY.getAction(actionId!)
+        expect(action, actionId).toBeDefined()
+        const properties = Object.keys((action!.descriptor.input as JsonSchemaNode).properties ?? {})
+        for (const [, token] of args!.matchAll(/`([A-Za-z_][\w.]*)/g)) {
+          if (BUILTIN_CAPABILITY_REGISTRY.getAction(token!)) continue
+          expect(properties, `${actionId} ${token}`).toContain(token)
+          checked.push(`${actionId} ${token}`)
+        }
+      }
+    }
+    expect(checked).toEqual(
+      expect.arrayContaining(['studio.regions.add bbox', 'studio.regions.add_text bbox', 'studio.regions.add_text text']),
+    )
+  })
+
   it('puts each creative guide into the full guide once, whether or not its pack is on', () => {
     const count = (text: string, needle: string): number => text.split(needle).length - 1
     const registry = createBuiltinCapabilityRegistry()

@@ -130,7 +130,7 @@ export function toolProfileLine(state: ToolProfileState): string {
   const skillGuidance: string[] = ['Active MOSS Creative Skills:']
   if (standard) {
     skillGuidance.push(
-      '- [skill.moss.standard · 描述写法指南] Write prompts macro to micro: (1) medium/style/camera framing -> (2) environment & global lighting -> (3) subject pose/gaze/orientation -> (4) outer-to-inner attire & materials -> (5) props & 2-4 color palette. Describe visible optical/painterly traits rather than bare camera or engine names; use selective focus on face/eyes/hair and `In sharp contrast, NO ...` anchors when separating multiple subjects in a pure Caption.' +
+      '- [skill.moss.standard · 描述写法指南] Write prompts macro to micro: (1) medium/style/camera framing -> (2) environment & global lighting -> (3) subject pose/gaze/orientation -> (4) outer-to-inner attire & materials -> (5) props & 2-4 color palette. Describe visible optical/painterly traits rather than bare camera or engine names, and keep the attributes of each subject together when a pure Caption has several subjects.' +
         (!layout
           ? ' Pure Caption mode is selected: write cohesive prose via studio__board__set_prompt without region boxes unless asked.'
           : ''),
@@ -138,7 +138,7 @@ export function toolProfileLine(state: ToolProfileState): string {
   }
   if (layout) {
     skillGuidance.push(
-      '- [skill.moss.layout · 分区构图指南] Spatial region mode is enabled: write global style/lighting (+ character sheet for multi-panel) in studio__board__set_prompt and place regions via studio__regions__add / studio__regions__add_text (normalized 0..1 {x,y,w,h}; never hand-write raw JSON or abs_centralized/yxyx). Use `object` (`Extreme close-up showing ONLY ...`) for inset close-ups to avoid extra heads; in text/speech bubbles put lettering/bubble geometry + pointer direction in `caption` and exact characters in `text`, then verify with studio__board__diagnose.',
+      '- [skill.moss.layout · 分区构图指南] Spatial region mode is enabled: write global style/lighting (+ character sheet for multi-panel) in studio__board__set_prompt and place regions via studio__regions__add / studio__regions__add_text (bbox: normalized 0..1 {x,y,w,h}; never hand-write raw JSON or abs_centralized/yxyx). Use `object` (`Extreme close-up showing ONLY ...`) for inset close-ups; in text/speech bubbles put lettering/bubble geometry + pointer direction in `caption` and exact characters in `text`, then verify with studio__board__diagnose.',
     )
   }
   return `${toolsLine}\n${skillGuidance.join('\n')}`
