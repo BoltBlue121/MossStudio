@@ -158,14 +158,14 @@ describe('main/capabilities dispatcher and audit trail', () => {
     expect(change).toHaveBeenCalledOnce()
   })
 
-  it('binds a main-process handler for every target=main action across all 15 built-in packs', () => {
+  it('binds a main-process handler for every target=main action across all 17 built-in packs', () => {
     const registry = createBuiltinCapabilityRegistry()
     const handlers = createBuiltinMainHandlers()
     const mainActions = registry
       .listActions({ enabledFlags: { gbcEnabled: true, trainingEnabled: true } })
       .filter((action) => action.target === 'main')
 
-    expect(ALL_CAPABILITY_PACKS.length).toBe(15)
+    expect(ALL_CAPABILITY_PACKS.length).toBe(17)
     expect(mainActions.length).toBeGreaterThanOrEqual(50)
     for (const action of mainActions) {
       expect(typeof handlers[action.id], `missing main handler for ${action.id}`).toBe('function')
