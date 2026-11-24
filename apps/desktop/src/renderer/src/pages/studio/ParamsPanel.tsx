@@ -561,7 +561,7 @@ function CanvasParams({
                   />
                 </section>
 
-                {inputs ? <SamplingSection canvas={canvas} features={inputs.features} onChange={onChange} /> : null}
+                {inputs ? <SamplingSection canvas={canvas} features={inputs.features} worker={inputs.worker} onChange={onChange} /> : null}
 
                 {remoteHost ? (
                   remoteHost.devices.length ? (

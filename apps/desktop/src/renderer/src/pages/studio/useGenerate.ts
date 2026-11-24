@@ -225,21 +225,22 @@ export function useGenerate(options: {
   const send = useCallback(
     async (run: PreparedRun): Promise<RunResult> => {
       const { project, controlAdapters = [], controlAdaptersLoaded, notify } = latest.current
-      const { taskId, source, remoteHost } = run
+      const { taskId, source, remoteHost, canvases } = run
       const present = (): boolean => project.canvasesRef.current.some((canvas) => canvas.id === taskId)
       // Called off while it waited its turn: it never goes out.
       if (!present()) return { queued: false, error: '已取消' }
       const drop = (): void => project.setRunCanvases((previous) => previous.filter((canvas) => canvas.id !== taskId))
       try {
         // Pictures and sampling choices are checked against the engine this run goes to.
+        const worker = isWorkerRun(run.bundle, remoteHost)
         const features =
-          source.inputs || source.sampling
+          (source.inputs || source.sampling) && (!worker || isWorkerDaemonHost(remoteHost))
             ? await call<EngineFeatures | null>(Ipc.engineFeatures, {
                 deviceUuid: remoteHost ? undefined : source.deviceUuid || undefined,
                 hostId: remoteHost?.id,
               }).catch(() => null)
             : null
-        const resolved = resolveJobInputs(run.generating, { canvases: run.canvases, features, controlAdapters, controlAdaptersLoaded })
+        const resolved = resolveJobInputs(run.generating, { canvases, features, worker, controlAdapters, controlAdaptersLoaded })
         if (resolved.blockers.length) {
           // Refused before it went out: nothing to keep on the board.
           drop()

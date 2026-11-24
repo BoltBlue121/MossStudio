@@ -100,7 +100,7 @@ export function saveTrainingHost(input: SaveTrainingHostInput): TrainingHost {
     remoteBackend: input.remoteBackend ?? existing?.remoteBackend,
     workerDiscoveryPath: (input.workerDiscoveryPath ?? existing?.workerDiscoveryPath)?.trim() || undefined,
     workerProviderId: (input.workerProviderId ?? existing?.workerProviderId)?.trim() || undefined,
-    workerWorkflow: (input.workerWorkflow ?? existing?.workerWorkflow)?.trim() || 'default',
+    workerWorkflow: 'workerWorkflow' in input ? input.workerWorkflow?.trim() || undefined : existing?.workerWorkflow,
     port: input.port ?? 22,
     authMethod,
     identityFile: authMethod === 'identityFile' ? (input.identityFile ?? existing?.identityFile)?.trim() || undefined : undefined,

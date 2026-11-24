@@ -207,6 +207,62 @@ describe('studio/jobInputs resolution', () => {
   })
 })
 
+describe('studio/jobInputs on a Worker host', () => {
+  const worker = (values: Record<string, string[]> = { sampler: ['euler'], scheduler: ['moss'] }) =>
+    context({ worker: true, features: engineFeaturesFixture({ values }) })
+
+  it.each([{ shift: 3 }, { cfgTruncation: 0 }, { stepCache: 'off' }, { hires: { width: 1536, height: 1536 } }])(
+    'blocks a saved non-Worker choice %j, even before the host answers',
+    (choice) => {
+      const card = target({ sampling: { sampler: 'euler', ...choice } })
+      for (const ctx of [worker(), { ...worker(), features: undefined }]) {
+        expect(resolveJobInputs(card, ctx).blockers).toContainEqual({
+          id: 'input-unsupported',
+          message: expect.stringMatching(/远端.*采样器.*调度器/),
+        })
+      }
+    },
+  )
+
+  it.each([{ sampler: 'euler' }, { scheduler: 'moss' }, { sampler: 'euler', scheduler: 'moss' }])(
+    'passes negotiated choices unchanged: %j',
+    (sampling) => {
+      expect(resolveJobInputs(target({ sampling }), worker())).toMatchObject({ blockers: [], params: { sampling } })
+    },
+  )
+
+  it.each([{ sampler: 'heun' }, { scheduler: 'moss' }])(
+    'refuses an unlisted Worker choice %j, including absent or empty lists',
+    (sampling) => {
+      for (const ctx of [worker({ sampler: ['euler'], scheduler: [] }), worker({})])
+        expect(resolveJobInputs(target({ sampling }), ctx).blockers).toMatchObject([{ id: 'input-unsupported' }])
+    },
+  )
+
+  it('refuses picture inputs even without Worker capabilities or when the underlying engine advertises them', () => {
+    const card = target({
+      inputs: {
+        init: { link: { canvasId: 'img' }, strength: 0.5 },
+        control: { adapterId: adapter.id, images: [{ kind: 'depth', link: { canvasId: 'img' }, strength: 1, start: 0, end: 1 }] },
+        references: { links: [{ canvasId: 'img' }] },
+      },
+    })
+    for (const ctx of [worker(), { ...worker(), features: null }]) {
+      expect(resolveJobInputs(card, ctx).blockers.map(({ message }) => message)).toEqual([
+        expect.stringContaining('起始图'),
+        expect.stringContaining('控制图'),
+        expect.stringContaining('参考图'),
+      ])
+    }
+  })
+
+  it('does not guess explicit choices when the Worker cannot be queried, but allows defaults', () => {
+    const ctx = { ...worker(), features: null }
+    expect(resolveJobInputs(target({ sampling: { scheduler: 'moss' } }), ctx).blockers).toMatchObject([{ id: 'input-unsupported' }])
+    expect(resolveJobInputs(target(), ctx)).toMatchObject({ blockers: [], params: {} })
+  })
+})
+
 describe('studio/jobInputs on a CLI engine (兼容模式 / AMD 原生)', () => {
   it('blocks every picture input and sampling choice it cannot do, naming the engine', () => {
     const resolved = resolveJobInputs(

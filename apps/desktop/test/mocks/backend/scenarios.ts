@@ -486,6 +486,7 @@ export function scenario(name: ScenarioName = 'ready', patch: Partial<MockBacken
           host: 'worker.example.test',
           remoteBackend: 'worker-daemon',
           workerDiscoveryPath: '/srv/worker/discovery.json',
+          workerWorkflow: 'explicit-wf',
         }),
       ],
       agents: agentsStateFixture({

@@ -452,7 +452,7 @@ export async function runRemoteWorkerJob(options: RunRemoteWorkerJobOptions): Pr
       cfg: params.cfg,
       seed: params.seed,
       ...(params.sampling ?? {}),
-      ...(selectedModel ? { model: selectedModel } : { profile: profile.workflow ?? 'default' }),
+      ...(selectedModel ? { model: selectedModel } : { profile: profile.workflow?.trim() || undefined }),
       loras: loras.map(({ path, strength }) => ({ id: path, strength })),
     },
   })

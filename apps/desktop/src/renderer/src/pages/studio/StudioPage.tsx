@@ -43,7 +43,7 @@ import type { BoardTool } from './RegionLayer'
 import { GbcPanel } from './GbcPanel'
 import { sizeLike, withParsedRegions } from './pictureRegions'
 import type { GbcPicture } from '@shared/gbc'
-import { deriveReadiness, resolveBundle, type Blocker } from './readiness'
+import { deriveReadiness, isWorkerRun, resolveBundle, type Blocker } from './readiness'
 import { isWorkerDaemonHost, resolveWorkerBundle, workerAdapterEntries, workerAdapterFor, workerModelBundles } from './remoteWorkerLoras'
 import { useWorkerLoras } from './useWorkerLoras'
 import { useWorkerModels } from './useWorkerModels'
@@ -219,10 +219,9 @@ export function StudioPage(): React.JSX.Element {
   const bundle = workerHost
     ? resolveWorkerBundle(workerHost, workerModels.inventory, selected?.modelBundleId, preferredBundleId, catalog)
     : resolveBundle(catalog, selected?.modelBundleId, preferredBundleId)
-  // Board: wires, imported pictures and masks.
-  const boardFeatures = useEngineFeatures(
-    selected ? { deviceUuid: selected.deviceUuid, hostId: remoteHost?.id } : { hostId: remoteHost?.id },
-  )
+  const worker = isWorkerRun(bundle.bundle, remoteHost)
+  // A legacy Worker binding without a selected Worker cannot use this computer's capabilities.
+  const boardFeatures = useEngineFeatures(worker && !workerHost ? null : { deviceUuid: selected?.deviceUuid, hostId: remoteHost?.id })
   const { adapters: controlAdapters, loaded: controlAdaptersLoaded } = useControlAdapters()
   const boardAssets = useBoardAssets({ project, notify: toast.push })
   // Inspector: what the selected canvas's pictures and sampling resolve to.
@@ -231,16 +230,16 @@ export function StudioPage(): React.JSX.Element {
     () => (selected?.kind === 'layout' ? generationCanvas(selected, project.canvases) : null),
     [selected, project.canvases],
   )
+  const { canvases } = project
   const inputBlockers = useMemo(
     () =>
       generating
         ? [
-            ...nodeBlockers(generating, project.canvases),
-            ...resolveJobInputs(generating, { canvases: project.canvases, features: boardFeatures, controlAdapters, controlAdaptersLoaded })
-              .blockers,
+            ...nodeBlockers(generating, canvases),
+            ...resolveJobInputs(generating, { canvases, features: boardFeatures, worker, controlAdapters, controlAdaptersLoaded }).blockers,
           ]
         : [],
-    [generating, project.canvases, boardFeatures, controlAdapters, controlAdaptersLoaded],
+    [generating, canvases, boardFeatures, worker, controlAdapters, controlAdaptersLoaded],
   )
   // The GPUs this canvas may run on: the one it is bound to, else what 设置 allows.
   const gpus = useMemo(
@@ -647,6 +646,7 @@ export function StudioPage(): React.JSX.Element {
   const inputsWiring: InputsWiring = {
     canvases: project.canvases,
     features: boardFeatures,
+    worker,
     controlAdapters,
     onLinkPicture: (role, kind, sourceId) => {
       if (selected) linkInto(selected.id, role, { canvasId: sourceId }, kind)

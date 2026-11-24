@@ -256,6 +256,24 @@ describe('studio/useGenerate on a Worker host', () => {
     expect(sent[0]).toMatchObject({ hostId: 'h1', modelBinding: { bundleId: 'remote-worker:gpu-a' } })
   })
 
+  it('never negotiates a legacy Worker binding against this computer’s sampler list', async () => {
+    const id = 'remote-worker:render'
+    const catalog = nothingHere()
+    catalog.models.push({ ...catalog.models[0]!, id, installed: true })
+    catalog.bundles.push({ ...catalog.bundles[0]!, id, support: id, components: { dit: id, textEncoder: id, vae: id } })
+    const { api, sent, backend } = mount([scene({ modelBundleId: id, sampling: { sampler: 'euler' } })], { catalog })
+    expect(await api().generate('scene')).toMatchObject({ queued: false, error: expect.stringMatching(/远端.*采样器/) })
+    expect(backend.callsTo(Ipc.engineFeatures)).toEqual([])
+    expect(sent).toEqual([])
+  })
+
+  it('refuses old sampling before posting a Worker run even if the capability probe fails', async () => {
+    const { api, sent, backend } = mount([scene({ sampling: { shift: 4 } })], { remoteHost: worker() })
+    backend.handle(Ipc.engineFeatures, () => null)
+    expect(await api().generate('scene')).toMatchObject({ queued: false, error: expect.stringMatching(/远端.*采样器.*调度器/) })
+    expect(sent).toEqual([])
+  })
+
   it('refuses a LoRA the Worker has not registered, naming the host', async () => {
     const start = scene({ adapters: [{ id: 'old.safetensors', strength: 1 }] })
     const { api, sent } = mount([start], { catalog: nothingHere(), remoteHost: worker(), workerAdapters: entries })

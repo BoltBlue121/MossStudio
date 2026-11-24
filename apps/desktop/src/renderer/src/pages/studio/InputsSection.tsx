@@ -29,6 +29,7 @@ export interface InputsWiring {
   canvases: readonly ProjectCanvas[]
   /** Engine features of the canvas's target; undefined while reading, null when no engine is usable. */
   features: EngineFeatures | null | undefined
+  worker: boolean
   controlAdapters: readonly ControlAdapterEntry[]
   /** Link a picture on the board into a role. */
   onLinkPicture: (role: LinkRole, kind: string | undefined, sourceId: string) => void

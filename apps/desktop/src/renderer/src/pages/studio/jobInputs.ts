@@ -1,5 +1,6 @@
 import type { ControlAdapterEntry, EngineFeatures, JobControlImage, JobParams, ProjectCanvas } from '@shared/types'
 import { CLI_ENGINE_LABEL, cliSamplingAccepted } from '@shared/cliEngine'
+import { isWorkerSamplingKey } from '@shared/remoteWorker'
 import { ACTIVE_JOB_STATES } from './jobStatus'
 import { controlKindLabel, linkSourceCanvas, linksOf, canvasPicture, MAX_REFERENCES } from './links'
 import type { Blocker } from './readiness'
@@ -18,6 +19,8 @@ export interface JobInputContext {
   canvases: readonly ProjectCanvas[]
   /** What the target engine can do; undefined while reading, null when none is usable (not checked then). */
   features: EngineFeatures | null | undefined
+  /** A Worker accepts only negotiated sampler and scheduler overrides, even for saved canvases. */
+  worker?: boolean
   controlAdapters: readonly ControlAdapterEntry[]
   /** False until the adapter list has loaded; until then a control image waits instead of being reported missing. */
   controlAdaptersLoaded?: boolean
@@ -82,7 +85,7 @@ export function resolveJobInputs(
   }
 
   if (inputs?.init) {
-    if (features && !features.imageInput) unsupported('起始图')
+    if (context.worker || (features && !features.imageInput)) unsupported('起始图')
     const path = source(inputs.init.link, '起始图')
     if (path) {
       params.initImage = {
@@ -99,7 +102,7 @@ export function resolveJobInputs(
 
   const control = inputs?.control
   if (control && control.images.length) {
-    if (features && !features.control) unsupported('控制图')
+    if (context.worker || (features && !features.control)) unsupported('控制图')
     const adapter = context.controlAdapters.find((item) => item.id === control.adapterId)
     if (!control.adapterId) {
       blockers.push({ id: 'input-adapter', message: '请选择控制适配器' })
@@ -136,7 +139,7 @@ export function resolveJobInputs(
 
   const references = inputs?.references
   if (references && references.links.length) {
-    if (features && !features.references) unsupported('参考图')
+    if (context.worker || (features && !features.references)) unsupported('参考图')
     if (references.links.length > MAX_REFERENCES)
       blockers.push({ id: 'input-invalid', message: `参考图最多 ${MAX_REFERENCES} 张，请移除多出来的` })
     const paths = references.links.flatMap((link, index) => {
@@ -149,7 +152,12 @@ export function resolveJobInputs(
   const sampling = cleanSampling(canvas.sampling)
   if (sampling) {
     params.sampling = sampling
-    if (features) {
+    if (context.worker) {
+      if (Object.keys(sampling).some((key) => !isWorkerSamplingKey(key)))
+        blockers.push({ id: 'input-unsupported', message: '远端主机只支持选择采样器和调度器，请在高级设置中清除其他采样设置' })
+      else if (!features?.samplers || Object.entries(sampling).some(([key, value]) => !features.values[key]?.includes(value)))
+        blockers.push({ id: 'input-unsupported', message: '远端主机未提供所选的采样器或调度器，请改回默认或重新连接' })
+    } else if (features) {
       const samplerChange = features.cli ? !cliSamplingAccepted(sampling) : Boolean(sampling.sampler || sampling.scheduler)
       if (!features.samplers && samplerChange) unsupported('更换采样器')
       if (!features.hires && sampling.hires) unsupported('高清修复')
