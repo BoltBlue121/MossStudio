@@ -16,7 +16,7 @@ Paths are relative to `apps/desktop/src/`.
 
 | Off | On |
 | --- | --- |
-| No MCP server and no `<dataRoot>/mcp-server.json`; nothing is written to `<dataRoot>/mcp/` (a bridge copy and `clients.json` from an earlier time on stay) | The server listens and writes its discovery file; registered clients are pointed at this app version (`refreshMcpClientRegistrations`) |
+| No MCP server and no `<dataRoot>/mcp-server.json`; nothing is written to `<dataRoot>/mcp/` (a bridge copy and `clients.json` from an earlier time on stay) | The server listens and writes its discovery file; eligible registrations are refreshed (`refreshMcpClientRegistrations`, section 7) |
 | Every `agent-hub:*`, `capabilities:*` and `mcp:*` channel answers `E_FEATURE_OFF` (`handleExternal`) | The channels answer; the profiles never include the ask cards (`studio.ask`, `MCP_EXCLUDED_PACKS`), which only the 助手's chat shows |
 | No 协同 button in the 助手, no approval overlay (`App.tsx`) | Both show |
 | Turning it off stops the server, deletes the discovery file, ends every ACP child and drops waiting approvals | |
@@ -75,10 +75,10 @@ Each external call is one undo step, 外部 Agent 的修改, also for what it ch
 
 | Client | Register | Remove | Tool timeout |
 | --- | --- | --- | --- |
-| Claude Code | `claude mcp add-json --scope user mossstudio <json>` | `claude mcp remove --scope user mossstudio` | `timeout` in the JSON |
+| Claude Code | `claude mcp add-json --scope user mossstudio <json>` | `claude mcp remove --scope user mossstudio` | Client default; no `timeout` field is added |
 | Codex | `codex mcp add mossstudio --env MOSSSTUDIO_MCP_DISCOVERY=… -- <command> <bridge>` | `codex mcp remove mossstudio` | `tool_timeout_sec` written into `[mcp_servers.mossstudio]` (`setCodexToolTimeout`): `codex mcp add` has no option for it |
 
-The tool timeout is `CLIENT_TOOL_TIMEOUT_SEC` (180 seconds), longer than an approval waits. `setCodexToolTimeout` follows a symlink to the real file, keeps its mode, keeps one `.mossstudio-backup`, and leaves the file alone when `mossstudio` is defined inline, dotted or twice. The bridge runs with the person's `node` when there is one, else with this app and `ELECTRON_RUN_AS_NODE=1`. Registrations are recorded in `<dataRoot>/mcp/clients.json`: a new app version registers them again with its own path, and uninstalling the app removes only those (`uninstallRecordedMcpClients`). Without a client's CLI the dialog offers to copy the MCP settings instead.
+The Codex tool timeout is `CLIENT_TOOL_TIMEOUT_SEC` (180 seconds), longer than an approval waits. `setCodexToolTimeout` follows a symlink to the real file, keeps its mode, keeps one `.mossstudio-backup`, and leaves the file alone when `mossstudio` is defined inline, dotted or twice. The bridge runs with the person's `node` when there is one, else with this app and `ELECTRON_RUN_AS_NODE=1`. Registrations are recorded in `<dataRoot>/mcp/clients.json`: a new app version registers them again with its own path, and uninstalling the app removes only those (`uninstallRecordedMcpClients`). Registration and removal first compare the live stdio command, arguments and environment against this instance's current or recorded launch. A missing CLI leaves the cleanup record intact. Background refresh skips an owned Codex entry if the service is disabled or either tool list is nonempty. Reconnecting it from the dialog requires confirmation because Codex re-enables the service and clears those lists. The dialog copies the same absolute launch, never a guessed `node`. For DeepSeek Harness it checks the `DSH_HOME` directory (default `~/.dsh`) and offers a stdio entry with `serverName: mossstudio` and `toolCallTimeoutMs: 180000` for manual configuration; only DSH saves it.
 
 The bridge forwards each JSON-RPC line to the server; requests after `initialize` run side by side, and `notifications/cancelled` (a client's own timeout) aborts the matching request.
 

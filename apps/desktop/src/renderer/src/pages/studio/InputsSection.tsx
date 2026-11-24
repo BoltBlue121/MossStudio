@@ -1,3 +1,4 @@
+import { PreviewButton } from '../../components/common/ImageLightbox'
 import { Brush, ImageOff, Plus } from 'lucide-react'
 import type { CanvasImageLink, ControlAdapterEntry, EngineFeatures, ProjectCanvas } from '@shared/types'
 import { cliEngineNote } from '@shared/cliEngine'
@@ -68,7 +69,9 @@ function SourceRow({
       leading={
         <span className="flex size-10 items-center justify-center overflow-hidden rounded-md bg-well-strong">
           {picture ? (
-            <img src={cloverUrl(picture)} alt="" draggable={false} className="size-full object-cover" />
+            <PreviewButton path={picture} title={label} artwork={source?.kind !== 'image'}>
+              <img src={cloverUrl(picture)} alt="" draggable={false} className="size-full object-cover" />
+            </PreviewButton>
           ) : (
             <ImageOff className="size-4 text-ink-2" strokeWidth={1.6} aria-hidden="true" />
           )}

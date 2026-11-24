@@ -39,6 +39,8 @@ import type { MaskBrush, MaskCommand } from './MaskLayer'
 import { rerunEligibility, type Blocker, type ReadinessInput, type RerunCheck } from './readiness'
 import { KIND_LABEL, withKind, type BoardTool } from './RegionLayer'
 import { CardToolbar, MaskBar, Toolbar, type BoardHistoryControls } from './Toolbar'
+import { ToolHub } from './ToolHub'
+import type { BoardCommand } from './toolRegistry'
 import { useCardDrag } from './useCardDrag'
 import { useWireConnect } from './useWireConnect'
 import { useWireSelection } from './useWireSelection'
@@ -85,6 +87,8 @@ export interface BoardHandle {
 export interface BoardProps {
   ref?: Ref<BoardHandle>
   projectKey: string
+  toolHubEnabled: boolean
+  onOpenGbc: () => void
   canvases: ProjectCanvas[]
   selectedCanvasId: string | null
   jobs: readonly JobRecord[]
@@ -802,6 +806,46 @@ export function Board(props: BoardProps): React.JSX.Element {
   }
   const recipeList = recipes(props.engineFeatures, props.controlAdapters, props.blockers)
 
+  // Reuse the same callbacks as the context menu and StartRow, including asynchronous history joins.
+  const executeHubCommand = (command: BoardCommand): void => {
+    const center = (): Point => {
+      const { width, height } = viewportSize()
+      const p = toBoardPoint(viewRef.current, width / 2, height / 2)
+      return { x: Math.round(p.x), y: Math.round(p.y) }
+    }
+    switch (command.type) {
+      case 'create':
+        switch (command.node) {
+          case 'layout':
+            return props.onAddCanvas()
+          case 'style':
+            return props.onAddStyle()
+          case 'image':
+            return props.onImportPictures(center())
+          default: {
+            const _: never = command.node
+            return _
+          }
+        }
+      case 'gallery':
+        return props.onPicturesFromGallery(center())
+      case 'recipe': {
+        const recipe = recipeList.find((item) => item.id === command.recipe)
+        if (recipe) props.onRecipe(recipe)
+        break
+      }
+      case 'openGbc':
+        return props.onOpenGbc()
+      case 'split':
+        if (selected) props.onParseRegions(selected.id)
+        break
+      default: {
+        const _: never = command
+        return _
+      }
+    }
+  }
+
   /** The run a card shows: a 画面's picked filmstrip run, or the card itself. */
   const shownOf = (canvas: ProjectCanvas): { run: ProjectCanvas; item: StripItem | undefined; film: Filmstrip | null } => {
     const film = canvas.kind === 'layout' ? filmstripOf(canvas, props.canvases) : null
@@ -1126,6 +1170,19 @@ export function Board(props: BoardProps): React.JSX.Element {
         minimap={minimapOn}
         onMinimap={setMinimapChoice}
         history={props.history}
+        toolHub={
+          props.toolHubEnabled ? (
+            <ToolHub
+              key={props.projectKey}
+              context={{
+                recipes: recipeList,
+                parseBlocker: props.parseBlocker,
+                pictureId: selected && givesPicture(selected, props.canvases) ? selected.id : null,
+              }}
+              execute={executeHubCommand}
+            />
+          ) : undefined
+        }
       />
       {props.tool === 'mask' && mask.enabled ? (
         <MaskBar

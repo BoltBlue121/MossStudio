@@ -310,7 +310,7 @@ function defaultHandlers(): Map<string, Handler> {
   )
   h.set(
     Ipc.agentHubModels,
-    external(() => ({ models: [] })),
+    external((_, { state }) => ({ models: state.agents.models })),
   )
   h.set(
     Ipc.agentHubSessionStats,
@@ -376,10 +376,13 @@ function defaultHandlers(): Map<string, Handler> {
     h.set(
       channel,
       external((payload, { state }) => {
-        const { clientId } = p<{ clientId: string }>(payload)
+        const { clientId, resetPolicy } = p<{ clientId: string; resetPolicy?: boolean }>(payload)
         const client = state.agents.clients.find((item) => item.id === clientId)
         if (!client || client.installMode === 'copy-only') throw new MockIpcError('E_MCP_CLIENT', `没有找到 ${clientId} 命令`)
-        client.installed = channel === Ipc.mcpClientInstall
+        if (channel === Ipc.mcpClientInstall && client.state === 'custom_policy' && !resetPolicy)
+          throw new MockIpcError('E_MCP_CLIENT', client.detail)
+        client.state = channel === Ipc.mcpClientInstall ? 'configured' : 'not_configured'
+        client.detail = ''
         return { ...client }
       }),
     )
@@ -393,6 +396,11 @@ function defaultHandlers(): Map<string, Handler> {
     packCount: 9,
     discoveryPath: '/fixture/data/mcp-server.json',
     stdioBridgePath: '/fixture/data/mcp/mossstudio-mcp-stdio.mjs',
+    bridge: {
+      command: '/fixture/bin/node',
+      args: ['/fixture/data/mcp/mossstudio-mcp-stdio.mjs'],
+      env: { MOSSSTUDIO_MCP_DISCOVERY: '/fixture/data/mcp-server.json' },
+    },
     protocolVersion: '2025-03-26',
   }
   h.set(

@@ -86,11 +86,55 @@ describe('外部 Agent on', () => {
     await panel.locator('[data-mcp-wizard]').click()
     const dialog = page.getByRole('dialog', { name: '接入外部 Agent' })
     await dialog.waitFor()
-    await expect.poll(() => dialog.locator('[data-mcp-client="codex"]').getAttribute('data-mcp-client-state')).toBe('installed')
+    await expect.poll(() => dialog.locator('[data-mcp-client="codex"]').getAttribute('data-mcp-client-state')).toBe('configured')
+    await expect.poll(() => dialog.locator('[data-mcp-client="dsh"]').textContent()).toContain('检测到本机 DSH 环境')
+    expect(await dialog.locator('[data-mcp-client]').first().getAttribute('data-mcp-client')).toBe('dsh')
+    await page.evaluate(() =>
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: (text: string) => {
+            document.body.dataset.copied = text
+          },
+        },
+      }),
+    )
+    expect(await dialog.getByRole('heading', { name: '本机客户端' }).isVisible()).toBe(true)
+    expect(await dialog.locator('[data-mcp-client="dsh"]').textContent()).toContain('手动')
+    await dialog.getByRole('button', { name: '复制 DSH stdio 配置' }).click()
+    expect(await app.calls('mcp:client-install')).toEqual([])
+    await expect
+      .poll(() => page.evaluate(() => JSON.parse(document.body.dataset.copied ?? '{}')))
+      .toMatchObject({ serverName: 'mossstudio', transport: 'stdio', command: '/fixture/bin/node', toolCallTimeoutMs: 180000 })
+    await expect.poll(() => app.calls('mcp:info').then((calls) => calls.at(-1))).toEqual({ includeToken: true })
     expect(await dialog.locator('[data-mcp-copy-client="claude-code"]').count()).toBe(1)
     await dialog.locator('[data-mcp-uninstall="codex"]').click()
     await expect.poll(() => app.calls('mcp:client-uninstall')).toEqual([{ clientId: 'codex' }])
-    await expect.poll(() => dialog.locator('[data-mcp-install="codex"]').textContent()).toContain('连接')
+    await expect.poll(() => dialog.locator('[data-mcp-install="codex"]').textContent()).toContain('一键配置')
+    await dialog.locator('[data-mcp-install="codex"]').click()
+    await expect.poll(() => dialog.locator('[data-mcp-client="codex"]').textContent()).toContain('已配置')
+  })
+
+  it('resets a protected Codex configuration only after confirming the reconnect', async () => {
+    const page = await openStudio(app, 'externalAgents')
+    await page.evaluate(() => {
+      const codex = window.__mock.state.agents.clients.find((client) => client.id === 'codex')!
+      codex.state = 'custom_policy'
+      codex.detail = 'Codex 已禁用此服务，已限制可用工具，未自动覆盖。'
+    })
+    await openCollab(page)
+    await page.locator('[data-mcp-wizard]').click()
+    const dialog = page.getByRole('dialog', { name: '接入外部 Agent' })
+    const reconnect = dialog.getByRole('button', { name: '重新连接', exact: true })
+    await reconnect.click()
+    const confirm = page.getByRole('dialog', { name: '重置 Codex 连接？' })
+    expect(await confirm.textContent()).toContain('清除工具限制')
+    await confirm.getByRole('button', { name: '取消' }).click()
+    expect(await app.calls('mcp:client-install')).toEqual([])
+    await reconnect.click()
+    await confirm.getByRole('button', { name: '重置并重新连接' }).click()
+    await expect.poll(() => app.calls('mcp:client-install')).toEqual([{ clientId: 'codex', resetPolicy: true }])
+    await expect.poll(() => dialog.locator('[data-mcp-client="codex"]').textContent()).toContain('已配置')
   })
 
   it('an Agent’s request can be answered from any page', async () => {
@@ -100,6 +144,38 @@ describe('外部 Agent on', () => {
     await overlay.getByRole('button', { name: '拒绝' }).click()
     await expect.poll(() => app.calls('agent-hub:resolve-approval')).toEqual([{ id: 'approval-1', decision: 'reject' }])
     await expect.poll(() => overlay.count()).toBe(0)
+  })
+
+  it('the model list is headed by its provider, and one id from two providers stays pickable', async () => {
+    const page = await openStudio(app, 'externalAgents')
+    await page.evaluate(() => {
+      window.__mock.state.agents.models = [
+        { id: 'solo', label: 'solo' },
+        { id: 'shared', label: 'shared · alpha', provider: 'alpha' },
+        { id: 'shared', label: 'shared · beta', provider: 'beta' },
+      ]
+    })
+    await openCollab(page)
+    const select = page.locator('[data-model-picker] select[aria-label="会话模型"]')
+    await select.waitFor()
+    // A model without a provider comes first, then one heading per provider; the
+    // provider is no longer repeated inside every entry.
+    expect(await select.locator('optgroup').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('label')))).toEqual([
+      'alpha',
+      'beta',
+    ])
+    expect(await select.locator('option').evaluateAll((nodes) => nodes.map((node) => node.textContent))).toEqual([
+      '选择模型',
+      'solo',
+      'shared',
+      'shared',
+      '手动输入…',
+    ])
+    // The second `shared` is beta's: picking it must send that provider, not the first one found by id.
+    await select.selectOption({ index: 3 })
+    await expect
+      .poll(() => app.calls('agent-hub:set-model').then((calls) => calls.at(-1)))
+      .toMatchObject({ model: 'shared', provider: 'beta' })
   })
 })
 

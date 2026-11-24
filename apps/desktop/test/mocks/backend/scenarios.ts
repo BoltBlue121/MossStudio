@@ -4,6 +4,7 @@
  * A scenario is plain data: handlers in ./index.ts read and write this state, so
  * a test changes what the "main process" knows by editing `backend.state`.
  */
+import type { McpClientStatus } from '@shared/mcpClients'
 import type { MangaSeries } from '@shared/manga/model'
 import type { AiConversationInfo, AiProviderInfo, AiToolCall } from '@shared/ai'
 import type { PendingCapabilityApproval } from '@shared/agentHub'
@@ -89,15 +90,7 @@ export interface MockAgentsState {
     { messages: Array<{ seq: number; role: 'user' | 'assistant'; text: string }>; hasMore: boolean; asOfSeq: number }
   >
   approvals: PendingCapabilityApproval[]
-  clients: Array<{
-    id: 'codex' | 'claude-code'
-    label: string
-    configPath: string
-    detected: boolean
-    installed: boolean
-    installMode: 'auto' | 'copy-only'
-    detail: string
-  }>
+  clients: McpClientStatus[]
   workerLoras: Array<{ id: string; name: string; sizeBytes: number; registered: boolean; triggers?: string[] }>
   workerModels: Array<{
     id: string
@@ -109,10 +102,12 @@ export interface MockAgentsState {
     sizeBytes?: number
     defaults?: { steps?: number; cfg?: number }
   }>
+  /** What the Agent answers its model list with (agent-hub:models). */
+  models: Array<{ id: string; label: string; provider?: string }>
 }
 
 export function agentsStateFixture(patch: Partial<MockAgentsState> = {}): MockAgentsState {
-  return { backends: [], sessions: [], messages: {}, approvals: [], clients: [], workerLoras: [], workerModels: [], ...patch }
+  return { backends: [], sessions: [], messages: {}, approvals: [], clients: [], workerLoras: [], workerModels: [], models: [], ...patch }
 }
 
 export interface MockBackendState {
@@ -459,19 +454,25 @@ export function scenario(name: ScenarioName = 'ready', patch: Partial<MockBacken
             id: 'codex',
             label: 'Codex',
             configPath: '/home/moss/.codex/config.toml',
-            detected: true,
-            installed: true,
+            state: 'configured',
             installMode: 'auto',
-            detail: '已连接',
+            detail: '',
           },
           {
             id: 'claude-code',
             label: 'Claude Code',
             configPath: '/home/moss/.claude.json',
-            detected: false,
-            installed: false,
+            state: 'not_found',
             installMode: 'copy-only',
             detail: '没有找到 claude 命令，可以复制 MCP 配置手动添加',
+          },
+          {
+            id: 'dsh',
+            label: 'DeepSeek Harness 桌面版',
+            state: 'detected',
+            configPath: '/fixture/.dsh',
+            installMode: 'copy-only',
+            detail: '复制后，在 DSH 中手动填写并保存 MCP 客户端配置。',
           },
         ],
       }),
