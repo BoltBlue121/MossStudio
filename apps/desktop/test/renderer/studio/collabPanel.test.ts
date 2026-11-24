@@ -28,7 +28,7 @@ import {
   normalizeStats,
   sanitizeMessageText,
 } from '@renderer/pages/studio/assistant/collabClient'
-import { CollabPanel, agentShortName } from '@renderer/pages/studio/assistant/CollabPanel'
+import { CollabPanel, agentShortName, replyImages } from '@renderer/pages/studio/assistant/CollabPanel'
 import { capabilityLabel, contextChips, formatBoardContext } from '@renderer/pages/studio/assistant/collabContext'
 import { GlobalApprovalOverlay } from '@renderer/pages/studio/assistant/GlobalApprovalOverlay'
 import { joinProjectPath, newFolderProblem, parentFolder } from '@renderer/pages/studio/assistant/NewSessionDialog'
@@ -208,6 +208,36 @@ describe('collab client', () => {
     expect(sanitizeMessageText('<system-reminder>x\ny</system-reminder>你好\n\n[Current Studio context]\nStudio project: A')).toBe('你好')
     expect(sanitizeMessageText('<system-reminder>only</system-reminder>')).toBe('')
     expect(sanitizeMessageText('普通回复')).toBe('普通回复')
+  })
+
+  it('keeps only embedded raster pictures in messages and replies', () => {
+    const png = 'data:image/png;base64,iVBORw0KGgo='
+    expect(
+      normalizeMessages({
+        messages: [
+          {
+            seq: 1,
+            role: 'assistant',
+            text: '',
+            images: [png, 'data:image/svg+xml;base64,PHN2Zz4=', 'https://example.com/a.png', 'file:///etc/passwd', 7, png, png, png],
+          },
+          { seq: 2, role: 'user', text: 'x', images: 'data:image/png;base64,AAAA' },
+        ],
+      }).messages,
+    ).toEqual([
+      { seq: 1, role: 'assistant', text: '', images: [png] },
+      { seq: 2, role: 'user', text: 'x' },
+    ])
+    const { urlTransform, components } = replyImages
+    const transform = urlTransform as (url: string, key: string) => string
+    expect(transform(png, 'src')).toBe(png)
+    for (const url of ['https://example.com/a.png', 'file:///etc/passwd', 'data:image/svg+xml;base64,PHN2Zz4='])
+      expect(transform(url, 'src')).toBe('')
+    expect(transform('https://example.com/', 'href')).toBe('https://example.com/')
+    expect(transform('javascript:alert(1)', 'href')).toBe('')
+    const img = components!.img as (props: { node: { properties: { src?: string } } }) => { type: string }
+    expect(img({ node: { properties: { src: png } } }).type).toBe('img')
+    expect(img({ node: { properties: { src: 'https://example.com/a.png' } } }).type).toBe('span')
   })
 })
 

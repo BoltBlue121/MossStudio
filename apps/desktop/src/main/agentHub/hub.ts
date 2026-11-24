@@ -37,7 +37,8 @@ export function createAgentHub(
   return {
     async backends() {
       const infos = await Promise.all(drivers.map((driver) => driver.probe()))
-      const preferred = infos.find((b) => b.available)
+      // Drivers are listed in default order. The custom command is always "available", so it is never the default.
+      const preferred = infos.find((b) => b.available && b.id !== 'custom-acp')
       return infos.map((b) => ({ ...b, preferred: b === preferred }))
     },
     projects: (backendId: string) => get(backendId).listProjects?.() ?? Promise.resolve([]),

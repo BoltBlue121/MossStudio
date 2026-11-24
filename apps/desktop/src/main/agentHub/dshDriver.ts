@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type {
   AgentBackendInfo,
@@ -37,7 +37,7 @@ function blocks(input: AgentSendInput) {
     ...pics,
   ]
 }
-function page(value: unknown): AgentMessagePage {
+function page(value: unknown, checked: Set<string>): AgentMessagePage {
   const raw = object(value),
     messages: AgentMessagePage['messages'] = []
   let last = 0
@@ -65,8 +65,13 @@ function page(value: unknown): AgentMessagePage {
           !['image/jpeg', 'image/png', 'image/webp'].includes(String(mediaType))
         )
           return []
-        const bytes = Buffer.from(data, 'base64')
-        if (`image/${readImageHeader(bytes)?.format}` !== mediaType || bytes.toString('base64') !== data) return []
+        const key = `${String(mediaType)}:${createHash('sha256').update(data).digest('base64')}`
+        if (!checked.has(key)) {
+          const bytes = Buffer.from(data, 'base64')
+          if (`image/${readImageHeader(bytes)?.format}` !== mediaType || bytes.toString('base64') !== data) return []
+          if (checked.size >= 256) checked.delete(checked.values().next().value!)
+          checked.add(key)
+        }
         remaining -= data.length
         return [`data:${mediaType};base64,${data}`]
       })
@@ -81,7 +86,10 @@ export function createDshDriver(emit: (event: AgentHubEvent) => void, discover =
   let owner = new AbortController(),
     connection: Awaited<ReturnType<typeof pairDesktop>> | undefined,
     wantsAutoReconnect = false,
-    reconnecting: Promise<Awaited<ReturnType<typeof pairDesktop>>> | undefined
+    reconnecting: Promise<Awaited<ReturnType<typeof pairDesktop>>> | undefined,
+    lastRediscovery = 0
+  // Polls re-send the same history every few seconds; each picture is decoded and checked once.
+  const checkedImages = new Set<string>()
   const isDisconnectError = (err: unknown): boolean =>
     Boolean(err && typeof err === 'object' && 'code' in err && err.code === 'E_DSH_DISCONNECTED')
   const peer = () => {
@@ -92,6 +100,9 @@ export function createDshDriver(emit: (event: AgentHubEvent) => void, discover =
     if (reconnecting) return reconnecting
     reconnecting = (async () => {
       try {
+        // Every failed poll lands here while DSH is closed; look for it again at most every 10 seconds.
+        if (Date.now() - lastRediscovery < 10_000) throw codedError('E_DSH_DISCONNECTED', 'DSH 连接已断开，请重新连接桌面端')
+        lastRediscovery = Date.now()
         const { signal } = owner
         const listeners = await discover(signal)
         if (!listeners.length) throw codedError('E_DSH_DISCONNECTED', 'DSH 连接已断开，请重新连接桌面端')
@@ -299,7 +310,7 @@ export function createDshDriver(emit: (event: AgentHubEvent) => void, discover =
     async readMessages(sessionId) {
       return withPeer(async (p) => {
         await watch(sessionId)
-        return page(await p.rpc('session/page', { request: { address: { kind: 'session', sessionId }, maxMessages: 50 } }))
+        return page(await p.rpc('session/page', { request: { address: { kind: 'session', sessionId }, maxMessages: 50 } }), checkedImages)
       })
     },
     async send(input) {

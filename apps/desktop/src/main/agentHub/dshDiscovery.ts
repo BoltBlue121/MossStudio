@@ -1,5 +1,5 @@
 import { constants } from 'node:fs'
-import { lstat, open, realpath } from 'node:fs/promises'
+import { lstat, open, readlink, realpath } from 'node:fs/promises'
 import { isNetworkPath, pathLinksToNetwork } from '../lib/localPath'
 import { basename, join } from 'node:path'
 import { paths } from '../lib/paths'
@@ -8,6 +8,18 @@ import { run } from '../lib/run'
 export interface DesktopListener {
   origin: string
   pid: number
+}
+
+const DESKTOP_NAME = /^(?:DeepSeek Harness|deepseek-harness)(?: Helper(?: \(Plugin\))?)?$/i
+
+/** Processes in `ps -o pid=,comm=` output named like the desktop app; `exact: false` is a Linux name cut to 15 characters. */
+export function desktopPids(ps: string): Array<{ pid: number; exact: boolean }> {
+  return ps.split('\n').flatMap((line) => {
+    const row = /^\s*(\d+)\s+(.+?)\s*$/.exec(line)
+    const name = row ? basename(row[2]!) : ''
+    const exact = DESKTOP_NAME.test(name)
+    return row && (exact || /^(?:DeepSeek Harnes|deepseek-harnes)$/i.test(name)) ? [{ pid: Number(row[1]), exact }] : []
+  })
 }
 
 /** Only inspect listening sockets owned by the desktop binary. No port scan, credentials, process arguments or contact with other servers. */
@@ -28,10 +40,12 @@ export async function desktopListeners(signal: AbortSignal): Promise<DesktopList
     }
   } else {
     const { stdout } = await run('ps', ['-A', '-o', 'pid=,comm='], opts)
-    const pids = stdout.split('\n').flatMap((line) => {
-      const row = /^\s*(\d+)\s+(.+)$/.exec(line)
-      return row && /^(?:DeepSeek Harness|deepseek-harness)(?: Helper(?: \(Plugin\))?)?$/i.test(basename(row[2]!)) ? [row[1]!] : []
-    })
+    const pids: number[] = []
+    for (const { pid, exact } of desktopPids(stdout)) {
+      // Linux cuts comm to 15 characters; the executable's own name settles it.
+      if (exact || (process.platform === 'linux' && DESKTOP_NAME.test(basename(await readlink(`/proc/${pid}/exe`).catch(() => '')))))
+        pids.push(pid)
+    }
     if (pids.length) {
       const sockets = await run('lsof', ['-nP', '-a', '-p', pids.join(','), '-iTCP', '-sTCP:LISTEN', '-Fpn'], opts)
       let pid = 0

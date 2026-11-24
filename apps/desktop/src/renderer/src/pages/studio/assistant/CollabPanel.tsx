@@ -59,7 +59,7 @@ const RASTER_DATA_URL = /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+=*$/i
 const isRasterData = (url: string): boolean => url.length <= 14_000_032 && RASTER_DATA_URL.test(url)
 
 // Reply text is untrusted: show embedded raster data, never load a URL or open a path named by the Agent.
-const replyImages: Pick<MarkdownProps, 'urlTransform' | 'components'> = {
+export const replyImages: Pick<MarkdownProps, 'urlTransform' | 'components'> = {
   urlTransform: (url, key) => (key === 'src' ? (isRasterData(url) ? url : '') : defaultUrlTransform(url)),
   components: {
     img: ({ node }) => {
@@ -434,10 +434,7 @@ function HubPane({
             </span>
           </div>
           {desktop ? (
-            <Field
-              label={backend.available ? '已发现 · 本机配对地址（可选）' : '本机配对地址'}
-              hint="可粘贴桌面端提供的配对地址；留空时尝试本机自动配对。"
-            >
+            <Field label={backend.available ? '已发现 · 本机配对地址（可选）' : '本机配对地址'}>
               <Input
                 aria-label="本机配对地址"
                 type="password"
@@ -568,22 +565,19 @@ function ProjectChat({ chat, desktop, ...shared }: ChatShared & { chat: ChatBack
   return (
     <>
       {desktop ? (
-        <>
-          <span className="text-caption text-ink-2">已配对 · 已连接</span>
-          <DesktopSessionBar
-            projects={desktopProjects}
-            project={workspace}
-            sessions={scoped}
-            sessionId={selectedId}
-            onProject={chooseWorkspace}
-            onSession={chooseWorkspaceSession}
-            onCreate={() => setNewOpen(true)}
-            onRefresh={() => {
-              refreshProjects()
-              refresh()
-            }}
-          />
-        </>
+        <DesktopSessionBar
+          projects={desktopProjects}
+          project={workspace}
+          sessions={scoped}
+          sessionId={selectedId}
+          onProject={chooseWorkspace}
+          onSession={chooseWorkspaceSession}
+          onCreate={() => setNewOpen(true)}
+          onRefresh={() => {
+            refreshProjects()
+            refresh()
+          }}
+        />
       ) : null}
       <div className="flex min-w-0 items-center justify-end gap-1" data-session-row>
         {!desktop ? (

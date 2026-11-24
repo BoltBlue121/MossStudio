@@ -3,6 +3,13 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocketServer } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+const readImageHeader = vi.hoisted(() => vi.fn())
+vi.mock('@main/services/imageHeaders', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@main/services/imageHeaders')>()
+  readImageHeader.mockImplementation(actual.readImageHeader)
+  return { ...actual, readImageHeader }
+})
 import { createDshDriver } from '@main/agentHub/dshDriver'
 import { createAgentHub } from '@main/agentHub/hub'
 import type { AgentHubEvent } from '@shared/agentHub'
@@ -155,6 +162,10 @@ describe('DSH Desktop native Agent', () => {
       messages: [{ role: 'assistant', text: 'history', images: [`data:image/png;base64,${image}`] }],
       asOfSeq: 5,
     })
+    // A poll that repeats the history does not decode its pictures again.
+    const decoded = readImageHeader.mock.calls.length
+    expect((await hub.messages(backendId, sessionId)).messages[0]?.images).toEqual([`data:image/png;base64,${image}`])
+    expect(readImageHeader.mock.calls.length).toBe(decoded)
     expect(events).toEqual([])
     await hub.send({
       backendId,
@@ -207,6 +218,25 @@ describe('DSH Desktop native Agent', () => {
     await first.closeServer()
     expect(await driver.listSessions()).toHaveLength(1)
     expect(second.rpc).toContainEqual({ method: 'session/list', args: { _request: {} } })
+
+    // Once DSH is gone, failed polls look for it again at most every 10 seconds.
+    let scans = 0
+    const gone = createDshDriver(
+      () => undefined,
+      async () => (scans++ ? [] : [{ origin: new URL(second.pairingUrl).origin, pid: 101 }]),
+      async () => second.pairingUrl,
+    )
+    cleanup.push(() => gone.disconnect())
+    await gone.connect({ backendId: gone.id })
+    await second.closeServer()
+    await expect(gone.listSessions()).rejects.toThrow()
+    await expect(gone.listSessions()).rejects.toThrow()
+    expect(scans).toBe(2)
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 11_000)
+    await expect(gone.listSessions()).rejects.toThrow()
+    expect(scans).toBe(3)
+    clock.mockRestore()
 
     // Manual disconnect turns auto-reconnect off.
     await driver.disconnect()

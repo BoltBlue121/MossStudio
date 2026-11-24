@@ -14,9 +14,9 @@ export const capabilityApprovalQueue = createCapabilityApprovalQueue({ emit })
 const agentEvent = (event: AgentHubEvent) => emit(Events.agentHubEvent, event)
 export const agentHub = createAgentHub(
   [
-    // Another DeepSeek Harness on this computer, preferred when it is running locally.
-    createDshDriver(agentEvent),
     createAcpDriver({ id: 'codex-acp', label: 'Codex ACP', command: 'codex-acp', emit: agentEvent }),
+    // Another DeepSeek Harness on this computer; the default only when Codex ACP is not installed.
+    createDshDriver(agentEvent),
     createAcpDriver({ id: 'custom-acp', label: '自定义 ACP', emit: agentEvent }),
   ],
   async () => ({
