@@ -13,6 +13,11 @@ vi.mock('@main/services/ssh', () => ({
   posixQuote: (value: string) => `'${value.replace(/'/g, `'\\''`)}'`,
   sshExec,
 }))
+const workerProfileWith = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<unknown> => null))
+vi.mock('@main/services/workerHostManager', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@main/services/workerHostManager')>()),
+  workerProfileWith,
+}))
 vi.mock('@main/services/trainingHosts', () => ({
   getTrainingHost: (_settings: unknown, id: string) => hosts.list.find((host) => host.id === id),
   listTrainingHosts: () => hosts.list,
@@ -110,6 +115,7 @@ function native(
 beforeEach(async () => {
   vi.resetModules()
   sshExec.mockReset()
+  workerProfileWith.mockReset()
   updateTrainingHostModelPath.mockReset()
   hosts.list = [host, { ...host, id: 'local', kind: 'local' }]
   remote = await import('@main/services/remoteDownloads')
@@ -245,6 +251,20 @@ describe('refreshRemoteDownloads', () => {
     await remote.refreshRemoteDownloads('gpu')
     expect(updateTrainingHostModelPath).toHaveBeenCalledWith('gpu', manifest.path)
     expect(emitted.some((e) => e.channel === Events.hostsChanged)).toBe(true)
+  })
+
+  it('keeps an unreachable Worker on the SSH script, unless its daemon owns cached tasks', async () => {
+    const worker: TrainingHost = { ...host, id: 'w', remoteBackend: 'worker-daemon' }
+    hosts.list = [worker]
+    workerProfileWith.mockRejectedValue(new Error('daemon down'))
+    workerPrints([native(task('remote:w:m:1'))])
+    expect((await remote.refreshRemoteDownloads('w')).map((t) => t.id)).toEqual(['remote:w:m:1'])
+
+    vi.resetModules()
+    writeFileSync(join(dataRoot(), 'remote-downloads.json'), JSON.stringify([task('wdown-1', { hostId: 'w', state: 'running' })]))
+    remote = await import('@main/services/remoteDownloads')
+    await expect(remote.refreshRemoteDownloads('w')).rejects.toThrow('daemon down')
+    expect(remote.listRemoteDownloads()).toMatchObject([{ id: 'wdown-1', connectionError: 'daemon down' }])
   })
 
   it('keeps the last snapshot with a connection error and redacts credentials when SSH fails', async () => {

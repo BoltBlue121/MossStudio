@@ -99,6 +99,11 @@ const cases = {
     accepts: { provider: { providerId: 'worker-host', id: 'lora', action: 'unregister' } },
     rejects: { missing: { id: 'lora', action: 'register' }, action: { hostId: 'host', id: 'lora', action: 'delete' } },
   },
+  remoteWorkerModels: {
+    valid: { hostId: 'host' },
+    accepts: { provider: { providerId: 'worker-host', rescan: true }, both: { hostId: 'host', providerId: 'worker-host' } },
+    rejects: { missing: {}, emptyHost: { hostId: '' }, emptyProvider: { providerId: '' } },
+  },
   loraProfilesList: { valid: {}, rejects: { unknown: { x: true } } },
   loraProfilesSave: { valid: { loraId: 'lora' }, rejects: { strength: { loraId: 'lora', defaultStrength: 5 } } },
   loraProfilesInspect: { valid: { loraId: 'lora' }, rejects: { missing: {} } },

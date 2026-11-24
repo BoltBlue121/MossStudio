@@ -90,12 +90,22 @@ export interface MockAgentsState {
   approvals: PendingCapabilityApproval[]
   clients: McpClientStatus[]
   workerLoras: Array<{ id: string; name: string; sizeBytes: number; registered: boolean; triggers?: string[] }>
+  workerModels: Array<{
+    id: string
+    name: string
+    variant?: string[]
+    tier?: 'reference' | 'high' | 'turbo'
+    profile?: string
+    catalogBundleId?: string
+    sizeBytes?: number
+    defaults?: { steps?: number; cfg?: number }
+  }>
   /** What the Agent answers its model list with (agent-hub:models). */
   models: Array<{ id: string; label: string; provider?: string }>
 }
 
 export function agentsStateFixture(patch: Partial<MockAgentsState> = {}): MockAgentsState {
-  return { backends: [], sessions: [], messages: {}, approvals: [], clients: [], workerLoras: [], models: [], ...patch }
+  return { backends: [], sessions: [], messages: {}, approvals: [], clients: [], workerLoras: [], workerModels: [], models: [], ...patch }
 }
 
 export interface MockBackendState {
@@ -483,6 +493,27 @@ export function scenario(name: ScenarioName = 'ready', patch: Partial<MockBacken
         workerLoras: [
           { id: 'styles/ink.safetensors', name: 'ink.safetensors', sizeBytes: 151_000_000, registered: true, triggers: ['ink style'] },
           { id: 'styles/wash.safetensors', name: 'wash.safetensors', sizeBytes: 98_000_000, registered: false },
+        ],
+        workerModels: [
+          {
+            id: 'moss-sft',
+            name: 'MOSS-Image SFT',
+            variant: ['BF16'],
+            tier: 'reference',
+            profile: 'standard',
+            catalogBundleId: 'moss-sft',
+            sizeBytes: 27_200_000_000,
+          },
+          // A Worker names its models its own way; catalogBundleId ties one to the library.
+          {
+            id: 'sft-int8',
+            name: 'MOSS-Image SFT INT8',
+            variant: ['INT8'],
+            tier: 'high',
+            profile: 'standard',
+            catalogBundleId: 'moss-sft-int8',
+            sizeBytes: 9_600_000_000,
+          },
         ],
       }),
     }),

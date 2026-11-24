@@ -263,6 +263,12 @@ function defaultHandlers(): Map<string, Handler> {
     if (item) item.registered = action === 'register'
     return { id, registered: action === 'register' }
   })
+  h.set(Ipc.remoteWorkerModels, (_, { state }) => ({
+    root: '/srv/worker/models',
+    defaultModelId: state.agents.workerModels[0]?.id ?? null,
+    models: state.agents.workerModels,
+    components: [],
+  }))
 
   const edits = new Map<string, ImageEditChannel>()
   const editHandler = (ipc: string, handler: (payload: unknown) => unknown) =>

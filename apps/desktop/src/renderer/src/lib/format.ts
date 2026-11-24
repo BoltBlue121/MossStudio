@@ -145,6 +145,9 @@ export function duration(startedAt: string | undefined, endedAt: string | undefi
   return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分钟`
 }
 
+/** A model whose files are all there, on the 模型 page. */
+export const MODEL_READY_TEXT = '可以使用'
+
 /* ------------------------------------------------------------------ */
 /* Jobs: one vocabulary for the Activity panel and the Studio cards     */
 /* ------------------------------------------------------------------ */

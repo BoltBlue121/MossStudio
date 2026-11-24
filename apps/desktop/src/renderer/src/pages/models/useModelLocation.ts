@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Events, Ipc } from '@shared/channels'
+import type { RemoteWorkerModelItem } from '@shared/remoteWorker'
 import type { AdapterEntry, DownloadTask, ManagedHost, ModelBundle, ModelEntry } from '@shared/types'
 import { call, onEvent } from '../../lib/api'
 import { useApp } from '../../store'
@@ -10,6 +11,8 @@ export interface RemoteInventory {
   files: number
   models: Array<{ id: string; installed: boolean; path?: string }>
   adapters: Array<{ id: string; installed: boolean; path?: string }>
+  workerModels?: RemoteWorkerModelItem[]
+  defaultModelId?: string | null
 }
 
 /**
@@ -19,6 +22,8 @@ export interface RemoteInventory {
  */
 export interface ModelLocation {
   kind: 'local' | 'remote'
+  /** True when the selected remote host's Worker daemon lists its own models (single-file bundles fit there too). */
+  workerDaemon: boolean
   host: ManagedHost | null
   /** False for a remote host until its inventory has been read; actions are hidden until then. */
   ready: boolean
@@ -206,6 +211,8 @@ export function useModelLocation(host: ManagedHost | null): ModelLocation {
 
   return {
     kind: hostId ? 'remote' : 'local',
+    // Only a daemon that lists its own models answers for them; an older one is read over SSH like any host.
+    workerDaemon: Boolean(hostId && inventory?.workerModels),
     host,
     ready: !hostId || inventory !== null,
     tasks,

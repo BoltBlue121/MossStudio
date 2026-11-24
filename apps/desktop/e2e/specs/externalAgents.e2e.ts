@@ -291,4 +291,20 @@ describe('Worker 远程主机 on', () => {
     await dialog.waitFor()
     await expect.poll(() => dialog.getByText('ink.safetensors').first().isVisible()).toBe(true)
   })
+
+  it('the model picker lists the Worker’s detected models when it is the 运行位置', async () => {
+    const page = await openStudio(app, 'workerHost')
+    await openLoraRows(page)
+    const picker = page.locator('[data-model-picker]').first()
+    await picker.waitFor()
+    await expect.poll(() => picker.textContent()).toContain('MOSS-Image SFT')
+    await picker.click()
+    await expect.poll(() => page.getByRole('menuitem', { name: /MOSS-Image SFT INT8/ }).isVisible()).toBe(true)
+    // The Worker's own id (sft-int8) goes to the job; the 画面 keeps the library's.
+    await page.getByRole('menuitem', { name: /MOSS-Image SFT INT8/ }).click()
+    await page.locator('[data-studio-generate]').click()
+    await expect
+      .poll(() => app.calls('http:POST /api/engine-jobs'))
+      .toMatchObject([{ hostId: 'worker-1', modelBinding: { bundleId: 'sft-int8' } }])
+  })
 })

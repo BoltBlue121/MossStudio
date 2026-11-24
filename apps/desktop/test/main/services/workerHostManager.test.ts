@@ -9,6 +9,7 @@ import { pngBytes } from './training/pictures'
 import {
   disconnectWorkerHost,
   probeWorkerHost,
+  workerDaemonSupports,
   workerEngineFeatures,
   workerHostDevices,
   workerHostProfile,
@@ -69,6 +70,13 @@ describe('Worker capability negotiation', () => {
       expect(refreshed.online).toBe(true)
       expect(workerHostProfile(host).workflow).toBe(profile)
     }
+  })
+
+  it('uses the daemon for models and downloads only when its capabilities name them', async () => {
+    await probe(daemon)
+    expect([workerDaemonSupports(host.id, 'models'), workerDaemonSupports(host.id, 'downloads')]).toEqual([false, false])
+    await probe({ ...daemon, features: { lora: true, models: true } })
+    expect([workerDaemonSupports(host.id, 'models'), workerDaemonSupports(host.id, 'downloads')]).toEqual([true, false])
   })
 
   it('never enables picture inputs, previews or hires even when the engine advertises them', async () => {

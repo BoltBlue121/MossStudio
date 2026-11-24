@@ -1170,6 +1170,8 @@ async function startEngineJobNow(input: StartEngineJobInput, queuedJob?: JobReco
     }
     running.set(job.id, runningJob)
     if (workerHost) {
+      const rawBundleId = input.modelBinding?.bundleId
+      const workerModelId = rawBundleId && !rawBundleId.startsWith('remote-worker:') ? rawBundleId : undefined
       runningJob.cancelWorker = () => {
         void cancelRemoteWorkerJob(job.id).catch(() => undefined)
       }
@@ -1181,6 +1183,7 @@ async function startEngineJobNow(input: StartEngineJobInput, queuedJob?: JobReco
           profile,
           jobId: job.id,
           params,
+          model: workerModelId,
           output: localOutput,
           onEvent: (payload) => {
             handleRunnerEvent(job, runningJob, JSON.stringify(payload))

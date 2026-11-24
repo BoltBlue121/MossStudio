@@ -391,6 +391,13 @@ export const schemas = {
       action: z.enum(['register', 'unregister']),
     })
     .refine((value) => Boolean(value.hostId || value.providerId), 'hostId or providerId is required'),
+  remoteWorkerModels: z
+    .object({
+      hostId: z.string().min(1).max(120).optional(),
+      providerId: z.string().min(1).max(120).optional(),
+      rescan: z.boolean().optional(),
+    })
+    .refine((value) => Boolean(value.hostId || value.providerId), 'hostId or providerId is required'),
   loraProfilesList: z.strictObject({}).optional(),
   loraProfilesSave: loraProfileSchema,
   loraProfilesInspect: z
