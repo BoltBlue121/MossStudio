@@ -68,6 +68,8 @@ describe('external redraw', () => {
       window.location.hash = '#/settings/features'
     })
     await page.getByLabel('选择渠道').waitFor()
+    // Leaving the Studio closes the dialog; the page learns it is hidden from a ResizeObserver, a frame later.
+    await page.locator('dialog.app-dialog').waitFor({ state: 'detached' })
     await page.evaluate(() => {
       window.location.hash = '#/studio'
     })
