@@ -338,9 +338,9 @@ function defaultHandlers(): Map<string, Handler> {
     h.set(
       channel,
       external((_, { state }) => {
-        // A scenario can ask the next send to fail the way a dropped Agent does.
+        // A scenario can make sends fail the way main reports a dropped ACP Agent: a plain error, so code INTERNAL.
         const failure = channel === Ipc.agentHubSend ? state.agents.sendError : undefined
-        if (failure) throw new MockIpcError('E_AGENT_STREAM', failure)
+        if (failure) throw new MockIpcError('INTERNAL', failure)
         return true
       }),
     )

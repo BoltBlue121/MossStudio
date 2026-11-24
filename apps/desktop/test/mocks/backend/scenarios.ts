@@ -99,7 +99,7 @@ export interface MockAgentsState {
     detail: string
   }>
   workerLoras: Array<{ id: string; name: string; sizeBytes: number; registered: boolean; triggers?: string[] }>
-  /** When set, the next agent-hub:send fails with this message (a dropped connection). */
+  /** While set, every agent-hub:send fails with this message, the way the ACP driver reports a dropped Agent. */
   sendError?: string
 }
 

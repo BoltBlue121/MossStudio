@@ -54,15 +54,16 @@ const SESSIONS_POLL_MS = 10_000
 const NO_PROJECTS: readonly CanvasProjectOption[] = []
 /** What an Agent says when its connection is gone rather than the request being wrong. */
 const LOST_CODES = /DISCONNECT|NOT_CONNECTED|NO_CONNECTION|CONNECTION_LOST/
-const LOST_WORDS = /连接已断开|消息流已中断|连接中断|请先连接|重新连接|尚未连接|not connected|disconnected/i
+// The ACP driver's own messages (acpDriver.ts) carry no code. It also ends the Agent when a request times out.
+const LOST_WORDS =
+  /连接已断开|已断开连接|进程已退出|输入通道已关闭|尚未连接|请先连接|消息流已中断|连接中断|请求超时|not connected|disconnected/i
 
 /**
  * Whether a failure means "the Agent is no longer connected", which the panel
  * can fix by reconnecting, or just "this request was refused", which it cannot.
- * The DSH Desktop driver says `E_DSH_DISCONNECTED`, an ACP Agent whose process
- * exited says 「Agent 尚未连接」, and anything else is judged by its wording.
- * A failed turn (`E_AGENT_STREAM`) is not a lost connection: it is reported and
- * left alone, so a bad reply never offers a reconnect.
+ * A code that names a lost connection decides; otherwise the wording does. That
+ * includes a failed turn (`E_AGENT_STREAM`), whose message is the driver's: a
+ * reply that merely failed offers no reconnect, an exited process does.
  */
 export function connectionLost(reason: unknown): boolean {
   if (!reason) return false
@@ -241,12 +242,15 @@ export function CollabPanel({
 
   const backend = backends.find((item) => item.id === backendId) ?? backends[0] ?? FALLBACK_BACKENDS[0]!
 
+  const [lost, setLost] = useState(false)
   const fail = useCallback(
     (reason: unknown) => {
       setError(reason instanceof Error && reason.message ? reason.message : '无法连接 Agent，请确认它仍在运行后重试。')
       // An Agent whose connection dropped is no longer connected: the head, the
       // status bar and the connect card must stop claiming it is.
-      if (connectionLost(reason)) void loadBackends()
+      const dropped = connectionLost(reason)
+      setLost(dropped)
+      if (dropped) void loadBackends()
     },
     [loadBackends],
   )
@@ -270,7 +274,8 @@ export function CollabPanel({
       setReconnecting(false)
     }
   }, [client, fail, reconnecting])
-  const mayReconnect = connectionLost(error)
+  // A custom command's arguments live only in its connect card, so it reconnects from there.
+  const mayReconnect = lost && !isCustomBackend(backend)
 
   const dock = (
     <ApprovalDock

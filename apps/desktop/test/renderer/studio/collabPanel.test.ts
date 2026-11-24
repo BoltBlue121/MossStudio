@@ -589,14 +589,14 @@ describe('CollabPanel', () => {
 
     // The Agent's process exited: sending fails the way the hub reports it.
     const asked = backend.callsTo(Ipc.agentHubBackends).length
-    backend.state.agents.sendError = 'DSH 连接已断开，请重新连接桌面端'
+    backend.state.agents.sendError = 'Agent 进程已退出'
     fill(view.querySelector('textarea[aria-label="发给 Codex 的消息"]'), '你好')
     const send = [...view.querySelectorAll('button')].find((button) => button.textContent === '发给 Codex')!
     await act(async () => (send as HTMLButtonElement).click())
     await settle()
 
     // The warning is shown, the hub is asked again, and the status bar stops lying.
-    expect(view.querySelector('[data-notice="warn"]')?.textContent).toContain('连接已断开')
+    expect(view.querySelector('[data-notice="warn"]')?.textContent).toContain('Agent 进程已退出')
     expect(backend.callsTo(Ipc.agentHubBackends).length).toBe(asked + 1)
     expect(view.querySelector('[data-collab-status]')?.getAttribute('data-activity')).toBe('offline')
 
@@ -607,13 +607,49 @@ describe('CollabPanel', () => {
     expect(view.querySelector('[data-notice="warn"]')).toBeNull()
   })
 
+  it('leaves a dropped custom command to its connect card, which holds its arguments', async () => {
+    const backend = createMockBackend(withExternalAgents())
+    backend.install()
+    const custom = { id: 'custom-acp', label: '自定义 ACP', kind: 'acp', available: true, command: 'npx' }
+    backend.handle(Ipc.agentHubBackends, () => [{ ...custom, connected: backend.state.agents.sendError === undefined }])
+    backend.handle(Ipc.agentHubSessions, () => [{ id: 's1', title: '海报一', cwd: 'F:\\work\\poster', updatedAt: 3 }])
+    backend.handle(Ipc.agentHubMessages, () => ({ messages: [], hasMore: false, asOfSeq: 0 }))
+    bindSession('custom-acp', 'p', 's1')
+    const view = mount(
+      createElement(CollabPanel, {
+        board: { projectId: 'p', projectName: 'P', canvas: null },
+        projectKey: 1,
+        visible: true,
+        onStandalone: () => {},
+      }),
+    )
+    await settle()
+    backend.state.agents.sendError = 'Agent 进程已退出'
+    fill(view.querySelector('textarea'), '你好')
+    const send = [...view.querySelectorAll('button')].find((button) => button.textContent?.startsWith('发给'))!
+    await act(async () => (send as HTMLButtonElement).click())
+    await settle()
+    expect(view.querySelector('[data-notice="warn"]')?.textContent).toContain('Agent 进程已退出')
+    expect(view.querySelector('[data-collab-reconnect]')).toBeNull()
+    expect(view.querySelector('[data-hub-connect="custom-acp"]')).not.toBeNull()
+  })
+
   it('tells a refused request apart from a dropped connection, so only the second offers a reconnect', () => {
-    expect(connectionLost(new ApiError({ code: 'E_DSH_DISCONNECTED', message: '请先连接 DSH Desktop' }))).toBe(true)
+    // A driver's code decides when it names a lost connection (the DSH Desktop driver's E_DSH_DISCONNECTED).
+    expect(connectionLost(new ApiError({ code: 'E_DSH_DISCONNECTED', message: 'x' }))).toBe(true)
+    // The ACP driver's messages, which main sends as INTERNAL or as a stream error.
+    for (const message of [
+      'Agent 已断开连接',
+      'Agent 进程已退出',
+      'Agent 输入通道已关闭',
+      'Agent 尚未连接，请先连接后端',
+      'Agent 请求超时，请重新连接',
+    ]) {
+      expect(connectionLost(new ApiError({ code: 'INTERNAL', message }))).toBe(true)
+      expect(connectionLost(new ApiError({ code: 'E_AGENT_STREAM', message }))).toBe(true)
+    }
     expect(connectionLost(new ApiError({ code: 'E_AGENT_STREAM', message: 'Agent 这次没有回复成功，请稍后重试。' }))).toBe(false)
-    // An ACP Agent whose process exited says so in words, with no code of its own.
-    expect(connectionLost(new Error('Agent 尚未连接，请先连接后端'))).toBe(true)
-    expect(connectionLost(new Error('socket disconnected'))).toBe(true)
-    expect(connectionLost('DSH 消息流已中断，请重新连接')).toBe(true)
+    expect(connectionLost(new Error('无法启动 Agent，请检查命令是否已安装'))).toBe(false)
     expect(connectionLost(new Error('这个 Agent 暂时不能切换模型'))).toBe(false)
     expect(connectionLost(undefined)).toBe(false)
   })

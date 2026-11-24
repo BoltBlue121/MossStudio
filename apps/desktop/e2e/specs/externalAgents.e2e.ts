@@ -103,13 +103,13 @@ describe('外部 Agent on', () => {
 
     // The Agent's process exits: the next send fails, and the hub now says it is not connected.
     await page.evaluate(() => {
-      window.__mock.state.agents.sendError = 'DSH 连接已断开，请重新连接桌面端'
+      window.__mock.state.agents.sendError = 'Agent 进程已退出'
       window.__mock.state.agents.backends = window.__mock.state.agents.backends.map((item) => ({ ...item, connected: false }))
     })
     await panel.getByLabel('发给 Codex 的消息').fill('你好')
     await panel.getByRole('button', { name: '发给 Codex', exact: true }).click()
     const notice = panel.locator('[data-notice="warn"]')
-    await expect.poll(() => notice.textContent()).toContain('连接已断开')
+    await expect.poll(() => notice.textContent()).toContain('Agent 进程已退出')
     await expect.poll(() => status.getAttribute('data-activity')).toBe('offline')
 
     await notice.locator('[data-collab-reconnect]').click()
