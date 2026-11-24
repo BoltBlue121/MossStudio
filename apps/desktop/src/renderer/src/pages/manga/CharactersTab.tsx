@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Ipc } from '@shared/channels'
 import { emptyCharacter, newId, type MangaCharacter, type MangaImage, type MangaSeries } from '@shared/manga/model'
 import { call } from '../../lib/api'
+import { PreviewButton } from '../../components/common/ImageLightbox'
 import { cloverUrl } from '../../lib/clover'
 import {
   Button,
@@ -183,7 +184,13 @@ function CharacterEditor({
         <div className="flex flex-wrap gap-2">
           {character.references.map((image, index) => (
             <div key={image.path} className="group relative size-24 overflow-hidden rounded-lg bg-panel">
-              <img src={cloverUrl(image.path)} alt={`参考图 ${index + 1}`} className="size-full object-cover" />
+              <PreviewButton
+                path={image.path}
+                title="角色参考图"
+                gallery={character.references.map((ref) => ({ ...ref, title: '角色参考图' }))}
+              >
+                <img src={cloverUrl(image.path)} alt={`参考图 ${index + 1}`} className="size-full object-cover" />
+              </PreviewButton>
               <IconButton
                 label={`移除参考图 ${index + 1}`}
                 className="absolute right-1 top-1 size-6 bg-raised"

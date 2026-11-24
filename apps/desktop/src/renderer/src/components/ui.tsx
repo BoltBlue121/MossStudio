@@ -873,10 +873,13 @@ export function ToastProvider({ children }: { children: ReactNode }): React.JSX.
   )
 }
 
-export function MarkdownBody({ children }: { children: string }): React.JSX.Element {
+export function MarkdownBody({
+  children,
+  ...options
+}: { children: string } & Pick<ComponentProps<typeof Markdown>, 'components' | 'urlTransform'>): React.JSX.Element {
   return (
     <div className="clover-md selectable text-ui leading-6 text-ink-2">
-      <Markdown breakNewLines skipHtml>
+      <Markdown breakNewLines skipHtml {...options}>
         {children}
       </Markdown>
     </div>

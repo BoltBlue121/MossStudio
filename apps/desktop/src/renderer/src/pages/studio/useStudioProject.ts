@@ -563,6 +563,8 @@ export function useStudioProject(options: {
     const onKey = (event: KeyboardEvent): void => {
       if (!activeRef.current || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's') return
       event.preventDefault()
+      const dialogs = document.querySelectorAll('dialog[open], [role="dialog"]')
+      if (Array.from(dialogs).some((dialog) => !dialog.closest('[hidden], [inert], [aria-hidden="true"]'))) return
       if (isDirty()) void saveNow()
     }
     window.addEventListener('keydown', onKey)

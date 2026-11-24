@@ -1,9 +1,10 @@
-import { act, createElement } from 'react'
+import { act, createElement, Fragment } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { ProjectCanvas } from '@shared/types'
 import { canvasFixture } from '@test/mocks/backend'
-import { sameCardProps, type CanvasCardProps } from '@renderer/pages/studio/CanvasCard'
+import { ImageLightbox } from '@renderer/components/common/ImageLightbox'
+import { CanvasCard, sameCardProps, type CanvasCardProps } from '@renderer/pages/studio/CanvasCard'
 import { sameData } from '@renderer/pages/studio/sameData'
 import { useCardDrag } from '@renderer/pages/studio/useCardDrag'
 import { useStableCallbacks } from '@renderer/pages/studio/useStableCallbacks'
@@ -50,20 +51,100 @@ describe('studio/sameData', () => {
   })
 })
 
-describe('studio/CanvasCard memo', () => {
-  const props = (canvas: ProjectCanvas, onSelect: () => void): CanvasCardProps =>
-    ({
-      canvas,
-      view: { state: 'idle', active: false, label: '', detail: '', outputs: [] },
-      selected: false,
-      dragging: false,
-      tool: 'select',
-      selectedRegionId: null,
-      rerun: { ok: true },
-      hasOutput: false,
-      onSelect,
-    }) as unknown as CanvasCardProps
+const noop = (): void => {}
+const props = (canvas: ProjectCanvas, onSelect = noop): CanvasCardProps => ({
+  canvas,
+  view: { state: 'idle', active: false, label: '', detail: '', outputs: [] },
+  selected: false,
+  dragging: false,
+  tool: 'select',
+  selectedRegionId: null,
+  rerun: { ok: true },
+  hasOutput: false,
+  onSelect,
+  onPortDown: noop,
+  onSelectRegion: noop,
+  onChangeLayers: noop,
+  onRegionDrawn: noop,
+  onEditRegion: noop,
+  onEditDone: noop,
+  onDragStart: noop,
+  onOpenViewer: noop,
+  onRerun: noop,
+  onCancel: noop,
+  onShowActivity: noop,
+})
 
+describe('canvas face preview', () => {
+  const output = { path: '/old.png', width: 1024, height: 1024, seed: 4 }
+  const strip = {
+    items: [
+      { number: 1, runId: 'old', output: 0, path: output.path },
+      { number: 2, runId: 'new', output: 0 },
+    ],
+    shown: 1,
+    queued: [],
+    views: new Map(),
+    onShow: noop,
+    onOpen: noop,
+    onCancelQueued: noop,
+    onPointerDown: noop,
+  }
+  const base = props(canvasFixture({ backgroundPath: '/back.png' }))
+  const initPicture = { path: '/init.png', size: null }
+  function renderCard(first: CanvasCardProps) {
+    const host = document.createElement('div')
+    root = createRoot(host)
+    const render = (p: CanvasCardProps) =>
+      act(() => root!.render(createElement(Fragment, null, createElement(CanvasCard, p), createElement(ImageLightbox))))
+    render(first)
+    return { host, render, zoom: () => host.querySelector<HTMLButtonElement>('button[aria-label^="放大预览"]') }
+  }
+
+  it.each<[string, Partial<CanvasCardProps>, string]>([
+    ['background', {}, 'back'],
+    ['linked start image over background', { initPicture }, 'init'],
+    ['imported image', { canvas: canvasFixture({ kind: 'image', imagePath: '/import.png' }) }, 'import'],
+    [
+      'picked output over start image',
+      {
+        initPicture,
+        view: { ...base.view, outputs: [output, { ...output, path: '/pick.png' }] },
+        strip: { ...strip, items: [{ runId: 'old', output: 1, number: 1, path: '/pick.png' }], shown: 0 },
+      },
+      'pick',
+    ],
+  ])('opens the displayed %s', (_label, patch, expected) => {
+    const { host, zoom } = renderCard({ ...base, ...patch })
+    const src = host.querySelector<HTMLImageElement>('[data-card-body] img')!.src
+    expect(src).toBe(`clover://local?path=%2F${expected}.png`)
+    expect(zoom()).not.toBeNull()
+    act(() => zoom()!.click())
+    expect(document.querySelector<HTMLImageElement>('dialog img')?.src).toBe(src)
+  })
+
+  it('opens the visible live frame instead of an old output or the next frame still loading', () => {
+    const view = { ...base.view, active: true, state: 'running' as const, outputs: [output], preview: { path: '/live.png', seq: 1 } }
+    const { host, render, zoom } = renderCard({ ...base, view, strip })
+    act(() => {
+      host.querySelector('[data-live-preview] img')!.dispatchEvent(new Event('load'))
+    })
+    render({ ...base, view: { ...view, preview: { ...view.preview, seq: 2 } }, strip })
+    const front = host.querySelector<HTMLImageElement>('[data-preview-front]')!.src
+    expect(front).toBe('clover://local?path=%2Flive.png&seq=1')
+    act(() => zoom()!.click())
+    expect(document.querySelector<HTMLImageElement>('dialog img')?.src).toBe(front)
+    expect(document.querySelector('dialog')?.textContent).not.toContain('另存为')
+  })
+
+  it('offers no zoom on an empty running face even when the strip has older pictures', () => {
+    const { host, zoom } = renderCard({ ...base, canvas: canvasFixture(), view: { ...base.view, active: true, state: 'running' }, strip })
+    expect(host.querySelector('[data-card-body] img')).toBeNull()
+    expect(zoom()).toBeNull()
+  })
+})
+
+describe('studio/CanvasCard memo', () => {
   it('skips a render when only fresh copies of the same data arrive', () => {
     const onSelect = vi.fn()
     expect(sameCardProps(props(canvasFixture({ x: 10 }), onSelect), props(canvasFixture({ x: 10 }), onSelect))).toBe(true)
