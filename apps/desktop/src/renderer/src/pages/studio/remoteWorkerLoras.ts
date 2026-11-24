@@ -112,31 +112,43 @@ export function workerModelBundles(items: readonly RemoteWorkerModelItem[]): Mod
  * Resolve which model to run on a Worker daemon host.
  * Uses the real models detected on the Worker (`/v1/models`) when available,
  * falling back to the legacy `remote-worker:` placeholder while offline or
- * talking to an older daemon without `/v1/models`.
+ * talking to an older daemon that does not list its models. `ids` are tried in
+ * order, each as a Worker model id or as the catalog bundle a Worker model is.
  */
 export function resolveWorkerBundle(
   host: Pick<ManagedHost, 'id' | 'name' | 'workerProviderId'>,
   inventory: RemoteWorkerModelInventory | null | undefined,
-  requestedId: string | undefined,
-  preferredId: string | null | undefined,
+  ids: ReadonlyArray<string | null | undefined>,
   catalog: Pick<Catalog, 'bundles'> | null | undefined,
 ): BundleChoice {
   const models = inventory?.models ?? []
   if (!models.length) return workerBundleChoice(host, catalog)
   const bundles = workerModelBundles(models)
-  const findById = (id?: string | null): ModelBundle | undefined => {
-    if (!id || id.startsWith('remote-worker:')) return undefined
-    const exact = bundles.find((b) => b.id === id)
-    if (exact) return exact
-    const byCatalog = models.find((m) => m.catalogBundleId === id)
-    return byCatalog ? bundles.find((b) => b.id === byCatalog.id) : undefined
+  const byId = (id: string | null | undefined): ModelBundle | undefined => {
+    const item = id ? (models.find((model) => model.id === id) ?? models.find((model) => model.catalogBundleId === id)) : undefined
+    return item && bundles.find((bundle) => bundle.id === item.id)
   }
-  const picked =
-    findById(requestedId) ??
-    findById(preferredId) ??
-    (inventory?.defaultModelId ? bundles.find((b) => b.id === inventory.defaultModelId) : undefined) ??
-    bundles[0]!
+  const picked = [...ids, inventory?.defaultModelId].map(byId).find(Boolean) ?? bundles[0]!
   return { bundle: picked, installed: true, unavailable: false }
+}
+
+/**
+ * The model a 画面 keeps when a Worker model is picked: the catalog model it
+ * is, when this computer's library has that, else the one it had. A Worker's
+ * own id never goes into the 画面, so it still runs back on this computer.
+ */
+export function canvasModelForWorkerPick(
+  item: Pick<RemoteWorkerModelItem, 'catalogBundleId'> | undefined,
+  catalog: Pick<Catalog, 'bundles'> | null | undefined,
+  current: string | undefined,
+): string | undefined {
+  const twin = item?.catalogBundleId
+  return twin && catalog?.bundles.some((bundle) => bundle.id === twin) ? twin : current
+}
+
+/** Why a run waits on a Worker host whose model list has not been read (yet, or at all). */
+export function workerModelsUnread(hostName: string): string {
+  return `还没有读到「${hostName}」上的模型，请稍后再试`
 }
 
 /**

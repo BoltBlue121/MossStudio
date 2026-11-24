@@ -504,8 +504,9 @@ export function scenario(name: ScenarioName = 'ready', patch: Partial<MockBacken
             catalogBundleId: 'moss-sft',
             sizeBytes: 27_200_000_000,
           },
+          // A Worker names its models its own way; catalogBundleId ties one to the library.
           {
-            id: 'moss-sft-int8',
+            id: 'sft-int8',
             name: 'MOSS-Image SFT INT8',
             variant: ['INT8'],
             tier: 'high',

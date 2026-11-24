@@ -3,7 +3,12 @@ import type { RemoteWorkerModelInventory } from '@shared/remoteWorker'
 import type { ModelBundle, ModelEntry } from '@shared/types'
 import { bundleBlocker } from '../../../src/renderer/src/pages/models/logic'
 import { applyLoraAutoTriggers } from '../../../src/renderer/src/pages/studio/prompt'
-import { missingWorkerAdapters, resolveWorkerBundle, workerAdapterEntries } from '../../../src/renderer/src/pages/studio/remoteWorkerLoras'
+import {
+  canvasModelForWorkerPick,
+  missingWorkerAdapters,
+  resolveWorkerBundle,
+  workerAdapterEntries,
+} from '../../../src/renderer/src/pages/studio/remoteWorkerLoras'
 
 const HOST = { id: 'ssh-gpu-1', name: 'GPU Worker', workerProviderId: 'worker-gpu-1' }
 
@@ -21,7 +26,7 @@ const WORKER_INVENTORY: RemoteWorkerModelInventory = {
       sizeBytes: 27_000_000_000,
     },
     {
-      id: 'moss-sft-int8',
+      id: 'sft-int8',
       name: 'MOSS-Image SFT INT8',
       variant: ['INT8'],
       tier: 'high',
@@ -30,6 +35,7 @@ const WORKER_INVENTORY: RemoteWorkerModelInventory = {
       defaults: { steps: 16, cfg: 3 },
       sizeBytes: 9_600_000_000,
     },
+    { id: 'my-finetune', name: 'My finetune' },
   ],
   components: [],
 }
@@ -66,17 +72,32 @@ describe('Worker real model resolution and strength=0 LoRAs', () => {
   })
 
   it('resolves real models from worker inventory and falls back cleanly for legacy daemons', () => {
-    const legacyPlaceholder = resolveWorkerBundle(HOST, WORKER_INVENTORY, 'remote-worker:worker-gpu-1', null, null)
+    const legacyPlaceholder = resolveWorkerBundle(HOST, WORKER_INVENTORY, ['remote-worker:worker-gpu-1'], null)
     expect(legacyPlaceholder.bundle?.id).toBe('moss-sft')
 
-    const explicit = resolveWorkerBundle(HOST, WORKER_INVENTORY, 'moss-sft-int8', null, null)
-    expect(explicit.bundle?.id).toBe('moss-sft-int8')
+    const explicit = resolveWorkerBundle(HOST, WORKER_INVENTORY, ['sft-int8'], null)
+    expect(explicit.bundle?.id).toBe('sft-int8')
     expect(explicit.bundle?.tier).toBe('high')
     expect(explicit.bundle?.defaults).toEqual({ steps: 16, cfg: 3 })
+    // A 画面's catalog model finds the Worker model that is it, under the Worker's own id.
+    expect(resolveWorkerBundle(HOST, WORKER_INVENTORY, [null, 'moss-sft-int8'], null).bundle?.id).toBe('sft-int8')
+    // The Worker pick comes first; an id the Worker lacks is skipped.
+    expect(resolveWorkerBundle(HOST, WORKER_INVENTORY, ['my-finetune', 'moss-sft-int8'], null).bundle?.id).toBe('my-finetune')
+    expect(resolveWorkerBundle(HOST, WORKER_INVENTORY, ['gone', 'moss-sft-int8'], null).bundle?.id).toBe('sft-int8')
 
-    const unsupported = resolveWorkerBundle(HOST, { models: [], components: [], unsupported: true }, undefined, null, null)
+    const unsupported = resolveWorkerBundle(HOST, { models: [], components: [], unsupported: true }, [], null)
     expect(unsupported.bundle?.id).toBe('remote-worker:worker-gpu-1')
     expect(unsupported.installed).toBe(true)
+  })
+
+  it('keeps a catalog model in the 画面 when a Worker model is picked, never the Worker’s own id', () => {
+    const catalog = { bundles: [{ id: 'moss-sft-int8' }, { id: 'moss-sft' }] as ModelBundle[] }
+    const [, int8, finetune] = WORKER_INVENTORY.models
+    expect(canvasModelForWorkerPick(int8, catalog, 'moss-sft')).toBe('moss-sft-int8')
+    expect(canvasModelForWorkerPick(finetune, catalog, 'moss-sft')).toBe('moss-sft')
+    expect(canvasModelForWorkerPick(finetune, catalog, undefined)).toBeUndefined()
+    // A catalog id this computer's library does not have is not kept either.
+    expect(canvasModelForWorkerPick({ catalogBundleId: 'moss-elsewhere' }, catalog, 'moss-sft')).toBe('moss-sft')
   })
 
   it('allows single-file catalog bundles on worker-daemon hosts while still blocking them on plain SSH hosts', () => {

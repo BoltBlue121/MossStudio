@@ -44,7 +44,15 @@ import { GbcPanel } from './GbcPanel'
 import { sizeLike, withParsedRegions } from './pictureRegions'
 import type { GbcPicture } from '@shared/gbc'
 import { deriveReadiness, isWorkerRun, resolveBundle, type Blocker } from './readiness'
-import { isWorkerDaemonHost, resolveWorkerBundle, workerAdapterEntries, workerAdapterFor, workerModelBundles } from './remoteWorkerLoras'
+import {
+  canvasModelForWorkerPick,
+  isWorkerDaemonHost,
+  resolveWorkerBundle,
+  workerAdapterEntries,
+  workerAdapterFor,
+  workerModelBundles,
+  workerModelsUnread,
+} from './remoteWorkerLoras'
 import { useWorkerLoras } from './useWorkerLoras'
 import { useWorkerModels } from './useWorkerModels'
 import { usePreparation } from '../../lib/usePreparation'
@@ -92,6 +100,7 @@ import { usePictureRegions } from './usePictureRegions'
 
 const BUNDLE_KEY = 'mossstudio.modelBundleId'
 const HOST_KEY = 'mossstudio.studioHostId'
+const WORKER_MODEL_KEY = 'mossstudio.workerModelId'
 const ASSISTANT_MODE_KEY = 'mossstudio.assistantMode'
 const WIDTH_KEY = 'mossstudio.studioPanelWidths'
 const UNDERLAY_HANDOFF_KEY = 'clover.studioBackground'
@@ -180,6 +189,8 @@ export function StudioPage(): React.JSX.Element {
   const [gpuInventory, setGpuInventory] = useState<GpuInventorySnapshot | null>(null)
   const [hosts, setHosts] = useState<ManagedHost[]>([])
   const [remoteHostId, setRemoteHostId] = useState(() => readStorage(HOST_KEY) ?? '')
+  // The model picked on a Worker, kept apart from the 画面's own (see canvasModelForWorkerPick).
+  const [workerModelId, setWorkerModelId] = useState<string | null>(() => readStorage(WORKER_MODEL_KEY))
   const [tool, setTool] = useState<BoardTool>('select')
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null)
   /** 助手 opens beside the board from the title bar; closed, the board takes the room. */
@@ -217,7 +228,7 @@ export function StudioPage(): React.JSX.Element {
   const workerLoras = useWorkerLoras(workerHost?.id ?? null)
   const workerAdapters = useMemo(() => (workerLoras.items ? workerAdapterEntries(workerLoras.items) : null), [workerLoras.items])
   const bundle = workerHost
-    ? resolveWorkerBundle(workerHost, workerModels.inventory, selected?.modelBundleId, preferredBundleId, catalog)
+    ? resolveWorkerBundle(workerHost, workerModels.inventory, [workerModelId, selected?.modelBundleId, preferredBundleId], catalog)
     : resolveBundle(catalog, selected?.modelBundleId, preferredBundleId)
   const worker = isWorkerRun(bundle.bundle, remoteHost)
   // A legacy Worker binding without a selected Worker cannot use this computer's capabilities.
@@ -259,7 +270,11 @@ export function StudioPage(): React.JSX.Element {
     // While first-run preparation is still going ('active'), its page is where progress shows.
     setupDone: settings ? settings.onboardingState === 'completed' || settings.onboardingState === 'dismissed' : true,
     remote: remoteHost ? { name: remoteHost.name, modelPath: remoteHost.modelPath, remoteBackend: remoteHost.remoteBackend } : null,
-    inputBlockers,
+    // Until a Worker's model list is read, a run would quietly go to the daemon's default model.
+    inputBlockers:
+      workerHost && !workerModels.inventory
+        ? [...inputBlockers, { id: 'worker-models', message: workerModelsUnread(workerHost.name) }]
+        : inputBlockers,
     update,
     features: boardFeatures,
     gpus,
@@ -298,6 +313,7 @@ export function StudioPage(): React.JSX.Element {
     preferredBundleId,
     remoteHost,
     workerModels: workerHost ? workerModels.inventory : null,
+    workerModelId,
     workerAdapters,
     controlAdapters,
     controlAdaptersLoaded,
@@ -1101,9 +1117,19 @@ export function StudioPage(): React.JSX.Element {
           onPickBundle={(id) => {
             // A few-step model (Turbo / Heal) brings its own steps and CFG.
             const from = bundle.bundle
-            const to = workerHost
-              ? workerModelBundles(workerModels.inventory?.models ?? []).find((item) => item.id === id)
-              : catalog?.bundles.find((item) => item.id === id)
+            if (workerHost) {
+              const item = workerModels.inventory?.models.find((model) => model.id === id)
+              const to = item ? workerModelBundles([item])[0] : undefined
+              changeSelected((canvas) => ({
+                ...canvas,
+                ...samplingForBundle(canvas, from, to),
+                modelBundleId: canvasModelForWorkerPick(item, catalog, canvas.modelBundleId),
+              }))
+              setWorkerModelId(id || null)
+              writeStorage(WORKER_MODEL_KEY, id || null)
+              return
+            }
+            const to = catalog?.bundles.find((item) => item.id === id)
             changeSelected((canvas) => ({ ...canvas, ...samplingForBundle(canvas, from, to), modelBundleId: id || undefined }))
             setPreferredBundleId(id)
             writeStorage(BUNDLE_KEY, id || null)

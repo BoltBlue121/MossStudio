@@ -185,5 +185,11 @@ describe('Worker 远程主机 on', () => {
     await expect.poll(() => picker.textContent()).toContain('MOSS-Image SFT')
     await picker.click()
     await expect.poll(() => page.getByRole('menuitem', { name: /MOSS-Image SFT INT8/ }).isVisible()).toBe(true)
+    // The Worker's own id (sft-int8) goes to the job; the 画面 keeps the library's.
+    await page.getByRole('menuitem', { name: /MOSS-Image SFT INT8/ }).click()
+    await page.locator('[data-studio-generate]').click()
+    await expect
+      .poll(() => app.calls('http:POST /api/engine-jobs'))
+      .toMatchObject([{ hostId: 'worker-1', modelBinding: { bundleId: 'sft-int8' } }])
   })
 })
