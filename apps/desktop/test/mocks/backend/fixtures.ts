@@ -108,6 +108,7 @@ export function settingsFixture(patch: Partial<Settings> = {}): Settings {
     remoteHostsEnabled: false,
     trainingEnabled: false,
     gbcEnabled: false,
+    toolHubEnabled: false,
     externalAgentsEnabled: false,
     workerHostsEnabled: false,
     gbcProviderId: null,

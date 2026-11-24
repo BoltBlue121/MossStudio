@@ -7,6 +7,7 @@ import { useShell } from './lib/shell'
 import type { WindowIntent } from './lib/windows'
 import { useApp } from './store'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { ImageLightbox } from './components/common/ImageLightbox'
 import { ModelImportHost } from './components/ModelImport'
 import { ToastProvider, cn, useToast } from './components/ui'
 import { ActivityPanel } from './components/shell/ActivityPanel'
@@ -146,6 +147,7 @@ function StudioShell(): React.JSX.Element {
         </main>
       </div>
       <ModelImportHost />
+      <ImageLightbox key={pathname} />
     </div>
   )
 }

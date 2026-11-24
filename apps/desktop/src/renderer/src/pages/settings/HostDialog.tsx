@@ -223,7 +223,7 @@ export function HostDialog({
               <Input
                 className="font-mono text-caption"
                 value={form.workerWorkflow}
-                placeholder="default"
+                placeholder="留空自动使用远端服务默认"
                 spellCheck={false}
                 aria-invalid={Boolean(errors.workerWorkflow) || undefined}
                 onChange={(event) => set('workerWorkflow', event.target.value)}

@@ -20,10 +20,10 @@ export interface PictureActions {
 }
 
 /** What can be done with a generated picture outside MossStudio, the same in the viewer, 作品 and the filmstrip. */
-export function usePictureActions(): PictureActions {
+export function usePictureActions(errorMessage = message): PictureActions {
   const toast = useToast()
   return useMemo(() => {
-    const fail = (cause: unknown): void => toast.push(message(cause), 'error')
+    const fail = (cause: unknown): void => toast.push(errorMessage(cause), 'error')
     const copy = async (path: string): Promise<boolean> => {
       try {
         await call(Ipc.galleryCopyImage, { path })
@@ -58,5 +58,5 @@ export function usePictureActions(): PictureActions {
       { label: '在文件夹中显示', onSelect: () => reveal(path) },
     ]
     return { copy, saveAs, reveal, dragOut, menu }
-  }, [toast])
+  }, [errorMessage, toast])
 }

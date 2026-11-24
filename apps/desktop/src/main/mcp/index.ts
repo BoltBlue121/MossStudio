@@ -1,4 +1,5 @@
 export {
+  bridgeLaunch,
   getMcpClientsStatus,
   installMcpClient,
   refreshMcpClientRegistrations,

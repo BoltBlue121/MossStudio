@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { JobRecord, ProjectDocument, ProjectSummary } from '@shared/types'
 import type { StudioClient, StudioProjectInput } from '@renderer/lib/studioClient'
+import { ImageLightbox, openImagePreview } from '@renderer/components/common/ImageLightbox'
 import { createExternalSteps, useStudioProject, type StepOutcome, type StudioProject } from '@renderer/pages/studio/useStudioProject'
 import { canvas } from './fixtures'
 
@@ -141,6 +142,41 @@ describe('useStudioProject', () => {
     expect(get().projectId).toBe(openId)
     expect(get().canvases[0]!.prompt).toBe('unsaved edit')
   })
+
+  it.each(['lightbox', 'ARIA dialog'] as const)(
+    'does not shortcut-save behind an open %s, then saves the pending edit after closing',
+    async (kind) => {
+      const fake = fakeClient([doc('a')])
+      const { get } = await mount(fake.client)
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const host = document.createElement('div')
+      document.body.append(host)
+      const overlay = createRoot(host)
+      const pressSave = async (): Promise<void> => {
+        const key = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true })
+        await act(async () => {
+          document.activeElement!.dispatchEvent(key)
+        })
+        expect(key.defaultPrevented).toBe(true)
+      }
+      try {
+        act(() => get().updateCanvas('a-c', { prompt: 'pending' }))
+        act(() => overlay.render(kind === 'lightbox' ? createElement(ImageLightbox) : createElement('div', { role: 'dialog' })))
+        if (kind === 'lightbox') act(() => openImagePreview({ path: '/preview.png' }))
+        expect(document.querySelector('dialog[open], [role="dialog"]')).not.toBeNull()
+        await pressSave()
+        expect(fake.log).toEqual([])
+        if (kind === 'lightbox') act(() => document.querySelector<HTMLButtonElement>('dialog [aria-label="关闭"]')!.click())
+        else act(() => overlay.render(createElement('div', { hidden: true }, createElement('div', { role: 'dialog' }))))
+        await pressSave()
+        expect(fake.log).toEqual(['save:a'])
+        expect(fake.projects.get('a')!.canvases[0]!.prompt).toBe('pending')
+      } finally {
+        act(() => overlay.unmount())
+        host.remove()
+      }
+    },
+  )
 
   it('switches after a successful save of pending edits', async () => {
     const fake = fakeClient([doc('a'), doc('b')])

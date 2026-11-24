@@ -18,6 +18,7 @@ import { approve, reject } from '@shared/manga/queue'
 import { Ipc } from '@shared/channels'
 import { call } from '../../lib/api'
 import { cloverUrl } from '../../lib/clover'
+import { PreviewButton } from '../../components/common/ImageLightbox'
 import { Notice } from '../../components/common/Notice'
 import { PromptBlock } from '../../components/common/PromptBlock'
 import { Advanced, Button, Card, Field, IconButton, Input, Pill, ProgressBar, Select, Textarea, cn } from '../../components/ui'
@@ -68,11 +69,18 @@ export function PanelCard({
         <div className="flex w-40 shrink-0 flex-col gap-1.5">
           <div className="flex aspect-[4/3] items-center justify-center overflow-hidden rounded-lg bg-well">
             {picture ? (
-              <img
-                src={cloverUrl(picture.path)}
-                alt={`${label}的画面`}
-                className={cn('size-full object-contain', series.style.monochrome && 'grayscale')}
-              />
+              <PreviewButton
+                path={picture.path}
+                title={label}
+                artwork
+                gallery={panel.takes.map((take) => ({ ...take, title: label, artwork: true }))}
+              >
+                <img
+                  src={cloverUrl(picture.path)}
+                  alt={`${label}的画面`}
+                  className={cn('size-full object-contain', series.style.monochrome && 'grayscale')}
+                />
+              </PreviewButton>
             ) : (
               <span className="text-caption text-ink-2">{panel.state === 'running' ? '正在画…' : '还没有画面'}</span>
             )}

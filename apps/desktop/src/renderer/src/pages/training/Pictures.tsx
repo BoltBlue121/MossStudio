@@ -5,6 +5,7 @@ import { cloverUrl } from '../../lib/clover'
 import { dimensions } from '../../lib/format'
 import { Popover, MenuItem } from '../../components/common/Popover'
 import { Button, EmptyState, IconButton, LoadingRow, Pill, Segmented, Spinner, Textarea, cn } from '../../components/ui'
+import { PreviewButton } from '../../components/common/ImageLightbox'
 import { GbcLabel } from './GbcLabel'
 import { filterPictures, problemBadge, problemChips, problemPill, type PictureFilter } from './editorModel'
 import { readPreference, writePreference } from './useTraining'
@@ -15,13 +16,15 @@ type PictureView = 'grid' | 'list'
 
 function Thumb({ image, className }: { image: DatasetImage; className?: string }): React.JSX.Element {
   return (
-    <img
-      src={cloverUrl(image.path)}
-      alt={image.name}
-      draggable={false}
-      loading="lazy"
-      className={cn('aspect-square w-full rounded-md bg-[var(--image-placeholder)] object-cover', className)}
-    />
+    <PreviewButton path={image.path} title={image.name}>
+      <img
+        src={cloverUrl(image.path)}
+        alt={image.name}
+        draggable={false}
+        loading="lazy"
+        className={cn('aspect-square w-full rounded-md bg-[var(--image-placeholder)] object-cover', className)}
+      />
+    </PreviewButton>
   )
 }
 
