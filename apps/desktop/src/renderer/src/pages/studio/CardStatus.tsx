@@ -5,18 +5,15 @@ import { duration } from '../../lib/format'
 import type { CardJobView } from './jobStatus'
 import { OutputImage } from './OutputImage'
 
-/** The engine rewrites one preview file; `seq` makes every frame a new URL. */
-export function previewSrc(path: string, seq: number): string {
-  return `${cloverUrl(path)}&seq=${seq}`
-}
+type LiveProps = NonNullable<CardJobView['preview']> & { alt: string; visible: React.RefObject<CardJobView['preview']> }
 
 /**
  * The live denoise picture. Two image slots: the next frame loads under the
  * current one and fades in on top only once decoded, so the card never
  * flashes blank between frames.
  */
-export function LivePreview({ path, seq, alt }: { path: string; seq: number; alt: string }): React.JSX.Element {
-  const src = previewSrc(path, seq)
+export function LivePreview({ path, seq, alt, visible }: LiveProps): React.JSX.Element {
+  const src = cloverUrl(path, seq)
   const [slots, setSlots] = useState<[string | null, string | null]>([null, null])
   const [front, setFront] = useState<0 | 1>(0)
   const [loaded, setLoaded] = useState<[boolean, boolean]>([false, false])
@@ -56,7 +53,10 @@ export function LivePreview({ path, seq, alt }: { path: string; seq: number; alt
                 next[slot] = true
                 return next
               })
-              if (value === src) setFront(slot)
+              if (value === src) {
+                setFront(slot)
+                visible.current = { path, seq }
+              }
             }}
             className={cn(
               'absolute inset-0 size-full object-cover transition-opacity duration-200',

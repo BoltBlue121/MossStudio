@@ -1,6 +1,7 @@
 import { CLI_ENGINE_LABEL } from '@shared/cliEngine'
+import { isWorkerSamplingKey } from '@shared/remoteWorker'
 import { isSharedModelId } from '@shared/sharedModels'
-import type { JobRecord } from '@shared/types'
+import type { JobRecord, JobSampling } from '@shared/types'
 import { codedError } from '../lib/codedError'
 import { resolveCanvasAdapters } from './adapterResolution'
 import { listControlAdapters } from './controlAdapters'
@@ -12,13 +13,27 @@ import { PROJECT_ID_PATTERN, projectAssetsDir } from './projects'
 import { getSettings } from './settings'
 import { startEngineJob } from './supervisor'
 import { getTrainingHost } from './trainingHosts'
-import { connectWorkerHost, isWorkerDaemonHost, listActiveWorkerProfiles } from './workerHostManager'
+import { connectWorkerHost, isWorkerDaemonHost, listActiveWorkerProfiles, workerEngineFeatures } from './workerHostManager'
 import { resolveRemoteWorkerAdapters } from './remoteWorker'
 import { assertGenerationAllowed } from '../update/gate'
 
 const INPUT_KEYS = new Set(['initImage', 'mask', 'control', 'references', 'visionReferences', 'sampling'])
 
 const text = (value: unknown): string | undefined => (typeof value === 'string' && value ? value : undefined)
+
+function workerSampling(raw: Record<string, unknown>): Pick<JobSampling, 'sampler' | 'scheduler'> | undefined {
+  if (Object.keys(pickJobInputs(raw)).some((key) => key !== 'sampling') || raw['init'] != null || raw['styles'] != null)
+    throw codedError('E_WORKER_UNSUPPORTED', '远端服务暂不支持图像输入，请移除后再生成')
+  const sampling = raw['sampling']
+  if (sampling === undefined) return undefined
+
+  const unsupported = () => codedError('E_WORKER_UNSUPPORTED', '远端服务仅支持选择采样器和调度器，请移除其他采样设置')
+  if (typeof sampling !== 'object' || sampling === null || Array.isArray(sampling)) throw unsupported()
+  const entries: [string, unknown][] = Object.entries(sampling)
+  if (!entries.length || entries.some(([key, value]) => !isWorkerSamplingKey(key) || typeof value !== 'string' || !value))
+    throw unsupported()
+  return Object.fromEntries(entries)
+}
 
 /**
  * The one way a generation request from outside main (IPC, the local HTTP
@@ -42,11 +57,16 @@ export async function startRequestedEngineJob(raw: Record<string, unknown>): Pro
       host = targetId ? getTrainingHost(settings, targetId) : undefined
     }
     if (!host || !isWorkerDaemonHost(host)) throw codedError('E_WORKER_CONFIG', '请选择已连接的远端服务主机')
-    if (Object.keys(pickJobInputs(raw)).length) throw codedError('E_WORKER_UNSUPPORTED', '远端服务暂不支持图像输入或高级采样')
+    const sampling = workerSampling(raw)
     const profile = await connectWorkerHost(host)
     if (profileId && profile.id !== profileId) throw codedError('E_WORKER_CONFIG', '所选模型与远端服务不匹配')
+    if (sampling) {
+      const features = await workerEngineFeatures(host)
+      if (!features?.samplers || Object.entries(sampling).some(([key, value]) => !features.values[key]?.includes(value)))
+        throw codedError('E_WORKER_UNSUPPORTED', '远端服务不支持所选采样器或调度器，请重新选择')
+    }
     const adapters = await resolveRemoteWorkerAdapters(profile, raw['adapters'])
-    return startEngineJob({ ...raw, hostId: host.id, deviceUuid: undefined, adapters } as never)
+    return startEngineJob({ ...raw, sampling, hostId: host.id, deviceUuid: undefined, adapters } as never)
   }
   const adapters = await resolveCanvasAdapters(settings, raw['adapters'], { hostId })
   const base = Object.fromEntries(Object.entries(raw).filter(([key]) => !INPUT_KEYS.has(key)))

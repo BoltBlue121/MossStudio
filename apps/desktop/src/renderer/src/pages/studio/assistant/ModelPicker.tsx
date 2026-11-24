@@ -1,14 +1,69 @@
 import { RefreshCw } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { cn, IconButton, Input, Select, useToast } from '../../../components/ui'
-import type { AgentModelCatalog, CollabClient } from './collabClient'
+import type { AgentModelCatalog, AgentModelOption, CollabClient } from './collabClient'
 
 const CUSTOM = '__custom__'
+/** The value the current model keeps while the Agent's list does not contain it. */
+const UNSET = '__current__'
 
 export interface ModelState {
   model?: string
   provider?: string
   reasoningEffort?: string
+}
+
+export interface ModelChoice {
+  /** Distinct across providers, so two of them offering the same id can both be picked. */
+  value: string
+  model: AgentModelOption
+  /** What the option reads: the model's name without the provider heading's own name. */
+  label: string
+}
+
+export interface ModelGroup {
+  /** The Agent's provider id; absent for the models it lists without one. */
+  provider?: string
+  choices: ModelChoice[]
+}
+
+/**
+ * The Agent's models grouped by provider, in the order it lists them: a long
+ * flat list is what made the old picker unreadable. Two providers may offer the
+ * same model id, so every entry gets a value of its own instead of the id — the
+ * old `value={item.id}` silently switched to whichever provider came first.
+ * A label that only repeats its provider (`x · provider`) drops that tail,
+ * because the group heading already says it.
+ */
+export function modelGroups(models: readonly AgentModelOption[]): ModelGroup[] {
+  const groups: ModelGroup[] = []
+  const byProvider = new Map<string, ModelGroup>()
+  const plain: ModelGroup = { choices: [] }
+  const used = new Set<string>()
+  for (const model of models) {
+    const id = model.id?.trim()
+    if (!id) continue
+    const provider = model.provider?.trim() || undefined
+    const named = model.label?.trim() || id
+    const label = provider && named.endsWith(` · ${provider}`) ? named.slice(0, -provider.length - 3).trim() || id : named
+    const base = provider ? `${provider}\u0000${id}` : id
+    let value = base
+    for (let n = 2; used.has(value); n++) value = `${base}\u0000${n}`
+    used.add(value)
+    const choice: ModelChoice = { value, model, label }
+    if (!provider) {
+      plain.choices.push(choice)
+      continue
+    }
+    let group = byProvider.get(provider)
+    if (!group) {
+      group = { provider, choices: [] }
+      byProvider.set(provider, group)
+      groups.push(group)
+    }
+    group.choices.push(choice)
+  }
+  return plain.choices.length ? [plain, ...groups] : groups
 }
 
 /** The session's model and reasoning level; a typed name when the Agent gives no list. */
@@ -84,8 +139,13 @@ export function ModelPicker({
     }
   }
 
-  const models = catalog?.models ?? []
-  const listed = current ? models.some((item) => item.id === current) : true
+  const models = useMemo(() => catalog?.models ?? [], [catalog?.models])
+  const groups = useMemo(() => modelGroups(models), [models])
+  const choices = useMemo(() => groups.flatMap((group) => group.choices), [groups])
+  // The same id may come from several providers; the session's own provider decides which is meant.
+  const chosen =
+    choices.find((choice) => choice.model.id === current && choice.model.provider === catalog?.currentProvider) ??
+    choices.find((choice) => choice.model.id === current)
   const efforts = catalog?.reasoningEfforts ?? []
 
   return (
@@ -118,26 +178,43 @@ export function ModelPicker({
       ) : (
         <Select
           aria-label="会话模型"
-          value={current ?? ''}
+          value={chosen?.value ?? (current ? UNSET : '')}
+          title={chosen ? `${chosen.label}${chosen.model.provider ? ` · ${chosen.model.provider}` : ''}` : undefined}
           onValueChange={(value) => {
             if (value === CUSTOM) {
               setDraft(current ?? '')
               setTyping(true)
               return
             }
-            const option = models.find((item) => item.id === value)
-            void apply({ model: value, ...(option?.provider ? { provider: option.provider } : {}) })
+            const choice = choices.find((item) => item.value === value)
+            if (!choice) return
+            void apply({ model: choice.model.id, ...(choice.model.provider ? { provider: choice.model.provider } : {}) })
           }}
           className="h-6 min-w-0 flex-1 text-micro"
         >
           {!current ? <option value="">选择模型</option> : null}
-          {!listed && current ? <option value={current}>{current}</option> : null}
-          {models.map((item) => (
-            <option key={`${item.provider ?? ''}/${item.id}`} value={item.id}>
-              {item.label}
-              {item.provider ? ` · ${item.provider}` : ''}
-            </option>
-          ))}
+          {current && !chosen ? (
+            <optgroup label="当前">
+              <option value={UNSET}>{current}</option>
+            </optgroup>
+          ) : null}
+          {groups.map((group) =>
+            group.provider ? (
+              <optgroup key={group.provider} label={group.provider}>
+                {group.choices.map((choice) => (
+                  <option key={choice.value} value={choice.value}>
+                    {choice.label}
+                  </option>
+                ))}
+              </optgroup>
+            ) : (
+              group.choices.map((choice) => (
+                <option key={choice.value} value={choice.value}>
+                  {choice.label}
+                </option>
+              ))
+            ),
+          )}
           <option value={CUSTOM}>手动输入…</option>
         </Select>
       )}

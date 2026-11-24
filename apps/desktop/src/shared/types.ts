@@ -260,6 +260,8 @@ export interface Settings {
   trainingEnabled: boolean
   /** Optional feature: 拆成区域 with KohakuGBC. Off by default. */
   gbcEnabled: boolean
+  /** Optional Studio picker; does not grant access to any tool. */
+  toolHubEnabled: boolean
   /** Optional feature: external Agents (Codex, Claude Code…) use the board over MCP, and the 协同 panel. Off by default. */
   externalAgentsEnabled: boolean
   externalImageEditEnabled: boolean

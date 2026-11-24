@@ -2,22 +2,35 @@ import { useCallback, useEffect, useState } from 'react'
 import { Copy, Download, RefreshCw, X } from 'lucide-react'
 import { composeOfficialGuide, type GuideTopic } from '@shared/capabilities'
 import { Notice } from '../../../components/common/Notice'
-import { Button, FieldLabel, IconButton, LoadingRow, Modal, Pill, cn, useCopyText, useToast } from '../../../components/ui'
+import { Button, ConfirmDialog, FieldLabel, IconButton, LoadingRow, Modal, Pill, cn, useCopyText, useToast } from '../../../components/ui'
 import { PROFILE_LABELS, projectedToolset, useToolFlags, type ToolProfileState } from './CollabToolbar'
 import { mcpConfigJson, normalizeMcpClients, type CollabClient, type McpClientStatus, type McpConfigKind } from './collabClient'
 
 export const PROMPTCRAFT_SKILL_URI = 'mossstudio://skill/promptcraft'
 export const LAYOUT_SKILL_URI = 'mossstudio://skill/layout'
 
-type ClientState = 'installed' | 'detected' | 'missing'
-
-export function mcpClientState(status: McpClientStatus): ClientState {
-  if (status.installed) return 'installed'
-  return status.detected ? 'detected' : 'missing'
+const STATE_LABEL: Record<McpClientStatus['state'], string> = {
+  configured: '已配置',
+  not_configured: '未配置',
+  not_found: '未检测到',
+  needs_refresh: '需要刷新',
+  custom_policy: '已保留 Codex 设置',
+  conflict: '同名配置冲突',
+  unsupported: '命令不受支持',
+  unknown: '无法确认',
+  detected: '检测到本机 DSH 环境',
 }
-
-const STATE_LABEL: Record<ClientState, string> = { installed: '已连接', detected: '未连接', missing: '没有找到' }
-const STATE_TONE = { installed: 'ok', detected: 'accent', missing: 'neutral' } as const
+const STATE_TONE = {
+  configured: 'ok',
+  not_configured: 'accent',
+  not_found: 'neutral',
+  needs_refresh: 'warn',
+  custom_policy: 'warn',
+  conflict: 'warn',
+  unsupported: 'warn',
+  unknown: 'warn',
+  detected: 'accent',
+} as const
 
 interface SkillRow {
   topic: Exclude<GuideTopic, 'all'>
@@ -44,6 +57,7 @@ export function McpConnectDialog({
   const toast = useToast()
   const [clients, setClients] = useState<McpClientStatus[] | null | undefined>(undefined)
   const [busy, setBusy] = useState<string | null>(null)
+  const [reconnect, setReconnect] = useState<McpClientStatus | null>(null)
   const projected = projectedToolset(profile, useToolFlags())
 
   const load = useCallback(async () => {
@@ -55,15 +69,17 @@ export function McpConnectDialog({
     if (open) void load()
   }, [open, load])
 
-  async function change(status: McpClientStatus, action: 'install' | 'uninstall'): Promise<void> {
-    if (busy) return
+  async function change(status: McpClientStatus, action: 'install' | 'uninstall', resetPolicy?: true): Promise<void> {
+    if (busy || status.id === 'dsh') return
+    if (action === 'install' && status.state === 'custom_policy' && !resetPolicy) return setReconnect(status)
     setBusy(status.id)
     try {
-      const next = action === 'install' ? await client.installMcpClient(status.id) : await client.uninstallMcpClient(status.id)
+      const next = action === 'install' ? await client.installMcpClient(status.id, resetPolicy) : await client.uninstallMcpClient(status.id)
       setClients((list) => list?.map((item) => (item.id === next.id ? next : item)) ?? list)
-      toast.push(action === 'install' ? `已连接 ${next.label}，重启它后生效` : `已从 ${next.label} 移除 MossStudio`, 'success')
+      toast.push(action === 'install' ? `已配置 ${next.label}，重启它后生效` : `已从 ${next.label} 移除 MossStudio`, 'success')
     } catch (error) {
       toast.push(error instanceof Error ? error.message : String(error), 'error')
+      await load()
     } finally {
       setBusy(null)
     }
@@ -75,7 +91,7 @@ export function McpConnectDialog({
       toast.push('本机 MCP 服务未启动', 'error')
       return
     }
-    const name = kind === 'http' ? 'Streamable HTTP' : kind === 'stdio' ? 'stdio' : '完整'
+    const name = kind === 'http' ? 'Streamable HTTP' : kind === 'stdio' ? 'stdio' : kind === 'dsh' ? 'DSH stdio' : '完整'
     await copyText(mcpConfigJson(connection, kind), `已复制 ${name} MCP 配置（${connection.toolCount} 个工具）`)
   }
 
@@ -118,12 +134,12 @@ export function McpConnectDialog({
           <FieldLabel
             as="h3"
             value={
-              <IconButton label="重新检测" className="size-7" disabled={clients === undefined} onClick={() => void load()}>
+              <IconButton label="重新检测" className="size-7" disabled={clients === undefined || busy !== null} onClick={() => void load()}>
                 <RefreshCw className={cn('size-3.5', clients === undefined && 'animate-spin')} strokeWidth={1.6} />
               </IconButton>
             }
           >
-            一键接入
+            本机客户端
           </FieldLabel>
           {clients === undefined ? (
             <LoadingRow label="正在检测本机 Agent…" />
@@ -132,12 +148,16 @@ export function McpConnectDialog({
               {clients === null ? <Notice>没能检测本机的 Agent，可以复制下面的 MCP 配置手动添加。</Notice> : null}
               <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
                 {(clients ?? normalizeMcpClients([])).map((status) => {
-                  const state = mcpClientState(status)
+                  const state = status.state
+                  const owned = state === 'configured' || state === 'needs_refresh' || state === 'custom_policy'
                   const working = busy === status.id
                   return (
                     <div
                       key={status.id}
-                      className="flex min-w-0 flex-col gap-2 rounded-lg bg-well p-3"
+                      className={cn(
+                        'flex min-w-0 flex-col gap-2 rounded-lg bg-well p-3',
+                        status.id === 'dsh' && state === 'detected' && 'sm:col-span-2',
+                      )}
                       data-mcp-client={status.id}
                       data-mcp-client-state={state}
                     >
@@ -150,27 +170,31 @@ export function McpConnectDialog({
                         title={status.configPath || undefined}
                         data-mcp-client-path={status.configPath}
                       >
-                        {status.configPath || '没有找到配置文件'}
+                        {status.configPath || '未提供配置位置'}
                       </span>
                       {status.detail ? <span className="text-caption text-ink-2 [overflow-wrap:anywhere]">{status.detail}</span> : null}
                       <div className="mt-auto flex flex-wrap gap-1">
                         {status.installMode === 'copy-only' ? (
-                          <Button size="xs" data-mcp-copy-client={status.id} onClick={() => void copyConfig('http')}>
+                          <Button
+                            size="xs"
+                            data-mcp-copy-client={status.id}
+                            onClick={() => void copyConfig(status.id === 'dsh' ? 'dsh' : 'stdio')}
+                          >
                             <Copy className="size-3" aria-hidden="true" strokeWidth={1.6} />
-                            复制配置
+                            {status.id === 'dsh' ? '复制 DSH stdio 配置' : '复制配置'}
                           </Button>
                         ) : (
                           <>
                             <Button
                               size="xs"
-                              disabled={busy !== null}
+                              disabled={busy !== null || (!owned && state !== 'not_configured')}
                               data-mcp-install={status.id}
                               onClick={() => void change(status, 'install')}
                             >
                               <Download className="size-3" aria-hidden="true" strokeWidth={1.6} />
-                              {working ? '处理中…' : status.installed ? '重新连接' : '连接'}
+                              {working ? '处理中…' : state === 'custom_policy' ? '重新连接' : owned ? '刷新配置' : '一键配置'}
                             </Button>
-                            {status.installed ? (
+                            {owned ? (
                               <Button
                                 tone="ghost"
                                 size="xs"
@@ -179,7 +203,7 @@ export function McpConnectDialog({
                                 onClick={() => void change(status, 'uninstall')}
                               >
                                 <X className="size-3" aria-hidden="true" strokeWidth={1.6} />
-                                移除
+                                卸载配置
                               </Button>
                             ) : null}
                           </>
@@ -225,7 +249,7 @@ export function McpConnectDialog({
 
         <section className="flex min-w-0 flex-col gap-2">
           <FieldLabel as="h3">MCP 连接配置</FieldLabel>
-          <Notice tone="warn">复制的配置里带本机的连接密钥，不要发给别人。</Notice>
+          <Notice tone="warn">HTTP 配置里带本机的连接密钥，不要发给别人。</Notice>
           <div className="flex flex-wrap gap-1.5">
             <Button size="xs" data-copy-mcp-kind="http" onClick={() => void copyConfig('http')}>
               <Copy className="size-3" aria-hidden="true" strokeWidth={1.6} />
@@ -241,6 +265,17 @@ export function McpConnectDialog({
             </Button>
           </div>
         </section>
+        <ConfirmDialog
+          open={reconnect !== null}
+          onClose={() => setReconnect(null)}
+          title="重置 Codex 连接？"
+          description="这会在 Codex 中重新启用 MossStudio 并清除工具限制。要保留当前设置，请取消。"
+          confirmLabel="重置并重新连接"
+          onConfirm={() => {
+            if (reconnect) void change(reconnect, 'install', true)
+            setReconnect(null)
+          }}
+        />
       </div>
     </Modal>
   )

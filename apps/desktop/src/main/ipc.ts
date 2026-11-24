@@ -16,6 +16,7 @@ import {
   getMcpServerState,
   startMcpServer,
   stopMcpServer,
+  bridgeLaunch,
   getMcpClientsStatus,
   installMcpClient,
   refreshMcpClientRegistrations,
@@ -401,9 +402,12 @@ export function registerIpc(): void {
   handleExternal(Ipc.capabilitiesAudit, schemas.capabilitiesAudit, (input) => listCapabilityAudit(input ?? {}))
 
   handleExternal(Ipc.mcpClientsStatus, schemas.mcpClientsStatus, () => getMcpClientsStatus())
-  handleExternal(Ipc.mcpClientInstall, schemas.mcpClientInstall, ({ clientId }) => installMcpClient(clientId))
+  handleExternal(Ipc.mcpClientInstall, schemas.mcpClientInstall, ({ clientId, resetPolicy }) => installMcpClient(clientId, { resetPolicy }))
   handleExternal(Ipc.mcpClientUninstall, schemas.mcpClientUninstall, ({ clientId }) => uninstallMcpClient(clientId))
-  handleExternal(Ipc.mcpInfo, schemas.mcpInfo, (input) => getMcpServerState(input?.includeToken === true))
+  handleExternal(Ipc.mcpInfo, schemas.mcpInfo, (input) => {
+    const state = getMcpServerState(input?.includeToken === true)
+    return input?.includeToken && state.running ? { ...state, bridge: bridgeLaunch(state) } : state
+  })
   handleExternal(Ipc.mcpSetProfile, schemas.mcpSetProfile, async ({ profile, enabledPacks }) => {
     const server = getActiveMcpServer() ?? (await startMcpServer({ runInRenderer: runToolInStudioWindow }))
     return server.setProfile(profile, enabledPacks as CapabilityId[] | undefined)

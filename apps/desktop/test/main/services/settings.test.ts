@@ -32,6 +32,15 @@ describe('getSettings', () => {
     expect(getSettings()).toEqual(DEFAULT_SETTINGS)
   })
 
+  it('requires a persisted boolean opt-in and reads a saved tool hub choice after restart', async () => {
+    writeSettings({ toolHubEnabled: 'true' })
+    const settings = await load()
+    expect(settings.getSettings().toolHubEnabled).toBe(false)
+    settings.updateSettings({ toolHubEnabled: true })
+    vi.resetModules()
+    expect((await load()).getSettings()).toMatchObject({ toolHubEnabled: true, gbcEnabled: false, externalAgentsEnabled: false })
+  })
+
   it('returns defaults when the file is corrupt JSON', async () => {
     writeSettings('{ not json')
     const { getSettings, DEFAULT_SETTINGS } = await load()

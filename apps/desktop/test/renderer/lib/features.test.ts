@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { FEATURES, featureEnabled, featureVisibility } from '@renderer/lib/features'
 import { settingsFixture } from '../../mocks/backend'
 
-const ALL_OFF = { remoteHosts: false, workerHosts: false, training: false, gbc: false, lan: false, externalAgents: false }
+const ALL_OFF = { remoteHosts: false, workerHosts: false, training: false, gbc: false, lan: false, externalAgents: false, toolHub: false }
 
 describe('lib/features', () => {
   it('lists each optional feature once with copy', () => {
@@ -14,6 +14,7 @@ describe('lib/features', () => {
       'lanWebEnabled',
       'externalAgentsEnabled',
       'externalImageEditEnabled',
+      'toolHubEnabled',
     ])
     expect(FEATURES.every((feature) => feature.label && feature.description)).toBe(true)
   })
@@ -23,6 +24,7 @@ describe('lib/features', () => {
   })
 
   it('reads each toggle independently', () => {
+    expect(featureVisibility(settingsFixture({ toolHubEnabled: true }))).toEqual({ ...ALL_OFF, toolHub: true })
     expect(featureVisibility(settingsFixture({ trainingEnabled: true }))).toEqual({ ...ALL_OFF, training: true })
     expect(featureVisibility(settingsFixture({ remoteHostsEnabled: true, lanWebEnabled: true }))).toEqual({
       ...ALL_OFF,

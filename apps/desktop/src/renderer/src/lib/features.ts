@@ -9,6 +9,7 @@ export type FeatureKey =
   | 'lanWebEnabled'
   | 'externalAgentsEnabled'
   | 'externalImageEditEnabled'
+  | 'toolHubEnabled'
 
 export interface FeatureInfo {
   key: FeatureKey
@@ -51,6 +52,11 @@ export const FEATURES: FeatureInfo[] = [
     description: '让 Codex、Claude Code 等 Agent 通过 MCP 在创作页上画图，并在助手旁协同。',
   },
   { key: 'externalImageEditEnabled', label: '外接重绘', description: '通过自己选择的图像服务重绘图片。' },
+  {
+    key: 'toolHubEnabled',
+    label: '工具与节点管理器',
+    description: '在画布工具栏里集中选择节点、工作流配方和画面工具。',
+  },
 ]
 
 export function featureEnabled(settings: Pick<Settings, FeatureKey> | null | undefined, key: FeatureKey): boolean {
@@ -66,6 +72,7 @@ export function featureVisibility(settings: Pick<Settings, FeatureKey> | null | 
   gbc: boolean
   lan: boolean
   externalAgents: boolean
+  toolHub: boolean
 } {
   return {
     remoteHosts: featureEnabled(settings, 'remoteHostsEnabled'),
@@ -74,5 +81,6 @@ export function featureVisibility(settings: Pick<Settings, FeatureKey> | null | 
     gbc: featureEnabled(settings, 'gbcEnabled'),
     lan: featureEnabled(settings, 'lanWebEnabled'),
     externalAgents: featureEnabled(settings, 'externalAgentsEnabled'),
+    toolHub: featureEnabled(settings, 'toolHubEnabled'),
   }
 }

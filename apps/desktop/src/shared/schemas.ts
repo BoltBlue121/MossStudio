@@ -400,7 +400,7 @@ export const schemas = {
     })
     .refine((value) => Boolean(value.filePath || value.loraId), 'filePath or loraId is required'),
   mcpClientsStatus: z.strictObject({}).optional(),
-  mcpClientInstall: z.strictObject({ clientId: z.enum(['codex', 'claude-code']) }),
+  mcpClientInstall: z.strictObject({ clientId: z.enum(['codex', 'claude-code']), resetPolicy: z.literal(true).optional() }),
   mcpClientUninstall: z.strictObject({ clientId: z.enum(['codex', 'claude-code']) }),
   agentHubConnect: z
     .object({
@@ -576,6 +576,7 @@ export const schemas = {
       remoteHostsEnabled: z.boolean(),
       trainingEnabled: z.boolean(),
       gbcEnabled: z.boolean(),
+      toolHubEnabled: z.boolean(),
       externalAgentsEnabled: z.boolean(),
       externalImageEditEnabled: z.boolean(),
       workerHostsEnabled: z.boolean(),

@@ -69,6 +69,7 @@ export const DEFAULT_SETTINGS: Settings = {
   remoteHostsEnabled: false,
   trainingEnabled: false,
   gbcEnabled: false,
+  toolHubEnabled: false,
   externalAgentsEnabled: false,
   externalImageEditEnabled: false,
   workerHostsEnabled: false,
@@ -111,6 +112,7 @@ export function getSettings(): Settings {
     cache = {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      toolHubEnabled: parsed.toolHubEnabled === true,
       modelDirectories: { ...DEFAULT_SETTINGS.modelDirectories, ...parsed.modelDirectories },
       modelSources: Array.isArray(parsed.modelSources)
         ? parsed.modelSources.filter(
