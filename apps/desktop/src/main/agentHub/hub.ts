@@ -35,7 +35,13 @@ export function createAgentHub(
     return driver
   }
   return {
-    backends: () => Promise.all(drivers.map((driver) => driver.probe())),
+    async backends() {
+      const infos = await Promise.all(drivers.map((driver) => driver.probe()))
+      // Drivers are listed in default order. The custom command is always "available", so it is never the default.
+      const preferred = infos.find((b) => b.available && b.id !== 'custom-acp')
+      return infos.map((b) => ({ ...b, preferred: b === preferred }))
+    },
+    projects: (backendId: string) => get(backendId).listProjects?.() ?? Promise.resolve([]),
     models: (backendId: string, sessionId?: string) => get(backendId).models(sessionId),
     setModel: (input: AgentSetModelInput) => get(input.backendId).setModel(input),
     async sessionStats(backendId: string, sessionId: string): Promise<AgentSessionStats> {
@@ -68,6 +74,8 @@ export function createAgentHub(
     },
     sessions: (backendId: string) => get(backendId).listSessions(),
     async createSession({ createCwd, ...input }: AgentCreateSessionInput) {
+      if (input.workspaceId && (input.cwd || createCwd || input.backendId !== 'dsh-desktop'))
+        throw new Error('请选择已有 DSH 项目或项目目录，不要同时选择两项')
       const driver = get(input.backendId)
       if (createCwd === true && input.cwd?.trim()) input.cwd = await ensureProjectFolder(input.cwd)
       return driver.createSession(input)

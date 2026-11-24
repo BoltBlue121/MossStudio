@@ -4,7 +4,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { MAX_QUEUED_RUNS } from '@shared/canvasJobBranch'
 import { Ipc } from '@shared/channels'
 import type { Catalog, ManagedHost, ProjectCanvas } from '@shared/types'
-import { workerCanvasAdapter } from '@shared/remoteWorker'
+import { workerCanvasAdapter, type RemoteWorkerModelInventory } from '@shared/remoteWorker'
 import { workerAdapterEntries, type WorkerAdapterEntry } from '@renderer/pages/studio/remoteWorkerLoras'
 import { catalogFixture, createMockBackend, SFT_BUNDLE_IDS } from '@test/mocks/backend'
 import { SUBMIT_TIMEOUT_MS, useGenerate } from '@renderer/pages/studio/useGenerate'
@@ -42,6 +42,9 @@ function mount(
     catalog?: Catalog
     remoteHost?: ManagedHost | null
     workerAdapters?: readonly WorkerAdapterEntry[] | null
+    /** What the Worker daemon lists; an older daemon's answer unless given. */
+    workerModels?: RemoteWorkerModelInventory | null
+    workerModelId?: string | null
   } = {},
 ) {
   const backend = createMockBackend('ready')
@@ -88,6 +91,8 @@ function mount(
       preferredBundleId: null,
       remoteHost: options.remoteHost ?? null,
       workerAdapters: options.workerAdapters,
+      workerModels: options.workerModels === undefined ? { models: [], components: [], unsupported: true } : options.workerModels,
+      workerModelId: options.workerModelId,
       notify,
     })
     return null
@@ -282,6 +287,45 @@ describe('studio/useGenerate on a Worker host', () => {
       error: '「render-box」上没有登记 LoRA 「Old」，请移除或在 LoRA 列表里登记',
     })
     expect(sent).toHaveLength(0)
+  })
+
+  // Worker ids differ from catalog ids on purpose: only the catalog id may reach the 画面.
+  const inventory: RemoteWorkerModelInventory = {
+    models: [
+      { id: 'sft-int8', name: 'SFT INT8', catalogBundleId: 'moss-sft-int8' },
+      { id: 'my-finetune', name: 'My finetune' },
+    ],
+    components: [],
+  }
+
+  it('runs the Worker model under its own id while the 画面 keeps its catalog model', async () => {
+    const picked = mount([scene({ modelBundleId: 'moss-sft' })], {
+      remoteHost: worker(),
+      workerModels: inventory,
+      workerModelId: 'my-finetune',
+    })
+    expect(await picked.api().generate('scene')).toMatchObject({ queued: true })
+    expect(picked.sent[0]).toMatchObject({ hostId: 'h1', modelName: 'My finetune', modelBinding: { bundleId: 'my-finetune' } })
+    expect(picked.board.current.filter((item) => item.modelBundleId === 'my-finetune')).toEqual([])
+    expect(picked.board.current.find((item) => item.id === 'scene')?.modelBundleId).toBe('moss-sft')
+    act(() => root?.unmount())
+    uninstall?.()
+    const twin = mount([scene({ modelBundleId: 'moss-sft-int8' })], { remoteHost: worker(), workerModels: inventory })
+    expect(await twin.api().generate('scene')).toMatchObject({ queued: true })
+    expect(twin.sent[0]).toMatchObject({ modelBinding: { bundleId: 'sft-int8' } })
+    expect(twin.board.current.map((item) => item.modelBundleId)).not.toContain('sft-int8')
+  })
+
+  it('waits until the Worker’s model list is read rather than run its default model', async () => {
+    const { api, sent } = mount([scene()], { remoteHost: worker(), workerModels: null })
+    expect(await api().generate('scene')).toEqual({ queued: false, error: '还没有读到「render-box」上的模型，请稍后再试' })
+    expect(sent).toHaveLength(0)
+  })
+
+  it('treats a LoRA at strength 0 as off on this computer: not required, not sent', async () => {
+    const { api, sent } = mount([scene({ adapters: [{ id: 'gone.safetensors', strength: 0 }] })])
+    expect(await api().generate('scene')).toMatchObject({ queued: true })
+    expect(sent[0]!['adapters'] ?? []).toEqual([])
   })
 
   it('keeps every local check for a person with no Worker', async () => {

@@ -1,7 +1,7 @@
 import type { AdapterEntry, CanvasAdapter, Catalog, LoraMetadata, ManagedHost, ModelBundle, RemoteHostBackend } from '@shared/types'
-import type { RemoteWorkerLoraItem } from '@shared/remoteWorker'
+import type { RemoteWorkerLoraItem, RemoteWorkerModelInventory, RemoteWorkerModelItem } from '@shared/remoteWorker'
 import { isWorkerLoraId, workerCanvasAdapter } from '@shared/remoteWorker'
-import type { BundleChoice } from './readiness'
+import { bundleInstalled, type BundleChoice } from './readiness'
 
 /**
  * A Worker daemon picked as 运行位置 is used exactly like an SSH host: the
@@ -90,9 +90,71 @@ export function workerAdapterFor(entry: Pick<WorkerAdapterEntry, 'workerId'>, st
   return workerCanvasAdapter(entry.workerId, strength)
 }
 
+/** Convert real models detected on a Worker daemon into ModelBundle objects for ModelPicker & Studio. */
+export function workerModelBundles(items: readonly RemoteWorkerModelItem[]): ModelBundle[] {
+  return items.map((item) => ({
+    id: item.id,
+    name: item.name,
+    variant: item.variant,
+    description: item.description ?? '',
+    tier: item.tier === 'high' || item.tier === 'turbo' ? item.tier : undefined,
+    defaults:
+      item.defaults?.steps !== undefined && item.defaults?.cfg !== undefined
+        ? { steps: item.defaults.steps, cfg: item.defaults.cfg }
+        : undefined,
+    certified: Boolean(item.catalogBundleId),
+    components: { dit: item.id, textEncoder: item.id, vae: item.id },
+    support: item.id,
+  }))
+}
+
 /**
- * The chosen LoRA a Worker does not have registered. Unknown (list not read
- * yet, or empty) is never reported: main checks again when the job starts.
+ * Resolve which model to run on a Worker daemon host.
+ * Uses the real models detected on the Worker (`/v1/models`) when available,
+ * falling back to the legacy `remote-worker:` placeholder while offline or
+ * talking to an older daemon that does not list its models. `ids` are tried in
+ * order, each as a Worker model id or as the catalog bundle a Worker model is.
+ */
+export function resolveWorkerBundle(
+  host: Pick<ManagedHost, 'id' | 'name' | 'workerProviderId'>,
+  inventory: RemoteWorkerModelInventory | null | undefined,
+  ids: ReadonlyArray<string | null | undefined>,
+  catalog: Pick<Catalog, 'bundles'> | null | undefined,
+): BundleChoice {
+  const models = inventory?.models ?? []
+  if (!models.length) return workerBundleChoice(host, catalog)
+  const bundles = workerModelBundles(models)
+  const byId = (id: string | null | undefined): ModelBundle | undefined => {
+    const item = id ? (models.find((model) => model.id === id) ?? models.find((model) => model.catalogBundleId === id)) : undefined
+    return item && bundles.find((bundle) => bundle.id === item.id)
+  }
+  const picked = [...ids, inventory?.defaultModelId].map(byId).find(Boolean) ?? bundles[0]!
+  return { bundle: picked, installed: true, unavailable: false }
+}
+
+/**
+ * The model a 画面 keeps when a Worker model is picked: the catalog model it
+ * is, when that is downloaded on this computer, else the one it had. A Worker's
+ * own id never goes into the 画面, so it still runs back on this computer.
+ */
+export function canvasModelForWorkerPick(
+  item: Pick<RemoteWorkerModelItem, 'catalogBundleId'> | undefined,
+  catalog: Pick<Catalog, 'bundles' | 'models'> | null | undefined,
+  current: string | undefined,
+): string | undefined {
+  const twin = catalog?.bundles.find((bundle) => bundle.id === item?.catalogBundleId)
+  return twin && bundleInstalled(twin, catalog!.models) ? twin.id : current
+}
+
+/** Why a run waits on a Worker host whose model list has not been read (yet, or at all). */
+export function workerModelsUnread(hostName: string): string {
+  return `还没有读到「${hostName}」上的模型，请稍后再试`
+}
+
+/**
+ * The chosen LoRA a Worker does not have registered. Strength 0 disables a
+ * LoRA without removing it, so it is never flagged as missing. Unknown (list
+ * not read yet, or empty) is never reported: main checks again when the job starts.
  */
 export function missingWorkerAdapters(
   adapters: readonly CanvasAdapter[],
@@ -100,5 +162,5 @@ export function missingWorkerAdapters(
 ): CanvasAdapter[] {
   if (!entries?.length) return []
   const registered = new Set(entries.filter((entry) => entry.registered).map((entry) => entry.workerId))
-  return adapters.filter((adapter) => !registered.has(adapter.path ?? adapter.id))
+  return adapters.filter((adapter) => adapter.strength > 0 && !registered.has(adapter.path ?? adapter.id))
 }

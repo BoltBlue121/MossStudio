@@ -39,6 +39,7 @@ export interface Blocker {
     | 'adapters'
     | 'remote-adapters'
     | 'lora-unsupported'
+    | 'worker-models'
     | 'prompt'
     | InputBlockerId
   message: string
@@ -229,7 +230,8 @@ export function deriveReadiness(input: ReadinessInput): Readiness {
     }
   }
 
-  const adapters = normalizeCanvasAdapters(input.canvas?.adapters)
+  // Strength 0 turns a LoRA off: it is neither required nor sent.
+  const adapters = normalizeCanvasAdapters(input.canvas?.adapters).filter((adapter) => adapter.strength > 0)
   // Until the library has loaded nothing is known to be missing.
   // On a Worker host its own list decides, never this computer's library.
   const missing = workerHost

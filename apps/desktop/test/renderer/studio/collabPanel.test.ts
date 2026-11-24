@@ -1,6 +1,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { useApp } from '@renderer/store'
 import { Ipc } from '@shared/channels'
 import { canvasFixture, settingsFixture } from '@test/mocks/backend/fixtures'
 import { createMockBackend } from '@test/mocks/backend'
@@ -29,7 +30,7 @@ import {
   normalizeStats,
   sanitizeMessageText,
 } from '@renderer/pages/studio/assistant/collabClient'
-import { CollabPanel, agentShortName, connectionLost } from '@renderer/pages/studio/assistant/CollabPanel'
+import { CollabPanel, agentShortName, connectionLost, replyImages } from '@renderer/pages/studio/assistant/CollabPanel'
 import { capabilityLabel, contextChips, formatBoardContext } from '@renderer/pages/studio/assistant/collabContext'
 import { GlobalApprovalOverlay } from '@renderer/pages/studio/assistant/GlobalApprovalOverlay'
 import { McpConnectDialog } from '@renderer/pages/studio/assistant/McpConnectDialog'
@@ -224,6 +225,36 @@ describe('collab client', () => {
     expect(sanitizeMessageText('<system-reminder>only</system-reminder>')).toBe('')
     expect(sanitizeMessageText('普通回复')).toBe('普通回复')
   })
+
+  it('keeps only embedded raster pictures in messages and replies', () => {
+    const png = 'data:image/png;base64,iVBORw0KGgo='
+    expect(
+      normalizeMessages({
+        messages: [
+          {
+            seq: 1,
+            role: 'assistant',
+            text: '',
+            images: [png, 'data:image/svg+xml;base64,PHN2Zz4=', 'https://example.com/a.png', 'file:///etc/passwd', 7, png, png, png],
+          },
+          { seq: 2, role: 'user', text: 'x', images: 'data:image/png;base64,AAAA' },
+        ],
+      }).messages,
+    ).toEqual([
+      { seq: 1, role: 'assistant', text: '', images: [png] },
+      { seq: 2, role: 'user', text: 'x' },
+    ])
+    const { urlTransform, components } = replyImages
+    const transform = urlTransform as (url: string, key: string) => string
+    expect(transform(png, 'src')).toBe(png)
+    for (const url of ['https://example.com/a.png', 'file:///etc/passwd', 'data:image/svg+xml;base64,PHN2Zz4='])
+      expect(transform(url, 'src')).toBe('')
+    expect(transform('https://example.com/', 'href')).toBe('https://example.com/')
+    expect(transform('javascript:alert(1)', 'href')).toBe('')
+    const img = components!.img as (props: { node: { properties: { src?: string } } }) => { type: unknown; props: { path?: string } }
+    expect(img({ node: { properties: { src: png } } }).props.path).toBe(png)
+    expect(img({ node: { properties: { src: 'https://example.com/a.png' } } }).type).toBe('span')
+  })
 })
 
 describe('collab panel helpers', () => {
@@ -239,6 +270,8 @@ describe('collab panel helpers', () => {
   it('lists every built-in pack and turns pack ticks into a custom profile starting from what the mode showed', () => {
     // 14 MossStudio packs plus the shared remote.hosts pack.
     expect(listPackRows()).toHaveLength(15)
+    expect(listPackRows(true).map((row) => row.id)).toContain('image.edit')
+    expect(listPackRows().map((row) => row.id)).not.toContain('image.edit')
     expect(listPackRows().map((row) => row.id)).toContain('remote.hosts')
     expect(effectivePacks({ mode: 'compact', packs: [] })).toEqual(COMPACT_PACKS)
     const next = togglePack({ mode: 'compact', packs: [] }, 'studio.ask')
@@ -369,6 +402,41 @@ describe('CollabPanel', () => {
     act(() => document.querySelector<HTMLButtonElement>('dialog [aria-label="关闭"]')!.click())
     act(() => svg.querySelector<HTMLButtonElement>('[aria-label="移除图片 vector.svg"]')!.click())
     expect(view.querySelector('[data-attachment="vector.svg"]')).toBeNull()
+  })
+
+  it('copies the checked image edit pack only while its live opt-in is on', async () => {
+    const backend = createMockBackend(withExternalAgents())
+    backend.install()
+    localStorage.setItem('mossstudio.collab.toolProfile', 'custom')
+    localStorage.setItem('mossstudio.collab.toolPacks', '["image.edit"]')
+    const previous = useApp.getState().settings
+    const settings = settingsFixture({ externalAgentsEnabled: true, externalImageEditEnabled: true })
+    useApp.setState({ settings })
+    const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    try {
+      const view = mount(
+        createElement(CollabPanel, {
+          board: { projectId: 'p', projectName: 'P', canvas: null },
+          projectKey: 1,
+          visible: true,
+          onStandalone: () => {},
+        }),
+      )
+      await settle()
+      act(() => view.querySelector<HTMLButtonElement>('[data-tool-packs]')!.click())
+      const copySkill = () => act(async () => document.querySelector<HTMLButtonElement>('[data-copy-workbench-skill]')!.click())
+      await copySkill()
+      expect(copy.mock.lastCall?.[0]).toContain('image.edit.run')
+      act(() => useApp.setState({ settings: { ...settings, externalImageEditEnabled: false } }))
+      await copySkill()
+      expect(copy.mock.lastCall?.[0]).not.toContain('image.edit.run')
+      act(() => useApp.setState({ settings: { ...settings, externalAgentsEnabled: false } }))
+      await copySkill()
+      expect(copy.mock.lastCall?.[0]).not.toContain('image.edit.run')
+    } finally {
+      copy.mockRestore()
+      act(() => useApp.setState({ settings: previous }))
+    }
   })
 
   it('shows the compact header, connects an ACP Agent and switches to the built-in assistant', async () => {
@@ -722,6 +790,9 @@ describe('CollabPanel', () => {
   it('tells a refused request apart from a dropped connection, so only the second offers a reconnect', () => {
     // A driver's code decides when it names a lost connection (the DSH Desktop driver's E_DSH_DISCONNECTED).
     expect(connectionLost(new ApiError({ code: 'E_DSH_DISCONNECTED', message: 'x' }))).toBe(true)
+    // The DSH Desktop driver's drop as a stream error, and a request it refused.
+    expect(connectionLost(new ApiError({ code: 'E_AGENT_STREAM', message: 'DSH 消息流已中断，请重新连接' }))).toBe(true)
+    expect(connectionLost(new ApiError({ code: 'E_DSH_RPC', message: 'DSH 没有接受这个请求，请检查会话、模型及桌面端状态' }))).toBe(false)
     // The ACP driver's messages, which main sends as INTERNAL or as a stream error.
     for (const message of [
       'Agent 已断开连接',

@@ -39,6 +39,17 @@ describe('resolveCanvasAdapters', () => {
     expect(resolveAdapterFile).toHaveBeenCalledWith(settings, 'style')
   })
 
+  it('skips a LoRA at strength 0: neither required nor sent, here or remotely', async () => {
+    expect(
+      await resolveCanvasAdapters(settings, [
+        { id: 'missing-off', strength: 0 },
+        { id: 'style', strength: 1 },
+      ]),
+    ).toEqual([{ path: '/models/adapters/style/w.safetensors', strength: 1 }])
+    expect(await resolveCanvasAdapters(settings, [{ id: 'style', strength: 0 }], { hostId: 'gpu-box' })).toEqual([])
+    expect(resolveAdapterFile).not.toHaveBeenCalledWith(settings, 'missing-off')
+  })
+
   it('fails loudly, naming every missing adapter', async () => {
     const error = await resolveCanvasAdapters(settings, [{ id: 'missing-a' }, { id: 'ok' }, { id: 'missing-b' }]).catch((e: unknown) => e)
     expect(error).toBeInstanceOf(AdapterResolutionError)

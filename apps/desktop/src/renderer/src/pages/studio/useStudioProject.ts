@@ -173,6 +173,7 @@ export interface StudioProject {
   sessionKey: number
   projects: ProjectSummary[]
   projectId: string | null
+  currentId: { readonly current: string | null }
   projectName: string
   canvases: ProjectCanvas[]
   canvasesRef: { readonly current: ProjectCanvas[] }
@@ -836,6 +837,7 @@ export function useStudioProject(options: {
     sessionKey,
     projects,
     projectId,
+    currentId: projectIdRef,
     projectName,
     canvases,
     canvasesRef,

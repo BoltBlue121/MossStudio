@@ -35,8 +35,19 @@ import { ControlAdaptersSection } from './ControlAdaptersSection'
 import { LoraTab } from './LoraTab'
 import { ModelSources } from './ModelSources'
 import { DeleteModelDialog, FeaturedModel, ModelList, SizeText } from './ModelEntries'
-import { bundleBlocker, bundleDeletePlan, bundleView, downloadGroups, modelSections, parseModelsQuery, type DownloadGroup } from './logic'
+import {
+  bundleBlocker,
+  bundleDeletePlan,
+  bundleView,
+  downloadGroups,
+  modelSections,
+  parseModelsQuery,
+  type BundleView,
+  type DownloadGroup,
+} from './logic'
 import { useModelLocation, useSshHosts, type ModelLocation } from './useModelLocation'
+import { workerModelBundles } from '../studio/remoteWorkerLoras'
+import { MODEL_READY_TEXT } from '../../lib/format'
 
 /** Until the catalog is read, downloads are named after their own labels. */
 const EMPTY_CATALOG: Pick<Catalog, 'bundles' | 'models' | 'adapters'> = { bundles: [], models: [], adapters: [] }
@@ -111,10 +122,41 @@ function ModelsTab({
   const settings = useApp((state) => state.settings)
   const { inventory } = useGpuInventory()
   const remote = location.kind === 'remote'
+  const workerDaemon = location.workerDaemon
   const engineReadiness = useApp((state) => state.engineReadiness)
   const gpus = useMemo(() => generationGpus(inventory?.devices, settings), [inventory, settings])
   const cliGpus = useMemo(() => cliGpuUuids(engineReadiness), [engineReadiness])
   const [combining, setCombining] = useState<{ initial?: Partial<Record<SlotKey, string | null>> } | null>(null)
+  const workerOnlyViews = useMemo<BundleView[]>(() => {
+    if (!workerDaemon || !location.inventory?.workerModels?.length) return []
+    const catalogBundleIds = new Set(catalog.bundles.map((bundle) => bundle.id))
+    const extras = location.inventory.workerModels.filter((item) => !item.catalogBundleId || !catalogBundleIds.has(item.catalogBundleId))
+    return workerModelBundles(extras).map((bundle, index) => {
+      const raw = extras[index]!
+      const totalBytes = raw.sizeBytes ?? 0
+      return {
+        bundle,
+        components: [],
+        missing: [],
+        tasks: [],
+        totalBytes,
+        downloadBytes: 0,
+        doneBytes: totalBytes,
+        remainingBytes: 0,
+        speedBps: 0,
+        percent: 100,
+        status: 'ready',
+        stateText: MODEL_READY_TEXT,
+        action: null,
+        actionLabel: '',
+        blocked: null,
+      }
+    })
+  }, [workerDaemon, location.inventory?.workerModels, catalog.bundles])
+  const workerModelMeta = useMemo(
+    () => new Map((location.inventory?.workerModels ?? []).map((item) => [item.catalogBundleId ?? item.id, item])),
+    [location.inventory?.workerModels],
+  )
   const views = useMemo(
     () =>
       catalog.bundles
@@ -126,10 +168,10 @@ function ModelsTab({
             catalog.models,
             location.tasks,
             location.isModelInstalled,
-            bundleBlocker(bundle, catalog.models, { remote, gpus, cliGpus }),
+            bundleBlocker(bundle, catalog.models, { remote, workerDaemon, gpus, cliGpus }),
           ),
         ),
-    [catalog, location.tasks, location.isModelInstalled, remote, gpus, cliGpus],
+    [catalog, location.tasks, location.isModelInstalled, remote, workerDaemon, gpus, cliGpus],
   )
   const sharedModels = catalog.models.filter((model) => model.tags.includes('shared-directory') && model.installed)
   const sharedFiles = sources.flatMap((source) => source.files)
@@ -139,12 +181,19 @@ function ModelsTab({
       sharedFiles.filter((file) => file.state === 'incompatible' && !availablePaths.has(file.path)).map((file) => [file.path, file]),
     ).values(),
   ]
-  const sections = modelSections(views, catalog.models, { remote, gpus, cliGpus }, preferredBundleId)
+  const rawSections = modelSections(views, catalog.models, { remote, workerDaemon, gpus, cliGpus }, preferredBundleId)
+  const sections = workerOnlyViews.length ? { ...rawSections, mine: [...workerOnlyViews, ...rawSections.mine] } : rawSections
   const featuredView = sections.featured
   const deletePlan = (bundle: ModelBundle) =>
     bundleDeletePlan(bundle, catalog.bundles, catalog.models, location.isModelInstalled, location.tasks)
-  const deletable = (bundle: ModelBundle): boolean =>
-    !isSharedModelId(bundle.id) && (Boolean(bundle.custom) || deletePlan(bundle).ids.length > 0)
+  const deletable = (bundle: ModelBundle): boolean => {
+    if (workerDaemon) {
+      const meta = workerModelMeta.get(bundle.id)
+      if (meta) return meta.deletable === true
+      return false
+    }
+    return !isSharedModelId(bundle.id) && (Boolean(bundle.custom) || deletePlan(bundle).ids.length > 0)
+  }
   const featuredCard = featuredView ? (
     <FeaturedModel
       view={featuredView}

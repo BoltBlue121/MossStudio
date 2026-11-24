@@ -281,6 +281,12 @@ describe('studio/readiness deriveReadiness', () => {
     expect(remote.map((item) => item.id)).toEqual(['remote-adapters'])
   })
 
+  it('never requires a LoRA at strength 0, here or on another computer', () => {
+    const off = canvas({ prompt: 'x', adapters: [{ id: 'gone', strength: 0 }] })
+    expect(deriveReadiness(input({ canvas: off })).blockers).toEqual([])
+    expect(deriveReadiness(input({ canvas: off, remote: { name: 'r', modelPath: '/m' } })).blockers).toEqual([])
+  })
+
   it('reports an incomplete description last', () => {
     const blockers = deriveReadiness(input({ canvas: canvas() })).blockers
     expect(blockers).toEqual([{ id: 'prompt', message: '先写一句描述' }])

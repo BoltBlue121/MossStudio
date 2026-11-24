@@ -1,9 +1,12 @@
 import { CLIENT_STATES, type BridgeLaunch, type McpClientId, type McpClientStatus, type ManagedClientId } from '@shared/mcpClients'
 export type { McpClientStatus } from '@shared/mcpClients'
 import { Events, Ipc } from '@shared/channels'
+import type { AgentBackendInfo as HubBackendInfo, AgentConnectInput, AgentCreateSessionInput, AgentProject } from '@shared/agentHub'
 import type { GuideTopic, ToolProfileId } from '@shared/capabilities'
 import { ApiError, call, onEvent } from '../../../lib/api'
 import { setSessionsResumable } from './sessionBindings'
+
+export type { AgentProject }
 
 /**
  * Typed access to the Agent hub (`agent-hub:*`), the MCP server and the
@@ -14,6 +17,9 @@ import { setSessionsResumable } from './sessionBindings'
 export interface AgentBackendInfo {
   id: string
   label: string
+  /** `acp` is a command that speaks ACP; `dsh-desktop` is another DeepSeek Harness on this computer. */
+  kind?: HubBackendInfo['kind']
+  preferred?: boolean
   available: boolean
   connected: boolean
   command?: string
@@ -36,6 +42,8 @@ export interface AgentMessage {
   seq: number
   role: 'user' | 'assistant'
   text: string
+  /** Embedded raster pictures only; messages never authorize a file or URL read. */
+  images?: string[]
 }
 
 export interface AgentStep {
@@ -95,11 +103,7 @@ export interface CollabSendInput {
   attachments?: CollabAttachment[]
 }
 
-export interface CollabConnectInput {
-  backendId: string
-  customCommand?: string
-  customArgs?: string[]
-}
+export type CollabConnectInput = AgentConnectInput
 
 export interface AgentModelOption {
   id: string
@@ -141,16 +145,7 @@ export interface CollabSessionStats {
   running?: boolean
 }
 
-export interface CollabCreateSessionInput {
-  title?: string
-  cwd?: string
-  /** Create `cwd` before the Agent starts: a new project folder. */
-  createCwd?: boolean
-  projectId?: string
-  agentPreset?: string
-  model?: string
-  provider?: string
-}
+export type CollabCreateSessionInput = Omit<AgentCreateSessionInput, 'backendId'>
 
 export interface AuditRow {
   id: string
@@ -214,6 +209,8 @@ export function normalizeBackend(value: unknown): AgentBackendInfo | null {
   return {
     id,
     label: text(value.label) || id,
+    ...(value.kind === 'acp' || value.kind === 'dsh-desktop' ? { kind: value.kind } : {}),
+    ...(value.preferred === true ? { preferred: true } : {}),
     available: value.available !== false,
     connected: value.connected === true,
     ...(text(value.command) ? { command: text(value.command) } : {}),
@@ -292,7 +289,15 @@ export function normalizeMessages(value: unknown): AgentMessagePage {
   for (const item of listOf(value, 'messages')) {
     if (!isRecord(item) || typeof item.seq !== 'number') continue
     const role = item.role === 'user' ? 'user' : item.role === 'assistant' ? 'assistant' : null
-    if (role) messages.push({ seq: item.seq, role, text: text(item.text) ?? '' })
+    const images = Array.isArray(item.images)
+      ? item.images
+          .slice(0, 4)
+          .filter(
+            (url): url is string =>
+              typeof url === 'string' && url.length <= 14_000_032 && /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+=*$/i.test(url),
+          )
+      : []
+    if (role) messages.push({ seq: item.seq, role, text: text(item.text) ?? '', ...(images.length ? { images } : {}) })
   }
   const asOfSeq = isRecord(value) && typeof value.asOfSeq === 'number' ? value.asOfSeq : (messages.at(-1)?.seq ?? 0)
   const steps = isRecord(value) && Array.isArray(value.steps) ? normalizeSteps(value.steps) : []
@@ -519,6 +524,8 @@ export interface CollabClient {
   listBackends(): Promise<AgentBackendInfo[]>
   connect(input: CollabConnectInput): Promise<AgentBackendInfo | null>
   disconnect(backendId: string): Promise<void>
+  /** The Agent's workspaces, when it groups conversations by folder; empty otherwise. */
+  listProjects(backendId: string): Promise<AgentProject[]>
   listSessions(backendId: string): Promise<AgentSession[]>
   createSession(backendId: string, input?: CollabCreateSessionInput): Promise<string>
   /** Null when the Agent cannot list models. */
@@ -622,6 +629,33 @@ export function createCollabClient(invoke: Invoke = call, subscribe: Subscribe =
 
     async disconnect(backendId) {
       await invoke(Ipc.agentHubDisconnect, { backendId })
+    },
+
+    async listProjects(backendId) {
+      try {
+        return listOf(await invoke<unknown>(Ipc.agentHubProjects, { backendId }), 'projects').flatMap((row) => {
+          if (
+            !isRecord(row) ||
+            typeof row.id !== 'string' ||
+            !row.id ||
+            typeof row.title !== 'string' ||
+            typeof row.cwd !== 'string' ||
+            !Array.isArray(row.sessionIds)
+          )
+            return []
+          return [
+            {
+              id: row.id,
+              title: row.title,
+              cwd: row.cwd,
+              sessionIds: row.sessionIds.filter((s): s is string => typeof s === 'string'),
+            },
+          ]
+        })
+      } catch (error) {
+        if (!isHubMissing(error)) throw error
+        return []
+      }
     },
 
     async listSessions(backendId) {

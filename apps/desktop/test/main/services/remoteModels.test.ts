@@ -17,6 +17,8 @@ vi.mock('@main/services/ssh', () => ({
   },
 }))
 vi.mock('@main/services/remoteDownloads', () => ({ startRemoteDownload: (...args: unknown[]) => startRemoteDownload(...args) }))
+const workerProfileWith = vi.fn(async (..._args: unknown[]): Promise<unknown> => null)
+vi.mock('@main/services/workerHostManager', () => ({ workerProfileWith: (...args: unknown[]) => workerProfileWith(...args) }))
 
 const { scanRemoteModels, prepareRemoteModel, prepareRemoteDefaultModel } = await import('@main/services/remoteModels')
 const host = sshHostFixture({ modelsRoot: '/models' })
@@ -49,6 +51,21 @@ beforeEach(() => {
 })
 
 describe('scanRemoteModels', () => {
+  it('reads a Worker host over SSH when its daemon does not list models, or cannot be reached', async () => {
+    const worker = sshHostFixture({ modelsRoot: '/models', remoteBackend: 'worker-daemon' })
+    state.files = remoteFiles
+    const offline = async (): Promise<never> => {
+      throw new Error('offline')
+    }
+    for (const answer of [async () => null, offline]) {
+      workerProfileWith.mockImplementationOnce(answer)
+      const inventory = await scanRemoteModels(worker, catalog)
+      expect(workerProfileWith).toHaveBeenLastCalledWith(worker, 'models')
+      expect(inventory.workerModels).toBeUndefined()
+      expect(inventory.models.find((model) => model.id === 'moss-sft-dit')?.installed).toBe(true)
+    }
+  })
+
   it('recognises a complete snapshot including pipeline and tokenizer', async () => {
     const has = await installed(remoteFiles)
     expect(SFT_BUNDLE_IDS.every(has)).toBe(true)

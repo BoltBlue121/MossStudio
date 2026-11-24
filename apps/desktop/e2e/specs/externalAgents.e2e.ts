@@ -170,6 +170,45 @@ describe('外部 Agent on', () => {
     await expect.poll(() => overlay.count()).toBe(0)
   })
 
+  it('connects DSH Desktop with a local pairing URL and scopes conversations by workspace', async () => {
+    const page = await app.open({ scenario: 'externalAgents', route: '/studio', defer: true })
+    await seedLoraBoard(page, { workerHost: false })
+    await page.evaluate(() => {
+      localStorage.removeItem('mossstudio.collab.backend')
+      window.__mock.state.agents.backends = [
+        {
+          id: 'dsh-desktop',
+          label: 'DSH Desktop',
+          kind: 'dsh-desktop',
+          available: true,
+          preferred: true,
+          connected: false,
+          resumable: true,
+        },
+        { id: 'codex-acp', label: 'Codex ACP', kind: 'acp', available: true, connected: false },
+      ]
+      window.__mock.state.agents.projects = [
+        { id: 'ws-1', title: 'Poster', cwd: 'F:\\work\\poster', sessionIds: ['session-1'] },
+        { id: 'ws-empty', title: 'Empty', cwd: 'F:\\work\\empty', sessionIds: [] },
+      ]
+    })
+    await app.start()
+    await page.locator('article[data-canvas-card="c1"]').first().waitFor()
+    await openCollab(page)
+    const panel = page.locator('[data-collab-panel]')
+    await panel.getByLabel('本机配对地址').fill('http://127.0.0.1:52497/?token=demo_token')
+    await panel.getByRole('button', { name: '连接 DSH Desktop' }).click()
+    await expect
+      .poll(() => app.calls('agent-hub:connect').then((calls) => calls.at(-1)))
+      .toEqual({ backendId: 'dsh-desktop', pairingUrl: 'http://127.0.0.1:52497/?token=demo_token' })
+    const workspaceSelect = panel.getByLabel('DSH 工作区')
+    await workspaceSelect.waitFor()
+    await workspaceSelect.selectOption('ws-1')
+    await expect.poll(() => panel.getByText('画一张海边的海报').isVisible()).toBe(true)
+    await workspaceSelect.selectOption('ws-empty')
+    await expect.poll(() => panel.getByLabel('工作区对话').isDisabled()).toBe(true)
+  })
+
   it('the model list is headed by its provider, and one id from two providers stays pickable', async () => {
     const page = await openStudio(app, 'externalAgents')
     await page.evaluate(() => {
@@ -275,5 +314,21 @@ describe('Worker 远程主机 on', () => {
     const dialog = page.getByRole('dialog', { name: '选择 LoRA · GPU Worker' })
     await dialog.waitFor()
     await expect.poll(() => dialog.getByText('ink.safetensors').first().isVisible()).toBe(true)
+  })
+
+  it('the model picker lists the Worker’s detected models when it is the 运行位置', async () => {
+    const page = await openStudio(app, 'workerHost')
+    await openLoraRows(page)
+    const picker = page.locator('[data-model-picker]').first()
+    await picker.waitFor()
+    await expect.poll(() => picker.textContent()).toContain('MOSS-Image SFT')
+    await picker.click()
+    await expect.poll(() => page.getByRole('menuitem', { name: /MOSS-Image SFT INT8/ }).isVisible()).toBe(true)
+    // The Worker's own id (sft-int8) goes to the job; the 画面 keeps the library's.
+    await page.getByRole('menuitem', { name: /MOSS-Image SFT INT8/ }).click()
+    await page.locator('[data-studio-generate]').click()
+    await expect
+      .poll(() => app.calls('http:POST /api/engine-jobs'))
+      .toMatchObject([{ hostId: 'worker-1', modelBinding: { bundleId: 'sft-int8' } }])
   })
 })

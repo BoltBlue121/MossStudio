@@ -1,8 +1,10 @@
-import { ChevronDown, Lock, LockOpen, Plus } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { ChevronDown, Lock, LockOpen, Plus, RefreshCw } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { Notice } from '../../components/common/Notice'
 import { LoraTriggerBar } from '../../components/studio/LoraTriggerBar'
 import { findLoraProfile, mergeEntryLoraProfile, useLoraProfiles } from '../../components/studio/loraProfilesClient'
+import { isSharedModelId } from '@shared/sharedModels'
+import type { RemoteWorkerModelItem } from '@shared/remoteWorker'
 import type { AdapterEntry, Catalog, GpuInventorySnapshot, ManagedHost, ProjectCanvas, Settings } from '@shared/types'
 import {
   ADAPTER_STRENGTH_MAX,
@@ -31,6 +33,7 @@ import {
   useCopyText,
 } from '../../components/ui'
 import {
+  MP_TIERS,
   QUALITY_PRESETS,
   SIZE_PRESETS,
   clampDimension,
@@ -39,13 +42,17 @@ import {
   qualityFor,
   qualityPreset,
   qualityLabel,
-  sizePresetFor,
+  sizeChoiceFor,
+  sizeForMegapixels,
+  type ImageSize,
+  type MegapixelTier,
   type QualityId,
   type SizePresetId,
 } from './defaults'
+import { dimensions, pixelCount } from '../../lib/format'
 import { canvasDescription, withDescription, type CompiledPrompt } from './prompt'
 import { installedBundles, type Blocker, type BundleChoice } from './readiness'
-import { isWorkerDaemonHost, type WorkerAdapterEntry } from './remoteWorkerLoras'
+import { isWorkerDaemonHost, workerModelBundles, type WorkerAdapterEntry } from './remoteWorkerLoras'
 import { ModelPicker } from './ModelPicker'
 import { ModelName } from '../../components/common/ModelName'
 import { bundleComponentIds, sizeText } from '../models/logic'
@@ -62,20 +69,26 @@ import { styleUsers, UPSCALE_DETAIL, UPSCALE_DETAIL_DEFAULT, UPSCALE_SCALES, wit
 
 const SHORTCUT = typeof window !== 'undefined' && window.clover?.platform === 'darwin' ? '⌘ ↵' : 'Ctrl ↵'
 
+function imageSizeLabel({ width, height }: ImageSize): string {
+  return `${dimensions(width, height)} · ${pixelCount(width * height)}`
+}
+
 /** Commit-on-blur number field, so typing "1" on the way to "1024" is not clamped. */
 function DimensionInput({
   label,
   value,
+  otherEdge,
   onCommit,
 }: {
   label: string
   value: number
+  otherEdge?: number
   onCommit: (value: number) => void
 }): React.JSX.Element {
   const [draft, setDraft] = useState(String(value))
   useEffect(() => setDraft(String(value)), [value])
   const commit = (): void => {
-    const next = clampDimension(Number(draft), value)
+    const next = clampDimension(Number(draft), value, otherEdge)
     setDraft(String(next))
     if (next !== value) onCommit(next)
   }
@@ -99,6 +112,14 @@ export interface ParamsPanelProps {
   regionCount: number
   catalog: Catalog | null
   bundle: BundleChoice
+  /** Real models detected on the Worker host picked as 运行位置; null/absent for this computer and SSH hosts. */
+  workerModels?: {
+    models: readonly RemoteWorkerModelItem[]
+    unsupported?: boolean
+    loading: boolean
+    error: string | null
+    reload: (rescan?: boolean) => void
+  } | null
   /** The LoRA of the Worker host picked as 运行位置 (null while unknown); absent for this computer and SSH hosts. */
   workerAdapters?: readonly WorkerAdapterEntry[] | null
   settings: Settings | null
@@ -160,6 +181,7 @@ function CanvasParams({
   regionCount,
   catalog,
   bundle,
+  workerModels,
   workerAdapters,
   settings,
   gpuInventory,
@@ -185,10 +207,18 @@ function CanvasParams({
   const copyText = useCopyText()
   const openUpdate = useApp((state) => state.setUpdatePopoverOpen)
   const readOnly = canvas.kind === 'result'
-  const [customSize, setCustomSize] = useState(false)
+  const [customSize, setCustomSize] = useState<{ aspect: ImageSize; mp?: MegapixelTier } | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [promptOpen, setPromptOpen] = useState(false)
-  const sizePreset: SizePresetId = customSize ? 'custom' : sizePresetFor(canvas.width, canvas.height)
+  const preset = sizeChoiceFor(canvas.width, canvas.height)
+  const sizePreset: SizePresetId = customSize ? 'custom' : (preset?.id ?? 'custom')
+  const aspect = sizePreset === 'custom' ? (customSize?.aspect ?? canvas) : sizePreset
+  const tier = sizePreset === 'custom' ? customSize?.mp : preset?.mp
+  const changeSize = (size: ImageSize): void => onChange((current) => resizeCanvas(current, size.width, size.height))
+  const typeSize = (width: number, height: number): void => {
+    setCustomSize({ aspect: { width, height } })
+    changeSize({ width, height })
+  }
   const quality = qualityFor(canvas.steps)
   const installed = installedBundles(catalog)
   const adapters = normalizeCanvasAdapters(canvas.adapters)
@@ -199,7 +229,7 @@ function CanvasParams({
   const description = canvasDescription(canvas)
   const seedLocked = isSeedLocked(canvas)
 
-  useEffect(() => setCustomSize(false), [canvas.id])
+  useEffect(() => setCustomSize(null), [canvas.id])
 
   const engineReadiness = useApp((state) => state.engineReadiness)
   const defaultGpu =
@@ -221,10 +251,18 @@ function CanvasParams({
     : sizePreset === 'custom'
       ? `${canvas.width} × ${canvas.height}`
       : sizePreset
+  const activeAdapters = adapters.filter((adapter) => adapter.strength > 0)
   // Model, size and LoRA as separate pieces; the spaces keep the plain text readable ("MOSS-Image SFT INT8 1:1").
+  const hasRealWorkerModel = Boolean(workerHost && bundle.bundle && !bundle.bundle.id.startsWith('remote-worker:'))
+  const legacyWorkerDaemon = Boolean(workerHost && workerModels?.unsupported)
   const summary = (
     <>
-      {workerHost ? (
+      {hasRealWorkerModel && bundle.bundle ? (
+        <>
+          <ModelName item={bundle.bundle} />
+          <span className="shrink-0 text-ink-2">· {workerHost!.name}</span>
+        </>
+      ) : workerHost ? (
         <span className="truncate">远端主机 · {workerHost.name}</span>
       ) : bundle.bundle ? (
         <ModelName item={bundle.bundle} />
@@ -232,25 +270,46 @@ function CanvasParams({
         <span>没有模型</span>
       )}{' '}
       <span className="shrink-0 text-ink-2">{sizeLabel}</span>
-      {adapters.length ? (
+      {activeAdapters.length ? (
         <>
           {' '}
-          <span className="shrink-0 text-ink-2">LoRA {adapters.length}</span>
+          <span className="shrink-0 text-ink-2">LoRA {activeAdapters.length}</span>
         </>
       ) : null}
     </>
   )
 
+  const workerBundles = useMemo(
+    () => (workerHost && workerModels?.models.length ? workerModelBundles(workerModels.models) : []),
+    [workerHost, workerModels?.models],
+  )
+  const workerInstalledIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const item of workerModels?.models ?? []) {
+      ids.add(item.id)
+      if (item.catalogBundleId) ids.add(item.catalogBundleId)
+    }
+    return ids
+  }, [workerModels?.models])
   const notDownloaded = (catalog?.bundles ?? [])
     .filter((item) => !installed.some((entry) => entry.id === item.id))
     // Certified models first, as on the 模型 page.
     .sort((a, b) => Number(Boolean(b.certified)) - Number(Boolean(a.certified)))
+  const workerNotDownloaded = legacyWorkerDaemon
+    ? []
+    : (catalog?.bundles ?? [])
+        .filter((item) => !isSharedModelId(item.id) && item.id !== 'local-files' && !item.custom && !workerInstalledIds.has(item.id))
+        .sort((a, b) => Number(Boolean(b.certified)) - Number(Boolean(a.certified)))
   const bundleSizes = new Map(
     installed.map((item) => [
       item.id,
       sizeText(bundleComponentIds(item).reduce((sum, id) => sum + (catalog?.models.find((model) => model.id === id)?.sizeBytes ?? 0), 0)),
     ]),
   )
+  const workerBundleSizes = new Map((workerModels?.models ?? []).map((item) => [item.id, item.sizeBytes ? sizeText(item.sizeBytes) : '']))
+  const activeInstalled = workerHost ? (legacyWorkerDaemon && bundle.bundle ? [bundle.bundle] : workerBundles) : installed
+  const activeNotDownloaded = workerHost ? workerNotDownloaded : notDownloaded
+  const activeSizes = workerHost ? workerBundleSizes : bundleSizes
 
   const setAdapters = (next: ProjectCanvas['adapters']): void =>
     onChange((current) => ({ ...current, adapters: normalizeCanvasAdapters(next) }))
@@ -310,18 +369,73 @@ function CanvasParams({
             {settingsOpen ? (
               <>
                 <section className="flex flex-col gap-2.5">
-                  <FieldLabel htmlFor="studio-model">模型</FieldLabel>
+                  <FieldLabel
+                    htmlFor="studio-model"
+                    value={
+                      workerHost && workerModels && !legacyWorkerDaemon ? (
+                        <Button
+                          tone="ghost"
+                          size="xs"
+                          className="-mr-2"
+                          disabled={workerModels.loading}
+                          onClick={() => workerModels.reload(true)}
+                        >
+                          <RefreshCw
+                            className={cn('size-3', workerModels.loading && 'animate-spin')}
+                            strokeWidth={1.6}
+                            aria-hidden="true"
+                          />
+                          重新检测
+                        </Button>
+                      ) : undefined
+                    }
+                  >
+                    {workerHost ? `模型 · ${workerHost.name}` : '模型'}
+                  </FieldLabel>
                   <ModelPicker
                     id="studio-model"
                     current={bundle.bundle}
-                    installed={installed}
-                    others={notDownloaded}
-                    sizes={bundleSizes}
-                    disabled={readOnly || !catalog}
-                    placeholder={catalog ? '还没有可用的模型' : '正在读取模型…'}
+                    installed={activeInstalled}
+                    others={activeNotDownloaded}
+                    sizes={activeSizes}
+                    disabled={
+                      readOnly ||
+                      legacyWorkerDaemon ||
+                      (!workerHost && !catalog) ||
+                      (Boolean(workerHost) && Boolean(workerModels?.loading) && !activeInstalled.length)
+                    }
+                    placeholder={
+                      workerHost
+                        ? workerModels?.loading
+                          ? '正在检测远端模型…'
+                          : workerModels?.error
+                            ? '无法读取远端模型'
+                            : '远端未检测到模型'
+                        : catalog
+                          ? '还没有可用的模型'
+                          : '正在读取模型…'
+                    }
                     onPick={onPickBundle}
-                    onDownload={(id) => onNavigate(`/models?bundle=${encodeURIComponent(id)}`)}
+                    onDownload={(id) =>
+                      onNavigate(
+                        workerHost
+                          ? `/models?hostId=${encodeURIComponent(workerHost.id)}&bundle=${encodeURIComponent(id)}`
+                          : `/models?bundle=${encodeURIComponent(id)}`,
+                      )
+                    }
                   />
+                  {workerHost && workerModels?.error ? (
+                    <Notice
+                      tone="warn"
+                      action={
+                        <Button size="xs" onClick={() => workerModels.reload(true)}>
+                          重试
+                        </Button>
+                      }
+                    >
+                      无法检测 {workerHost.name} 上的模型：{workerModels.error}
+                    </Notice>
+                  ) : null}
                   <LoraSection
                     adapters={adapters}
                     catalog={catalog}
@@ -339,36 +453,54 @@ function CanvasParams({
                   <UpscaleSection canvas={canvas} canvases={inputs?.canvases ?? []} onChange={onChange} />
                 ) : (
                   <section className="flex flex-col gap-2.5">
-                    <FieldLabel value={`${canvas.width} × ${canvas.height}`}>尺寸</FieldLabel>
+                    <FieldLabel value={imageSizeLabel(canvas)}>尺寸</FieldLabel>
                     <Segmented<SizePresetId>
                       block
                       label="尺寸"
                       value={sizePreset}
                       onChange={(value) => {
                         if (value === 'custom') {
-                          setCustomSize(true)
+                          setCustomSize({ aspect: { width: canvas.width, height: canvas.height } })
                           return
                         }
-                        setCustomSize(false)
-                        const preset = SIZE_PRESETS.find((item) => item.id === value)
-                        if (preset) onChange((current) => resizeCanvas(current, preset.width, preset.height))
+                        setCustomSize(null)
+                        changeSize(sizeForMegapixels(value, tier ?? 1))
                       }}
                       options={[
-                        ...SIZE_PRESETS.map((preset) => ({
-                          value: preset.id,
-                          label: preset.id,
-                          hint: `${preset.width} × ${preset.height}`,
+                        ...SIZE_PRESETS.map(({ id }) => ({
+                          value: id,
+                          label: id,
+                          hint: imageSizeLabel(sizeForMegapixels(id, tier ?? 1)),
                         })),
                         { value: 'custom' as const, label: '自定义' },
                       ]}
-                      className="[&>button]:px-1"
+                      className="grid grid-cols-4 gap-0.5 [&>button]:px-1"
+                    />
+                    <FieldLabel htmlFor="studio-size-tier">像素档位</FieldLabel>
+                    <Select
+                      id="studio-size-tier"
+                      value={tier === undefined ? '' : String(tier)}
+                      onValueChange={(value) => {
+                        const mp = MP_TIERS.find((item) => String(item) === value)
+                        if (mp === undefined) return
+                        if (typeof aspect !== 'string') setCustomSize({ aspect: { width: aspect.width, height: aspect.height }, mp })
+                        changeSize(sizeForMegapixels(aspect, mp))
+                      }}
+                      options={[
+                        ...(tier === undefined ? [{ value: '', label: '自定义像素', disabled: true }] : []),
+                        ...MP_TIERS.map((mp) => {
+                          const size = sizeForMegapixels(aspect, mp)
+                          return { value: String(mp), label: `${pixelCount(mp * 1_000_000)} · ${dimensions(size.width, size.height)}` }
+                        }),
+                      ]}
                     />
                     {sizePreset === 'custom' && !readOnly ? (
                       <div className="flex items-center gap-2">
                         <DimensionInput
                           label="宽度"
                           value={canvas.width}
-                          onCommit={(width) => onChange((current) => resizeCanvas(current, width, current.height))}
+                          otherEdge={canvas.height}
+                          onCommit={(width) => typeSize(width, canvas.height)}
                         />
                         <span aria-hidden="true" className="text-ink-2">
                           ×
@@ -376,7 +508,8 @@ function CanvasParams({
                         <DimensionInput
                           label="高度"
                           value={canvas.height}
-                          onCommit={(height) => onChange((current) => resizeCanvas(current, current.width, height))}
+                          otherEdge={canvas.width}
+                          onCommit={(height) => typeSize(canvas.width, height)}
                         />
                       </div>
                     ) : null}
@@ -670,12 +803,13 @@ export function LoraSection({
           {adapterRows.map(({ adapter, name, installed: present }) => {
             const entry = library?.find((item) => item.id === adapter.id)
             const profile = mergeEntryLoraProfile(adapter.path ?? adapter.id, entry, findLoraProfile(profiles, adapter))
+            const disabledZero = adapter.strength <= 0
             return (
               <SlotRow
                 key={adapter.id}
                 data-adapter-row={adapter.id}
-                title={present ? name : `${name}（找不到文件）`}
-                titleTone={present ? 'ink' : 'warn'}
+                title={disabledZero ? `${name}（强度 0 · 已停用）` : present ? name : `${name}（找不到文件）`}
+                titleTone={disabledZero || present ? 'ink' : 'warn'}
                 removeLabel={`移除 ${name}`}
                 onRemove={readOnly ? undefined : () => setAdapters(adapters.filter((item) => item.id !== adapter.id))}
               >

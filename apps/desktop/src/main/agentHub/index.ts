@@ -8,12 +8,15 @@ import { listCapabilityAudit } from '../capabilities'
 import { createCapabilityApprovalQueue } from './approvalQueue'
 import { createAcpDriver } from './acpDriver'
 import { createAgentHub } from './hub'
+import { createDshDriver } from './dshDriver'
 
 export const capabilityApprovalQueue = createCapabilityApprovalQueue({ emit })
 const agentEvent = (event: AgentHubEvent) => emit(Events.agentHubEvent, event)
 export const agentHub = createAgentHub(
   [
     createAcpDriver({ id: 'codex-acp', label: 'Codex ACP', command: 'codex-acp', emit: agentEvent }),
+    // Another DeepSeek Harness on this computer; the default only when Codex ACP is not installed.
+    createDshDriver(agentEvent),
     createAcpDriver({ id: 'custom-acp', label: '自定义 ACP', emit: agentEvent }),
   ],
   async () => ({

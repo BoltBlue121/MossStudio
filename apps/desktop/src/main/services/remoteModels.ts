@@ -1,7 +1,10 @@
+import type { RemoteWorkerModelItem, RemoteWorkerProfile } from '@shared/remoteWorker'
 import type { AdapterEntry, Catalog, DownloadTask, ModelEntry, TrainingHost } from '@shared/types'
 import { posixQuote, remoteAbsolute, sshExec } from './ssh'
 import { startRemoteDownload } from './remoteDownloads'
 import { assertSafeSteps, planRemoteDelete, type RemoteEntryFiles } from './remoteModelDelete'
+import { deleteRemoteWorkerModels, listRemoteWorkerLoras, listRemoteWorkerModels } from './remoteWorker'
+import { workerProfileWith } from './workerHostManager'
 
 export async function prepareRemoteDefaultModel(
   host: TrainingHost,
@@ -26,6 +29,8 @@ export interface RemoteModelInventory {
   files: number
   models: RemoteModelInventoryEntry[]
   adapters: RemoteModelInventoryEntry[]
+  workerModels?: RemoteWorkerModelItem[]
+  defaultModelId?: string | null
 }
 
 function modelMatches(entry: ModelEntry, files: string[]): string | undefined {
@@ -125,7 +130,51 @@ function inventoryFrom(catalog: Catalog, files: string[]): Pick<RemoteModelInven
   return { models, adapters }
 }
 
+async function scanWorkerDaemonModels(profile: RemoteWorkerProfile, catalog: Catalog): Promise<RemoteModelInventory> {
+  const [workerInventory, lorasResult] = await Promise.all([
+    listRemoteWorkerModels(profile, false),
+    listRemoteWorkerLoras(profile, true).catch(() => ({ items: [] })),
+  ])
+  const installedComponents = new Map<string, string | undefined>()
+  for (const component of workerInventory.components) {
+    if (component.installed) installedComponents.set(component.id, component.path)
+  }
+  const installedBundleIds = new Set(workerInventory.models.map((item) => item.catalogBundleId).filter((id): id is string => Boolean(id)))
+  const satisfiedByBundle = new Set<string>()
+  for (const bundle of catalog.bundles) {
+    if (!installedBundleIds.has(bundle.id)) continue
+    for (const part of [bundle.components.dit, bundle.components.textEncoder, bundle.components.vae, bundle.support]) {
+      if (part) satisfiedByBundle.add(part)
+    }
+  }
+  const models: RemoteModelInventoryEntry[] = catalog.models.map((entry) => {
+    if (installedComponents.has(entry.id)) {
+      return { id: entry.id, installed: true, path: installedComponents.get(entry.id) }
+    }
+    if (satisfiedByBundle.has(entry.id)) {
+      return { id: entry.id, installed: true, path: workerInventory.root }
+    }
+    return { id: entry.id, installed: false }
+  })
+  const loraNames = new Set(lorasResult.items.map((item) => item.name.toLowerCase()))
+  const adapters: RemoteModelInventoryEntry[] = catalog.adapters.map((entry) => {
+    const matched = entry.files.length > 0 && entry.files.every((file) => loraNames.has(file.split('/').at(-1)!.toLowerCase()))
+    return { id: entry.id, installed: matched, path: matched ? entry.files[0] : undefined }
+  })
+  return {
+    root: workerInventory.root ?? '',
+    files: workerInventory.models.length + workerInventory.components.length,
+    models,
+    adapters,
+    workerModels: workerInventory.models,
+    defaultModelId: workerInventory.defaultModelId ?? null,
+  }
+}
+
 export async function scanRemoteModels(host: TrainingHost, catalog: Catalog, modelsRoot?: string): Promise<RemoteModelInventory> {
+  // A Worker daemon that lists its own models answers for them; an older one, or one not reachable now, is read over SSH.
+  const profile = await workerProfileWith(host, 'models').catch(() => null)
+  if (profile) return scanWorkerDaemonModels(profile, catalog)
   const { root, files } = await listRemoteModelFiles(host, modelsRoot)
   return { root, files: files.length, ...inventoryFrom(catalog, files) }
 }
@@ -140,6 +189,8 @@ export async function deleteRemoteModels(
   catalog: Catalog,
   ids: readonly string[],
 ): Promise<{ removed: string[]; kept: string[] }> {
+  const profile = await workerProfileWith(host, 'models').catch(() => null)
+  if (profile) return deleteRemoteWorkerModels(profile, ids)
   const { root, files } = await listRemoteModelFiles(host)
   const inventory = inventoryFrom(catalog, files)
   const located: Array<RemoteEntryFiles & { installed: boolean }> = [

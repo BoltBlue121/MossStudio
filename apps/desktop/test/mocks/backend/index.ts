@@ -18,6 +18,7 @@
  * and are listed in `backend.unhandled`, unless `fallback: 'empty'` is passed
  * (the legacy UI-harness behaviour: `[]`, or `null` for appInfo/envScan).
  */
+import { schemas, type ImageEditChannel } from '@shared/schemas'
 import { bestBundleFor, cliGpuUuids, generationGpus, isFileBundle } from '@shared/bundleFit'
 import { Events, Ipc, type EventChannel } from '@shared/channels'
 import { combinationBundle } from '@shared/modelCombos'
@@ -262,7 +263,38 @@ function defaultHandlers(): Map<string, Handler> {
     if (item) item.registered = action === 'register'
     return { id, registered: action === 'register' }
   })
+  h.set(Ipc.remoteWorkerModels, (_, { state }) => ({
+    root: '/srv/worker/models',
+    defaultModelId: state.agents.workerModels[0]?.id ?? null,
+    models: state.agents.workerModels,
+    components: [],
+  }))
 
+  const edits = new Map<string, ImageEditChannel>()
+  const editHandler = (ipc: string, handler: (payload: unknown) => unknown) =>
+    h.set(ipc, (payload, { state }) => {
+      if (!state.settings.externalImageEditEnabled) throw new MockIpcError('E_FEATURE_OFF', '请先打开外接重绘')
+      return handler(payload)
+    })
+  editHandler(Ipc.imageEditChannelsList, () => [...edits.values()])
+  editHandler(Ipc.imageEditChannelsSave, (payload) => {
+    const { id = crypto.randomUUID(), apiKey, ...fields } = schemas.imageEditChannelsSave.parse(payload),
+      old = edits.get(id)
+    const row: ImageEditChannel = {
+      ...fields,
+      id,
+      revision: crypto.randomUUID(),
+      hasKey: apiKey === undefined ? !!old?.hasKey && new URL(old.baseUrl).origin === new URL(fields.baseUrl).origin : !!apiKey,
+    }
+    edits.set(id, row)
+    return row
+  })
+  editHandler(Ipc.imageEditChannelsRemove, (payload) => edits.delete(schemas.imageEditChannelsRemove.parse(payload).id))
+  editHandler(Ipc.imageEditDiscoverModels, () => ['image-test', 'text-test'])
+  editHandler(Ipc.imageEditRun, (payload) => {
+    const { projectId } = schemas.imageEditRun.parse(payload)
+    return { path: `/projects/${projectId}/assets/edited.png`, width: 512, height: 512 }
+  })
   // 外部 Agent: every channel answers E_FEATURE_OFF while the switch is off, as main does.
   const external =
     (handler: Handler): Handler =>
@@ -276,6 +308,10 @@ function defaultHandlers(): Map<string, Handler> {
   h.set(
     Ipc.agentHubBackends,
     external((_, { state }) => state.agents.backends),
+  )
+  h.set(
+    Ipc.agentHubProjects,
+    external((payload, { state }) => (p<{ backendId: string }>(payload).backendId === 'dsh-desktop' ? (state.agents.projects ?? []) : [])),
   )
   h.set(
     Ipc.agentHubSessions,
@@ -320,7 +356,21 @@ function defaultHandlers(): Map<string, Handler> {
   )
   h.set(
     Ipc.agentHubCreateSession,
-    external(() => ({ sessionId: 'fixture-agent-session' })),
+    external((payload, { state }) => {
+      const input = p<import('@shared/agentHub').AgentCreateSessionInput>(payload)
+      if (input.backendId !== 'dsh-desktop') return { sessionId: 'fixture-agent-session' }
+      const projects = (state.agents.projects ??= [])
+      let workspace = projects.find((w) => w.id === input.workspaceId)
+      if (!workspace && input.createCwd && input.cwd) {
+        workspace = { id: crypto.randomUUID(), title: input.cwd.split(/[\\/]/).at(-1) || input.cwd, cwd: input.cwd, sessionIds: [] }
+        projects.push(workspace)
+      }
+      if (!workspace) throw new MockIpcError('E_WORKSPACE', '选择工作区')
+      const id = crypto.randomUUID()
+      workspace.sessionIds = [...workspace.sessionIds, id]
+      state.agents.sessions.push({ id, title: input.title || '新对话', cwd: workspace.cwd, projectId: input.projectId })
+      return { sessionId: id }
+    }),
   )
   h.set(
     Ipc.agentHubSetModel,
@@ -331,7 +381,14 @@ function defaultHandlers(): Map<string, Handler> {
     external((payload, { state }) => {
       const id = p<{ backendId: string }>(payload).backendId
       const known = state.agents.backends.find((backend) => backend.id === id)
-      const backend = { id, label: known?.label ?? 'Fixture agent', kind: 'acp' as const, available: true, connected: true }
+      const backend = {
+        ...known,
+        id,
+        label: known?.label ?? 'Fixture agent',
+        kind: known?.kind ?? ('acp' as const),
+        available: true,
+        connected: true,
+      }
       state.agents.backends = [...state.agents.backends.filter((item) => item.id !== id), backend]
       return backend
     }),

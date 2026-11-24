@@ -67,7 +67,28 @@ const mangaWithPage = (page: Record<string, unknown>): unknown => ({
   chapters: [{ ...newManga.chapters[0]!, pages: [{ id: 'p', ...page }] }],
 })
 
+const id = '12345678-1234-4123-8123-123456789abc'
+const channel = { name: 'Mine', protocol: 'openai-edits', baseUrl: 'https://api.example/v1', model: 'model' }
+const run = { channelId: id, revision: id, path: 'picture.png', projectId: 'p', prompt: 'draw' }
 const cases = {
+  imageEditChannelsList: { valid: {}, rejects: { secret: { key: 'x' } } },
+  imageEditChannelsSave: {
+    valid: channel,
+    rejects: {
+      http: { ...channel, baseUrl: 'http://api.example' },
+      query: { ...channel, baseUrl: 'https://api.example/?key=x' },
+      extra: { ...channel, hasKey: true },
+    },
+  },
+  imageEditChannelsRemove: { valid: { id }, rejects: { missing: {} } },
+  imageEditDiscoverModels: {
+    valid: { protocol: channel.protocol, baseUrl: channel.baseUrl },
+    rejects: { extra: { ...channel, approved: true } },
+  },
+  imageEditRun: {
+    valid: run,
+    rejects: { approval: { ...run, approved: true }, traversal: { ...run, projectId: '../p' }, prompt: { ...run, prompt: ' ' } },
+  },
   remoteWorkerLoras: {
     valid: { hostId: 'host' },
     accepts: { provider: { providerId: 'worker-host', candidates: true }, both: { hostId: 'host', providerId: 'worker-host' } },
@@ -77,6 +98,11 @@ const cases = {
     valid: { hostId: 'host', id: 'lora', action: 'register' },
     accepts: { provider: { providerId: 'worker-host', id: 'lora', action: 'unregister' } },
     rejects: { missing: { id: 'lora', action: 'register' }, action: { hostId: 'host', id: 'lora', action: 'delete' } },
+  },
+  remoteWorkerModels: {
+    valid: { hostId: 'host' },
+    accepts: { provider: { providerId: 'worker-host', rescan: true }, both: { hostId: 'host', providerId: 'worker-host' } },
+    rejects: { missing: {}, emptyHost: { hostId: '' }, emptyProvider: { providerId: '' } },
   },
   loraProfilesList: { valid: {}, rejects: { unknown: { x: true } } },
   loraProfilesSave: { valid: { loraId: 'lora' }, rejects: { strength: { loraId: 'lora', defaultStrength: 5 } } },
@@ -88,11 +114,21 @@ const cases = {
     rejects: { unknown: { clientId: 'other' }, invalidConsent: { clientId: 'codex', resetPolicy: 'true' } },
   },
   mcpClientUninstall: { valid: { clientId: 'claude-code' }, rejects: { missing: {} } },
-  agentHubConnect: { valid: { backendId: 'codex' }, rejects: { command: { backendId: 'custom', customCommand: 'bad\ncommand' } } },
+  agentHubConnect: {
+    valid: { backendId: 'codex' },
+    accepts: { 'a local DSH pairing URL': { backendId: 'dsh-desktop', pairingUrl: 'http://127.0.0.1:52497/?token=demo_token-1' } },
+    rejects: {
+      command: { backendId: 'custom', customCommand: 'bad\ncommand' },
+      'a remote pairing URL': { backendId: 'dsh-desktop', pairingUrl: 'https://remote.invalid/?token=secret' },
+    },
+  },
   agentHubBackend: { valid: { backendId: 'codex' }, rejects: { empty: { backendId: '' } } },
   agentHubCreateSession: {
     valid: { backendId: 'codex' },
-    accepts: { 'a new project folder': { backendId: 'codex', cwd: 'F:/work/new', createCwd: true } },
+    accepts: {
+      'a new project folder': { backendId: 'codex', cwd: 'F:/work/new', createCwd: true },
+      'an existing DSH workspace': { backendId: 'dsh-desktop', workspaceId: 'work-1' },
+    },
     rejects: { missing: {}, createCwd: { backendId: 'codex', cwd: 'F:/work/new', createCwd: 'yes' } },
   },
   agentHubModels: { valid: { backendId: 'codex' }, rejects: { missing: {} } },
@@ -998,6 +1034,7 @@ const cases = {
     output: { ...job, negativePrompt: '', profile: 'base', mode: 'runner' },
     accepts: {
       'size bounds': { ...job, width: 256, height: 2048 },
+      'wide 4MP within pixel budget': { ...job, width: 2656, height: 1488 },
       'seed bounds': { ...job, seed: 4294967295 },
       'steps 100 and cfg 20': { ...job, steps: 100, cfg: 20 },
       'every option': {
@@ -1014,7 +1051,8 @@ const cases = {
     rejects: {
       'width not multiple of 16': { ...job, width: 520 },
       'width below 256': { ...job, width: 240 },
-      'height above 2048': { ...job, height: 2064 },
+      'height above 4096': { ...job, height: 4112 },
+      'pixels above 4.2MP budget': { ...job, width: 2048, height: 2064 },
       'steps 0': { ...job, steps: 0 },
       'steps 101': { ...job, steps: 101 },
       'cfg above 20': { ...job, cfg: 20.01 },
@@ -1141,6 +1179,11 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
 const STRICT = new Set<keyof Schemas>([
+  'imageEditChannelsList',
+  'imageEditChannelsSave',
+  'imageEditChannelsRemove',
+  'imageEditDiscoverModels',
+  'imageEditRun',
   'engineSystemCuda',
   'mossInferCudaLibs',
   'loraProfilesList',

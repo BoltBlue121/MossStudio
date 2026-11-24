@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BarChart3, Loader2, Plug, Square } from 'lucide-react'
 import { defaultUrlTransform, type MarkdownProps } from '@openai/apps-sdk-ui/components/Markdown'
+import { BarChart3, Loader2, Plug, Square } from 'lucide-react'
+import type { AgentProject } from '@shared/agentHub'
 import { PreviewButton, isRasterData } from '../../../components/common/ImageLightbox'
 import { Notice } from '../../../components/common/Notice'
+import { DesktopSessionBar, useWorkspaceChoice } from './DesktopSessionBar'
 import { Button, cn, EmptyState, Field, FieldLabel, Input, LoadingRow, MarkdownBody, Textarea } from '../../../components/ui'
 import { ApiError } from '../../../lib/api'
 import { AgentSessionBar, AgentSwitcher, type AgentAction } from './AgentBackendBar'
@@ -51,7 +53,7 @@ import { SessionStatsPanel } from './SessionStats'
 import { mergeSteps, StepProgressDock, type ProgressStep } from './StepProgressDock'
 
 // Reply text is untrusted: show embedded raster data, never load a URL or open a path named by the Agent.
-const replyImages: Pick<MarkdownProps, 'urlTransform' | 'components'> = {
+export const replyImages: Pick<MarkdownProps, 'urlTransform' | 'components'> = {
   urlTransform: (url, key) => (key === 'src' ? (isRasterData(url) ? url : '') : defaultUrlTransform(url)),
   components: {
     img: ({ node }) => {
@@ -94,9 +96,9 @@ export function connectionLost(reason: unknown): boolean {
 
 function readBackend(): string {
   try {
-    return localStorage.getItem(BACKEND_KEY) || FALLBACK_BACKENDS[0]!.id
+    return localStorage.getItem(BACKEND_KEY) ?? ''
   } catch {
-    return FALLBACK_BACKENDS[0]!.id
+    return ''
   }
 }
 
@@ -113,7 +115,12 @@ function sessionsSignature(items: readonly AgentSession[]): string {
 }
 
 function messagesSignature(items: readonly AgentMessage[]): string {
-  return items.map((m) => `${m.seq}:${m.role}:${m.text.length}:${m.text.slice(-24)}`).join('\n')
+  return items
+    .map(
+      (m) =>
+        `${m.seq}:${m.role}:${m.text.length}:${m.text.slice(-24)}:${m.images?.map((i) => `${i.length}:${i.slice(-24)}`).join('|') ?? ''}`,
+    )
+    .join('\n')
 }
 
 /** A slow Agent must not pile up polls, and a late answer belongs only to the panel that asked. */
@@ -259,7 +266,8 @@ export function CollabPanel({
     }
   }, [client, visible, profile.mode, packsKey])
 
-  const backend = backends.find((item) => item.id === backendId) ?? backends[0] ?? FALLBACK_BACKENDS[0]!
+  const backend =
+    backends.find((item) => item.id === backendId) ?? backends.find((item) => item.preferred) ?? backends[0] ?? FALLBACK_BACKENDS[0]!
 
   const [lost, setLost] = useState(false)
   const fail = useCallback(
@@ -417,7 +425,10 @@ function HubPane({
   const [busy, setBusy] = useState(false)
   const [command, setCommand] = useState(backend.command ?? '')
   const [args, setArgs] = useState('')
+  const [pairing, setPairing] = useState('')
   const custom = isCustomBackend(backend)
+  // Another DeepSeek Harness on this computer: it pairs with its own local address.
+  const desktop = backend.kind === 'dsh-desktop'
 
   async function connect(): Promise<void> {
     if (busy) return
@@ -427,9 +438,11 @@ function HubPane({
       const customArgs = args.trim() ? args.trim().split(/\s+/) : undefined
       const info = await client.connect({
         backendId: backend.id,
+        ...(desktop && pairing.trim() ? { pairingUrl: pairing.trim() } : {}),
         ...(custom && command.trim() ? { customCommand: command.trim() } : {}),
         ...(custom && customArgs ? { customArgs } : {}),
       })
+      setPairing('')
       onBackendChange(info ?? { ...backend, connected: true })
     } catch (reason) {
       onError(reason)
@@ -472,7 +485,7 @@ function HubPane({
   )
 
   if (!backend.connected) {
-    const ready = backend.available || custom
+    const ready = backend.available || custom || (desktop && Boolean(pairing.trim()))
     return (
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
         <div className="flex justify-end">{toolbar}</div>
@@ -483,6 +496,19 @@ function HubPane({
               {backend.detail ?? (ready ? '' : '没有在这台电脑上找到它，请先安装后点左上角重新检测。')}
             </span>
           </div>
+          {desktop ? (
+            <Field label={backend.available ? '已发现 · 本机配对地址（可选）' : '本机配对地址'}>
+              <Input
+                aria-label="本机配对地址"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={2048}
+                value={pairing}
+                onChange={(event) => setPairing(event.target.value)}
+              />
+            </Field>
+          ) : null}
           {custom ? (
             <div className="flex flex-col gap-2">
               <Field label="启动命令">
@@ -516,14 +542,10 @@ function HubPane({
       </div>
     )
   }
-  return <ProjectChat key={projectKey} {...shared} chat={chat} />
+  return <ProjectChat key={projectKey} {...shared} chat={chat} desktop={desktop} />
 }
 
-function ProjectChat({
-  chat,
-
-  ...shared
-}: ChatShared & { chat: ChatBackend }): React.JSX.Element {
+function ProjectChat({ chat, desktop, ...shared }: ChatShared & { chat: ChatBackend; desktop: boolean }): React.JSX.Element {
   const { client, board, onError, onClearError, onStatus, dock, toolbar, projects, onCreateProject } = shared
   const [sessions, setSessions] = useState<AgentSession[] | null>(null)
   const [binding, setBinding] = useState<ProjectSessionBinding>(() => readSessionBinding(chat.id, board.projectId))
@@ -531,6 +553,16 @@ function ProjectChat({
   const [newOpen, setNewOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
 
+  const [desktopProjects, setDesktopProjects] = useState<AgentProject[]>([])
+  const {
+    workspaceId,
+    sessionId: workspaceSession,
+    chooseWorkspace,
+    chooseSession: chooseWorkspaceSession,
+  } = useWorkspaceChoice(board.projectId)
+  const workspace = desktopProjects.find((p) => p.id === workspaceId)
+  const listProjects = useCallback(() => client.listProjects(chat.id), [client, chat.id])
+  const refreshProjects = usePoll(listProjects, setDesktopProjects, onError, desktop && !newOpen, SESSIONS_POLL_MS)
   const listSessions = useCallback(() => client.listSessions(chat.id), [client, chat.id])
   const applySessions = useCallback((next: AgentSession[]) => {
     setSessions((prev) => (prev && sessionsSignature(prev) === sessionsSignature(next) ? prev : next))
@@ -538,7 +570,8 @@ function ProjectChat({
   const refresh = usePoll(listSessions, applySessions, onError, !pickerOpen, SESSIONS_POLL_MS)
   // Only this project's conversations are candidates; the rest are imported from the picker.
   const pinned = useMemo(() => projectSessions(sessions ?? [], binding.pinnedIds), [sessions, binding.pinnedIds])
-  const selectedId = chooseSession(pinned, binding.currentId)
+  const scoped = projectSessions(sessions ?? [], workspace?.sessionIds ?? [])
+  const selectedId = desktop ? chooseSession(scoped, workspaceSession) : chooseSession(pinned, binding.currentId)
   const session = sessions?.find((item) => item.id === selectedId)
   const workspaces = useMemo<WorkspaceOption[]>(
     () =>
@@ -559,8 +592,10 @@ function ProjectChat({
     setBinding(adoptSessionBinding(chat.id, board.projectId, latestBinding.current))
   }, [chat.id, board.projectId])
   useEffect(() => {
-    if (selectedId && selectedId !== binding.currentId) bind(selectedId)
-  }, [selectedId, binding.currentId, bind])
+    if (desktop) {
+      if (selectedId && selectedId !== workspaceSession) chooseWorkspaceSession(selectedId)
+    } else if (selectedId && selectedId !== binding.currentId) bind(selectedId)
+  }, [desktop, workspaceSession, chooseWorkspaceSession, selectedId, binding.currentId, bind])
 
   useEffect(() => {
     if (!session) onStatus({ activity: 'idle' })
@@ -574,6 +609,12 @@ function ProjectChat({
       const id = await client.createSession(chat.id, input)
       // A conversation made for another canvas project is listed there, not here.
       setBinding(bindNewSession(chat.id, board.projectId, input.projectId, id))
+      if (desktop) {
+        const updated = await listProjects()
+        setDesktopProjects(updated)
+        const owner = updated.find((p) => p.sessionIds.includes(id))?.id ?? input.workspaceId
+        if (owner && (!input.projectId || input.projectId === board.projectId)) chooseWorkspace(owner, id)
+      }
       setSessions(await listSessions())
       return true
     } catch (reason) {
@@ -586,29 +627,46 @@ function ProjectChat({
 
   return (
     <>
-      <div className="flex min-w-0 items-center gap-1" data-session-row>
-        <AgentSessionBar
-          label={`${chat.name} 会话`}
-          sessions={sessions}
-          pinned={pinned}
-          selectedId={selectedId}
-          creating={creating}
-          createLabel="新建对话"
-          onOpenChange={setPickerOpen}
-          onSelect={(nextId) => {
-            onClearError()
-            bind(nextId)
-          }}
-          onUnbind={(id) => {
-            onClearError()
-            setBinding(unbindSession(chat.id, board.projectId, id))
-          }}
+      {desktop ? (
+        <DesktopSessionBar
+          projects={desktopProjects}
+          project={workspace}
+          sessions={scoped}
+          sessionId={selectedId}
+          onProject={chooseWorkspace}
+          onSession={chooseWorkspaceSession}
           onCreate={() => setNewOpen(true)}
           onRefresh={() => {
-            onClearError()
+            refreshProjects()
             refresh()
           }}
         />
+      ) : null}
+      <div className="flex min-w-0 items-center justify-end gap-1" data-session-row>
+        {!desktop ? (
+          <AgentSessionBar
+            label={`${chat.name} 会话`}
+            sessions={sessions}
+            pinned={pinned}
+            selectedId={selectedId}
+            creating={creating}
+            createLabel="新建对话"
+            onOpenChange={setPickerOpen}
+            onSelect={(nextId) => {
+              onClearError()
+              bind(nextId)
+            }}
+            onUnbind={(id) => {
+              onClearError()
+              setBinding(unbindSession(chat.id, board.projectId, id))
+            }}
+            onCreate={() => setNewOpen(true)}
+            onRefresh={() => {
+              onClearError()
+              refresh()
+            }}
+          />
+        ) : null}
         {toolbar}
       </div>
       <NewSessionDialog
@@ -619,8 +677,9 @@ function ProjectChat({
         projectId={board.projectId}
         projectName={board.projectName}
         projects={projects}
-        workspaces={workspaces}
-        defaultCwd={session?.cwd}
+        workspaces={desktop ? desktopProjects.map((p) => ({ id: p.id, cwd: p.cwd, label: p.title })) : workspaces}
+        defaultWorkspaceId={workspace?.id}
+        defaultCwd={desktop ? workspace?.cwd : session?.cwd}
         onClose={() => setNewOpen(false)}
         onCreate={createSession}
         onCreateProject={onCreateProject}
@@ -875,7 +934,10 @@ function SessionChat({
 
   const chips = contextChips(board)
   const shownMessages = useMemo(
-    () => messages.map((message) => ({ ...message, text: sanitizeMessageText(message.text) })).filter((message) => message.text),
+    () =>
+      messages
+        .map((message) => ({ ...message, text: sanitizeMessageText(message.text) }))
+        .filter((message) => message.text || message.images?.length),
     [messages],
   )
   const streamText = stream ? sanitizeMessageText(stream.text) : ''
@@ -912,6 +974,15 @@ function SessionChat({
         {shownMessages.map((message) => (
           <div key={message.seq} className={message.role === 'user' ? 'rounded-lg bg-raised p-3' : 'rounded-lg bg-panel p-3'}>
             <FieldLabel>{message.role === 'user' ? '你' : chat.name}</FieldLabel>
+            {message.images?.map((src, index) => (
+              <img
+                key={index}
+                src={src}
+                loading="lazy"
+                alt={`对话图片 ${index + 1}`}
+                className="mt-1 max-h-32 max-w-40 rounded-md object-contain"
+              />
+            ))}
             {message.role === 'assistant' ? (
               <div className="selectable mt-1 break-words text-ui text-ink">
                 <MarkdownBody {...replyImages}>{message.text}</MarkdownBody>

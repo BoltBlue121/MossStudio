@@ -10,6 +10,7 @@ import { useApp } from '../../store'
 import { PathValue } from '../../components/common/PathValue'
 import { Button, Group, LoadingRow, Row, Section, useToast } from '../../components/ui'
 import { SectionBody, SwitchRow, TextSetting, errorText, useSaveSettings } from './fields'
+import { ImageEditSettings } from './ImageEditSettings'
 import { GbcSettings } from './GbcSettings'
 
 export function FeaturesSection(): React.JSX.Element {
@@ -31,6 +32,7 @@ export function FeaturesSection(): React.JSX.Element {
           ))}
         </Group>
       </Section>
+      {settings.externalImageEditEnabled === true && <ImageEditSettings />}
       {settings.gbcEnabled ? <GbcSettings /> : null}
       {settings.lanWebEnabled ? <LanAccess /> : null}
     </SectionBody>

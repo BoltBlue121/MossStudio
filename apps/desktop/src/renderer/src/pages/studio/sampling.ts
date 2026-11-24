@@ -1,5 +1,6 @@
 import type { EngineFeatures, JobHires, JobSampling, ProjectCanvas } from '@shared/types'
-import { DIMENSION_STEP } from './defaults'
+import { withinPixelBudget } from '@shared/imageGeometry'
+import { DIMENSION_STEP, fitImageSize } from './defaults'
 
 /**
  * 高级 sampling choices: sampler, scheduler, shift, 高清修复 (a second pass at a
@@ -86,7 +87,8 @@ export function cleanSampling(sampling: JobSampling | undefined): JobSampling | 
 
 /** Set one sampling field (undefined = back to the engine default) and return the canvas. */
 export function withSampling<T extends Pick<ProjectCanvas, 'sampling'>>(canvas: T, patch: Partial<JobSampling>): T {
-  const sampling = cleanSampling({ ...canvas.sampling, ...patch })
+  const hires = patch.hires && { ...patch.hires, ...withinBudget(patch.hires) }
+  const sampling = cleanSampling({ ...canvas.sampling, ...patch, ...(hires ? { hires } : {}) })
   const next = { ...canvas, sampling }
   if (!sampling) delete next.sampling
   return next
@@ -107,9 +109,23 @@ function snap(value: number): number {
   return Math.max(HIRES_MIN_DIMENSION, Math.min(HIRES_MAX_DIMENSION, Math.round(value / DIMENSION_STEP) * DIMENSION_STEP))
 }
 
-/** The second-pass size for a scale of the first-pass size, on the engine's 16-pixel grid. */
-export function hiresSize(base: { width: number; height: number }, scale: number): { width: number; height: number } {
+/** The engine refuses a second pass above its pixel budget, so a larger target is fitted inside it, keeping its shape. */
+function withinBudget(size: { width: number; height: number }): { width: number; height: number } {
+  return withinPixelBudget(size) ? { width: size.width, height: size.height } : fitImageSize(size.width, size.height)
+}
+
+function scaledSize(base: { width: number; height: number }, scale: number): { width: number; height: number } {
   return { width: snap(base.width * scale), height: snap(base.height * scale) }
+}
+
+/** The second-pass size for a scale of the first-pass size, on the engine's 16-pixel grid and within its pixel budget. */
+export function hiresSize(base: { width: number; height: number }, scale: number): { width: number; height: number } {
+  return withinBudget(scaledSize(base, scale))
+}
+
+/** Whether a scale's target fits the pixel budget as asked; one that does not is not offered as that scale. */
+export function hiresScaleFits(base: { width: number; height: number }, scale: number): boolean {
+  return withinPixelBudget(scaledSize(base, scale))
 }
 
 /** Snap a typed hires dimension. */
@@ -138,6 +154,7 @@ export function hiresChoice(canvas: Pick<ProjectCanvas, 'width' | 'height' | 'sa
   const hires = canvas.sampling?.hires
   if (!hires) return 'off'
   for (const scale of HIRES_SCALES) {
+    if (!hiresScaleFits(canvas, scale)) continue
     const size = hiresSize(canvas, scale)
     if (size.width === hires.width && size.height === hires.height) return String(scale) as HiresChoice
   }
@@ -170,7 +187,10 @@ export function scaleHires(
   if (!sampling || !hires || (from.width === to.width && from.height === to.height)) return sampling
   return {
     ...sampling,
-    hires: { ...hires, width: snap((hires.width / from.width) * to.width), height: snap((hires.height / from.height) * to.height) },
+    hires: {
+      ...hires,
+      ...withinBudget({ width: snap((hires.width / from.width) * to.width), height: snap((hires.height / from.height) * to.height) }),
+    },
   }
 }
 

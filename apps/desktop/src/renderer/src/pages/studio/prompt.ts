@@ -169,7 +169,7 @@ export function removeTrigger(prompt: string, trigger: string): string {
  * What the engine receives for LoRAs set to 自动前置 / 自动后置: their trigger
  * words not already in the description, in adapter order, each only once.
  */
-export function applyLoraAutoTriggers<A extends Pick<CanvasAdapter, 'id' | 'path'>>(
+export function applyLoraAutoTriggers<A extends Pick<CanvasAdapter, 'id' | 'path'> & { strength?: number }>(
   prompt: string,
   adapters: readonly A[],
   profiles: LoraTriggerProfiles,
@@ -178,6 +178,7 @@ export function applyLoraAutoTriggers<A extends Pick<CanvasAdapter, 'id' | 'path
   const suffix: string[] = []
   const taken = new Set<string>()
   for (const adapter of adapters) {
+    if (typeof adapter.strength === 'number' && adapter.strength <= 0) continue
     const profile = profileFor(profiles, adapter)
     if (!profile?.autoInsert || profile.autoInsert === 'manual') continue
     for (const word of profile.triggers) {
