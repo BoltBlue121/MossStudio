@@ -82,7 +82,11 @@ const cases = {
   loraProfilesSave: { valid: { loraId: 'lora' }, rejects: { strength: { loraId: 'lora', defaultStrength: 5 } } },
   loraProfilesInspect: { valid: { loraId: 'lora' }, rejects: { missing: {} } },
   mcpClientsStatus: { valid: {}, rejects: { unknown: { x: true } } },
-  mcpClientInstall: { valid: { clientId: 'codex' }, rejects: { unknown: { clientId: 'other' } } },
+  mcpClientInstall: {
+    valid: { clientId: 'codex' },
+    accepts: { reconnect: { clientId: 'codex', resetPolicy: true } },
+    rejects: { unknown: { clientId: 'other' }, invalidConsent: { clientId: 'codex', resetPolicy: 'true' } },
+  },
   mcpClientUninstall: { valid: { clientId: 'claude-code' }, rejects: { missing: {} } },
   agentHubConnect: { valid: { backendId: 'codex' }, rejects: { command: { backendId: 'custom', customCommand: 'bad\ncommand' } } },
   agentHubBackend: { valid: { backendId: 'codex' }, rejects: { empty: { backendId: '' } } },

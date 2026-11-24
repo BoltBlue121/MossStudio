@@ -32,6 +32,7 @@ import {
 import { CollabPanel, agentShortName } from '@renderer/pages/studio/assistant/CollabPanel'
 import { capabilityLabel, contextChips, formatBoardContext } from '@renderer/pages/studio/assistant/collabContext'
 import { GlobalApprovalOverlay } from '@renderer/pages/studio/assistant/GlobalApprovalOverlay'
+import { McpConnectDialog } from '@renderer/pages/studio/assistant/McpConnectDialog'
 import { joinProjectPath, newFolderProblem, parentFolder } from '@renderer/pages/studio/assistant/NewSessionDialog'
 import { bindSession, readSessionBinding } from '@renderer/pages/studio/assistant/sessionBindings'
 import { conversationFigures } from '@renderer/pages/studio/assistant/SessionStats'
@@ -126,16 +127,24 @@ describe('collab client', () => {
     })
   })
 
-  it('offers Codex CLI and Claude Code only, in a fixed order', () => {
-    const clients = normalizeMcpClients({ clients: [{ id: 'claude-code', installed: true, configPath: '/c' }, { id: 'other' }] })
-    expect(clients.map((item) => [item.id, item.installed])).toEqual([
-      ['codex', false],
-      ['claude-code', true],
+  it('reports only verified configuration and copies the bridge resolved by main for both stdio formats', () => {
+    const clients = normalizeMcpClients({ clients: [{ id: 'claude-code', state: 'conflict' }, { id: 'other' }] })
+    expect(clients.map((c) => [c.id, c.state])).toEqual([
+      ['dsh', 'unknown'],
+      ['codex', 'unknown'],
+      ['claude-code', 'conflict'],
     ])
-    const config = JSON.parse(
-      mcpConfigJson({ url: 'http://127.0.0.1:1/mcp', token: 't', toolCount: 3, discoveryPath: '/d.json', stdioBridgePath: '/b.js' }, 'all'),
-    ) as { mcpServers: Record<string, unknown> }
+    const bridge = { command: '/opt/MossStudio', args: ['/b.js'], env: { ELECTRON_RUN_AS_NODE: '1', MOSSSTUDIO_MCP_DISCOVERY: '/d.json' } }
+    const connection = { url: 'http://127.0.0.1:1/mcp', token: 'secret', toolCount: 3, bridge }
+    const config = JSON.parse(mcpConfigJson(connection, 'all'))
     expect(Object.keys(config.mcpServers)).toEqual(['mossstudio', 'mossstudio-stdio'])
+    expect(config.mcpServers['mossstudio-stdio']).toEqual(bridge)
+    expect(JSON.parse(mcpConfigJson(connection, 'dsh'))).toEqual({
+      serverName: 'mossstudio',
+      transport: 'stdio',
+      ...bridge,
+      toolCallTimeoutMs: 180000,
+    })
   })
 
   it('falls back when the hub is missing instead of failing the panel', async () => {
@@ -399,6 +408,37 @@ describe('CollabPanel', () => {
 
     await act(async () => (view.querySelector('[data-standalone-assistant]') as HTMLButtonElement).click())
     expect(standalone).toBe(1)
+  })
+
+  it('preserves Codex restrictions on cancel and only sends reset consent from the confirmation dialog', async () => {
+    const state = scenario('externalAgents')
+    const codex = state.agents.clients.find((client) => client.id === 'codex')!
+    codex.state = 'custom_policy'
+    codex.detail = 'Codex 已禁用此服务，未自动覆盖。'
+    const backend = createMockBackend(state)
+    backend.install()
+    mount(
+      createElement(McpConnectDialog, {
+        open: true,
+        onClose: () => {},
+        client: createCollabClient(),
+        profile: { mode: 'compact', packs: [] },
+      }),
+    )
+    await settle()
+    const click = async (button: Element | null | undefined) => act(async () => (button as HTMLButtonElement).click())
+    const reconnect = document.querySelector('[data-mcp-install="codex"]')
+    expect(reconnect?.textContent).toBe('重新连接')
+    const confirming = () => [...document.querySelectorAll('dialog[open]')].find((el) => el.textContent?.includes('清除工具限制'))
+    const button = (label: string) => [...(confirming()?.querySelectorAll('button') ?? [])].find((item) => item.textContent === label)
+    await click(reconnect)
+    await click(button('取消'))
+    expect(backend.callsTo(Ipc.mcpClientInstall)).toEqual([])
+    await click(reconnect)
+    await click(button('重置并重新连接'))
+    await settle()
+    expect(backend.callsTo(Ipc.mcpClientInstall)).toEqual([{ clientId: 'codex', resetPolicy: true }])
+    expect(document.querySelector('[data-mcp-client="codex"]')?.getAttribute('data-mcp-client-state')).toBe('configured')
   })
 
   it('shows only this project conversations and imports another one by working folder first', async () => {
