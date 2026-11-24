@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { join, posix } from 'node:path'
 import type { AdapterEntry, DownloadTask, ModelEntry, TrainingHost } from '@shared/types'
+import type { RemoteWorkerProfile } from '@shared/remoteWorker'
 import { Events } from '@shared/channels'
 import { emit } from '../lib/events'
 import { paths } from '../lib/paths'
@@ -427,6 +428,20 @@ function updateTasks(host: TrainingHost, tasks: DownloadTask[]): DownloadTask[] 
   return incoming
 }
 
+/**
+ * The Worker profile that owns this host's downloads, or null for the SSH
+ * script. An older daemon, or one not reachable now, keeps the SSH path,
+ * unless the cache holds tasks a daemon owns: those stay until it answers.
+ */
+async function downloadProfile(host: TrainingHost): Promise<RemoteWorkerProfile | null> {
+  try {
+    return await workerProfileWith(host, 'downloads')
+  } catch (error) {
+    if (listRemoteDownloads().some((task) => task.hostId === host.id && !task.id.startsWith('remote:'))) throw error
+    return null
+  }
+}
+
 export async function refreshRemoteDownloads(hostId: string): Promise<DownloadTask[]> {
   const existing = polling.get(hostId)
   if (existing) return existing
@@ -435,7 +450,7 @@ export async function refreshRemoteDownloads(hostId: string): Promise<DownloadTa
   const pending = serial(host, async () => {
     try {
       // A daemon that fetches models itself owns their tasks; an older one keeps the SSH tasks.
-      const profile = await workerProfileWith(host, 'downloads')
+      const profile = await downloadProfile(host)
       if (profile) return updateTasks(host, await listRemoteWorkerDownloads(profile))
       let entries = await worker(host)
       const activeLegacy = entries.filter(
@@ -497,7 +512,7 @@ export async function startRemoteDownload(
   kind: DownloadTask['kind'] = 'model',
 ): Promise<DownloadTask> {
   return serial(host, async () => {
-    const profile = await workerProfileWith(host, 'downloads')
+    const profile = await downloadProfile(host)
     if (profile) {
       const network = networkFor(host)
       const created = await startRemoteWorkerDownload(profile, {
@@ -511,7 +526,8 @@ export async function startRemoteDownload(
         endpoint: network.endpoint,
         token: network.token,
       })
-      const tasks = await listRemoteWorkerDownloads(profile).catch(() => [created])
+      const kept = listRemoteDownloads().filter((task) => task.hostId === host.id && task.id !== created.id)
+      const tasks = await listRemoteWorkerDownloads(profile).catch(() => [...kept, created])
       const updated = updateTasks(host, tasks)
       startRemoteDownloadMonitor()
       return updated.find((item) => item.id === created.id) ?? created
@@ -575,7 +591,7 @@ export async function controlRemoteDownload(
   const host = getTrainingHost(getSettings(), hostId)
   if (!host || host.kind !== 'ssh') throw new Error('远端设备不存在')
   return serial(host, async () => {
-    const profile = await workerProfileWith(host, 'downloads')
+    const profile = await downloadProfile(host)
     if (profile) {
       const tasks = await controlRemoteWorkerDownload(profile, taskId, operation)
       startRemoteDownloadMonitor()

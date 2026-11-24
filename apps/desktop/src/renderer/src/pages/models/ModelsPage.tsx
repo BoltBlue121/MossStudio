@@ -47,6 +47,7 @@ import {
 } from './logic'
 import { useModelLocation, useSshHosts, type ModelLocation } from './useModelLocation'
 import { workerModelBundles } from '../studio/remoteWorkerLoras'
+import { MODEL_READY_TEXT } from '../../lib/format'
 
 /** Until the catalog is read, downloads are named after their own labels. */
 const EMPTY_CATALOG: Pick<Catalog, 'bundles' | 'models' | 'adapters'> = { bundles: [], models: [], adapters: [] }
@@ -145,7 +146,7 @@ function ModelsTab({
         speedBps: 0,
         percent: 100,
         status: 'ready',
-        stateText: '可以使用',
+        stateText: MODEL_READY_TEXT,
         action: null,
         actionLabel: '',
         blocked: null,

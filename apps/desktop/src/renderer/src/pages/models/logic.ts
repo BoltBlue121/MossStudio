@@ -2,7 +2,7 @@ import { bestBundleFor, bundleGpusProblem, bundleWeightProblem, isFileBundle, is
 import type { AdapterEntry, DownloadTask, GpuInventoryDevice, ModelBundle, ModelEntry, ModelSource, ModelSourcesView } from '@shared/types'
 import { isSharedModelId } from '@shared/sharedModels'
 import { goneOwnPart, isLostOwnFile, isOwnFile, lostFile } from '@shared/modelImport'
-import { eta } from '../../lib/format'
+import { eta, MODEL_READY_TEXT } from '../../lib/format'
 
 /**
  * Pure helpers for the Models page. A "model" here is a whole catalog bundle
@@ -170,7 +170,7 @@ function bundleState(
   if (components.length < ids.length) {
     return { ...base, status: 'unavailable', stateText: '模型信息不完整，刷新后再试', action: null, actionLabel: '' }
   }
-  if (missing.length === 0) return { ...base, status: 'ready', stateText: '可以使用', action: null, actionLabel: '' }
+  if (missing.length === 0) return { ...base, status: 'ready', stateText: MODEL_READY_TEXT, action: null, actionLabel: '' }
   const active = partTasks.filter((task) => ACTIVE_STATES.has(task.state))
   // Parts shared with another model (text encoder, VAE, configs) downloading for
   // that one do not make this model "downloading" while its main model waits.

@@ -14,8 +14,8 @@ export interface WorkerModelsState {
 /**
  * Queries the real models currently installed on the selected Worker host
  * (via `/v1/models` on its daemon) and automatically refreshes after remote
- * downloads or host updates. Legacy daemons returning 404 answer
- * `{ unsupported: true, models: [], components: [] }` without surfacing an error.
+ * downloads or host updates. A daemon that does not name `models` in its
+ * capabilities answers `{ unsupported: true, models: [], components: [] }`.
  */
 export function useWorkerModels(hostId: string | null): WorkerModelsState {
   const [inventory, setInventory] = useState<RemoteWorkerModelInventory | null>(null)
