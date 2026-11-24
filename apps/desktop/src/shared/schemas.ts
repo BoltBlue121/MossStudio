@@ -337,7 +337,45 @@ export const loraProfileSchema = z.strictObject({
   notes: z.string().max(4000).optional(),
 })
 
+export const editProtocols = ['openai-edits', 'openai-chat', 'gemini-native'] as const
+const channelText = (max: number) => z.string().trim().min(1).max(max)
+const printableKey = z
+  .string()
+  .min(1)
+  .max(4096)
+  .regex(/^[!-~]+$/)
+const channelFields = {
+  name: channelText(80),
+  protocol: z.enum(editProtocols),
+  model: channelText(256).regex(/^[^\s\p{Cc}?#\\]+$/u),
+  baseUrl: z
+    .url({ protocol: /^https$/ })
+    .max(2048)
+    .refine(
+      (s) => URL.canParse(s) && !/[?#\\]/.test(s) && !new URL(s).username && !new URL(s).password,
+      '请输入不带凭据或参数的 HTTPS 地址',
+    ),
+}
+export const editChannel = z.strictObject({ ...channelFields, id: z.uuid(), revision: z.uuid() })
+export type ImageEditChannel = z.infer<typeof editChannel> & { hasKey: boolean }
+export const imageEditArgs = z.strictObject({
+  projectId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/),
+  path: inputPath,
+  prompt: z.string().trim().min(1).max(8000),
+  channelId: z.uuid().optional(),
+})
+const editEndpoint = {
+  id: z.uuid().optional(),
+  protocol: channelFields.protocol,
+  baseUrl: channelFields.baseUrl,
+  apiKey: printableKey.nullable().optional(),
+}
 export const schemas = {
+  imageEditChannelsList: z.strictObject({}),
+  imageEditChannelsSave: z.strictObject({ ...channelFields, ...editEndpoint }),
+  imageEditChannelsRemove: z.strictObject({ id: z.uuid() }),
+  imageEditDiscoverModels: z.strictObject(editEndpoint),
+  imageEditRun: imageEditArgs.extend({ channelId: z.uuid(), revision: z.uuid() }),
   remoteWorkerLoras: z
     .object({
       hostId: z.string().min(1).max(120).optional(),
@@ -540,6 +578,7 @@ export const schemas = {
       gbcEnabled: z.boolean(),
       toolHubEnabled: z.boolean(),
       externalAgentsEnabled: z.boolean(),
+      externalImageEditEnabled: z.boolean(),
       workerHostsEnabled: z.boolean(),
       gbcProviderId: z.string().min(1).max(120).nullable(),
       languageProviderId: z.string().min(1).max(120).nullable(),

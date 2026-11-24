@@ -74,9 +74,10 @@ function ensureLoaded(): Promise<void> {
   return loaded
 }
 
-export function recordCapabilityAudit(entry: CapabilityAuditEntry): void {
+export function recordCapabilityAudit(entry: CapabilityAuditEntry, persist = true): void {
   memoryEntries.push(entry)
   if (memoryEntries.length > MAX_MEMORY_ENTRIES) memoryEntries.splice(0, memoryEntries.length - MAX_MEMORY_ENTRIES)
+  if (!persist) return
   const line = `${JSON.stringify(entry)}\n`
   // The file is named now: the write itself happens later, off the main thread.
   const file = paths.capabilityAudit()

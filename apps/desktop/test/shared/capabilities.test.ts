@@ -61,11 +61,11 @@ describe('shared/capabilities protocol and registry', () => {
     )
   })
 
-  it('registers all 15 MossStudio packs with closed top-level JSON Schemas and zero duplicate ids or aliases', () => {
-    const allFlags = { gbcEnabled: true, trainingEnabled: true, remoteHostsEnabled: true }
+  it('registers all 16 MossStudio packs with closed top-level JSON Schemas and zero duplicate ids or aliases', () => {
+    const allFlags = { gbcEnabled: true, trainingEnabled: true, remoteHostsEnabled: true, externalImageEditEnabled: true }
     const actions = BUILTIN_CAPABILITY_REGISTRY.listActions({ enabledFlags: allFlags })
     expect(STUDIO_CAPABILITY_PACKS.length).toBe(7)
-    expect(ALL_CAPABILITY_PACKS.length).toBe(15)
+    expect(ALL_CAPABILITY_PACKS.length).toBe(16)
     expect(actions.length).toBe(Object.keys(STUDIO_ACTION_SCHEMAS).length + Object.keys(APP_ACTION_SCHEMAS).length)
 
     for (const action of actions) {

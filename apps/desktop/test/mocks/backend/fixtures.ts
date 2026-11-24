@@ -110,6 +110,7 @@ export function settingsFixture(patch: Partial<Settings> = {}): Settings {
     gbcEnabled: false,
     toolHubEnabled: false,
     externalAgentsEnabled: false,
+    externalImageEditEnabled: false,
     workerHostsEnabled: false,
     gbcProviderId: null,
     languageProviderId: null,

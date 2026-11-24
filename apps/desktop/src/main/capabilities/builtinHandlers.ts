@@ -58,8 +58,10 @@ import {
 } from '../services/training/run'
 import { assertDatasetEditable, getTrainingProject } from '../services/training/store'
 import { overrideLines } from '../services/training/commands'
+import { schemas } from '@shared/schemas'
+import { bindImageEdit, runImageEdit } from '../services/imageEdit'
 import { prepareAgentPaths } from './agentPaths'
-import { listCapabilityAudit } from './audit'
+import { listCapabilityAudit, recordCapabilityAudit } from './audit'
 import { createMainCapabilityDispatcher, type MainCapabilityDispatcher, type MainCapabilityHandler } from './dispatcher'
 
 /**
@@ -78,6 +80,7 @@ function typed<Id extends keyof AppArgsMap>(fn: (args: AppArgsMap[Id]) => unknow
 /** The 设置 › 功能 switches capability packs are gated by. */
 export function capabilityFlags(settings: Settings): Record<string, boolean> {
   return {
+    externalImageEditEnabled: settings.externalAgentsEnabled === true && settings.externalImageEditEnabled === true,
     gbcEnabled: settings.gbcEnabled === true,
     trainingEnabled: settings.trainingEnabled === true,
     remoteHostsEnabled: settings.remoteHostsEnabled === true,
@@ -112,6 +115,8 @@ async function remoteWorkerProfile(hostId: string) {
 
 export function createBuiltinMainHandlers(): Record<string, MainCapabilityHandler> {
   return {
+    'image.edit.run': ({ destination: _destination, sourceStamp, ...args }, { signal }) =>
+      runImageEdit(schemas.imageEditRun.parse(args), { sourceStamp: String(sourceStamp), signal }),
     // ---- remote.hosts ----
     'remote.hosts.list': () => ({
       hosts: listManagedHosts(getSettings())
@@ -362,8 +367,13 @@ async function trainingRunDetail(id: string): Promise<string> {
 export function createBuiltinMainDispatcher(): MainCapabilityDispatcher {
   return createMainCapabilityDispatcher({
     mainHandlers: createBuiltinMainHandlers(),
+    audit: (entry) =>
+      recordCapabilityAudit(entry, entry.packId !== 'image.edit' || capabilityFlags(getSettings()).externalImageEditEnabled === true),
     readFlags: () => capabilityFlags(getSettings()),
-    prepareArgs: (action, args) => prepareAgentPaths(action, args),
+    prepareArgs: async (action, args) => {
+      const checked = await prepareAgentPaths(action, args)
+      return action.id === 'image.edit.run' ? bindImageEdit(checked) : checked
+    },
     approvalDetail: async (action, args) =>
       action.id === 'training.runs.start' && typeof args.id === 'string' ? trainingRunDetail(args.id) : undefined,
   })

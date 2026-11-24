@@ -1,7 +1,7 @@
 ---
 status: current
 last-verified: 2026-11-21 (e72b798)
-code: apps/desktop/src/shared/capabilities/, apps/desktop/src/main/capabilities/, apps/desktop/src/main/mcp/, apps/desktop/src/main/agentHub/, apps/desktop/src/main/externalAgents.ts, apps/desktop/src/renderer/src/lib/capabilities/, apps/desktop/src/renderer/src/lib/agentTools.ts, apps/desktop/src/renderer/src/pages/studio/studioCapabilities.ts, apps/desktop/src/renderer/src/pages/studio/assistant/, tools/mcp/mossstudio-mcp-stdio.mjs
+code: apps/desktop/src/shared/capabilities/, apps/desktop/src/main/capabilities/, apps/desktop/src/main/mcp/, apps/desktop/src/main/agentHub/, apps/desktop/src/main/externalAgents.ts, apps/desktop/src/main/services/imageEdit.ts, apps/desktop/src/renderer/src/lib/capabilities/, apps/desktop/src/renderer/src/lib/agentTools.ts, apps/desktop/src/renderer/src/pages/studio/studioCapabilities.ts, apps/desktop/src/renderer/src/pages/studio/assistant/, tools/mcp/mossstudio-mcp-stdio.mjs
 ---
 
 # External Agents
@@ -23,7 +23,7 @@ Paths are relative to `apps/desktop/src/`.
 
 ## 2. The capability registry
 
-`shared/capabilities/` describes each action once: a dotted id (`studio.cards.create`), its pack, target (`main` or `renderer`), effects, policy floor (`auto`, `approval`, `human-only`), zod input schema and a one-line summary. `protocol.ts` holds `MUTATING_EFFECTS` (`write`, `run`, `delete`, `export`, `install`, `configure`), the one list main, the renderer and the MCP annotations use. Packs with a `featureFlag` (`remote.hosts`, `studio.gbc.parse`, `training.jobs`) are invisible while that switch in 设置 › 功能 is off. A Studio action that supersedes a 助手 tool names it in `legacyAlias` and reuses its schema from `shared/agent/schemas.ts`.
+`shared/capabilities/` describes each action once: a dotted id (`studio.cards.create`), its pack, target (`main` or `renderer`), effects, policy floor (`auto`, `approval`, `human-only`), zod input schema and a one-line summary. `protocol.ts` holds `MUTATING_EFFECTS` (`write`, `run`, `delete`, `export`, `install`, `configure`), the one list main, the renderer and the MCP annotations use. Packs with a `featureFlag` (`remote.hosts`, `studio.gbc.parse`, `training.jobs`, `image.edit`) are invisible while that switch in 设置 › 功能 is off. `image.edit` (外接重绘) needs two switches, 外接重绘 (`externalImageEditEnabled`) and 外部 Agent, because its action is the first that uploads a local file to a third party (`capabilityFlags` in `main/capabilities/builtinHandlers.ts`). A Studio action that supersedes a 助手 tool names it in `legacyAlias` and reuses its schema from `shared/agent/schemas.ts`.
 
 `projectCapabilities` (`profiles.ts`) projects a toolset per profile: `compact` (the packs in `COMPACT_PROFILE_PACKS`), `atomic` (everything enabled), `proposal-only` (no mutating action) and `custom` (chosen packs).
 
@@ -57,7 +57,7 @@ Resources: the active Skill, the promptcraft and layout guides, the workbench co
 
 Every call is audited (`main/capabilities/audit.ts`): one JSON line in `<dataRoot>/logs/capabilities.jsonl`, written off the main thread, rotated to `.1` at 2 MiB, with summaries and errors capped at 200 characters. After a restart the last 256 KiB are read back.
 
-Actions an external Agent may only run after a yes include deleting projects, series, trainings and models, moving 作品 to the trash, installing and downloading models, saving a 漫画, changing or stopping a training, writing captions, cancelling a job, switching 运行位置 and every 看图拆区域 action (`policyFloor` in `shared/capabilities/appPacks.ts`). Job ids are checked against `^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$` and must name a job the supervisor knows before any log or review file is read.
+Actions an external Agent may only run after a yes include deleting projects, series, trainings and models, moving 作品 to the trash, installing and downloading models, saving a 漫画, changing or stopping a training, writing captions, cancelling a job, switching 运行位置, every 看图拆区域 action and `image.edit.run`, which uploads a project or 作品 picture to a 外接重绘 channel (`policyFloor` in `shared/capabilities/appPacks.ts`). Its approval names the channel's origin and model; the upload is refused when either switch, the channel or the picture changed after the yes (`bindImageEdit` and `runImageEdit` in `main/services/imageEdit.ts`). Job ids are checked against `^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$` and must name a job the supervisor knows before any log or review file is read.
 
 ## 5. In the Studio
 
@@ -88,4 +88,4 @@ The bridge forwards each JSON-RPC line to the server; requests after `initialize
 
 ## 9. Tests
 
-`test/main/capabilities/security.test.ts` and `dispatcher.test.ts` (allowlist, approvals, paths, audit), `test/main/mcp/server.test.ts` (Origin, Host, versions, profile, hang-up), `test/main/mcp/clientInstaller.test.ts`, `test/main/agentHub/`, `test/main/ipc/` (the switch, and the 助手's 13 tools), `test/tools/mcp/stdioBridge.test.mjs`, `test/renderer/studio/studioCapabilities.test.ts`, `collabPanel.test.ts`, `sessionBindings.test.ts`; end to end `apps/desktop/e2e/specs/externalAgents.e2e.ts` and the 协同, approval and MCP stops of `visual.e2e.ts`.
+`test/main/capabilities/security.test.ts` and `dispatcher.test.ts` (allowlist, approvals, paths, audit), `test/main/mcp/server.test.ts` (Origin, Host, versions, profile, hang-up), `test/main/mcp/clientInstaller.test.ts`, `test/main/services/imageEdit.test.ts` (外接重绘's switches and approval boundaries), `test/main/agentHub/`, `test/main/ipc/` (the switch, and the 助手's 13 tools), `test/tools/mcp/stdioBridge.test.mjs`, `test/renderer/studio/studioCapabilities.test.ts`, `collabPanel.test.ts`, `sessionBindings.test.ts`; end to end `apps/desktop/e2e/specs/externalAgents.e2e.ts`, `imageEdit.e2e.ts` and the 协同, approval and MCP stops of `visual.e2e.ts`.

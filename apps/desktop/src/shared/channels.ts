@@ -1,4 +1,9 @@
 export const Ipc = {
+  imageEditChannelsList: 'image-edit:channels-list',
+  imageEditChannelsSave: 'image-edit:channels-save',
+  imageEditChannelsRemove: 'image-edit:channels-remove',
+  imageEditDiscoverModels: 'image-edit:discover-models',
+  imageEditRun: 'image-edit:run',
   remoteWorkerLoras: 'remote-worker:loras',
   remoteWorkerLoraRegister: 'remote-worker:lora-register',
   mcpClientsStatus: 'mcp:clients-status',
