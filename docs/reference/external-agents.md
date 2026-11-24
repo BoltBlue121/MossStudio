@@ -80,7 +80,7 @@ Each external call is one undo step, 外部 Agent 的修改, also for what it ch
 
 The tool timeout is `CLIENT_TOOL_TIMEOUT_SEC` (180 seconds), longer than an approval waits. `setCodexToolTimeout` follows a symlink to the real file, keeps its mode, keeps one `.mossstudio-backup`, and leaves the file alone when `mossstudio` is defined inline, dotted or twice. The bridge runs with the person's `node` when there is one, else with this app and `ELECTRON_RUN_AS_NODE=1`. Registrations are recorded in `<dataRoot>/mcp/clients.json`: a new app version registers them again with its own path, and uninstalling the app removes only those (`uninstallRecordedMcpClients`). Without a client's CLI the dialog offers to copy the MCP settings instead.
 
-The bridge forwards each JSON-RPC line to the server; requests after `initialize` run side by side, and `notifications/cancelled` (a client's own timeout) aborts the matching request.
+The bridge forwards each JSON-RPC line to the server; requests after `initialize` run side by side, and `notifications/cancelled` (a client's own timeout) aborts the matching request. While no MossStudio is listening it answers `initialize`, `ping` and the list methods itself with an empty catalog, and from `notifications/initialized` on it polls `/health` (every 1.5 s, less often while offline), sending `notifications/*/list_changed` when the server, profile or tools change. A request MossStudio did not answer in time, or whose connection dropped, gets error -32002, which says it may still have run instead of asking for a retry.
 
 ## 8. The 协同 panel
 

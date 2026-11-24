@@ -58,6 +58,7 @@ async function resolveTarget(env, selection) {
     return { url: env.MOSSSTUDIO_MCP_URL.trim(), token: env.MOSSSTUDIO_MCP_TOKEN.trim() }
   }
   let fallback = null
+  let alive = false
   for (const file of selection?.file ? [selection.file] : defaultDiscoveryPaths(env)) {
     try {
       const raw = JSON.parse(await readFile(file, 'utf8'))
@@ -68,6 +69,7 @@ async function resolveTarget(env, selection) {
           const entry = { file, url, token, skillDigest, profile }
           if (isProcessAlive(raw.pid)) {
             fallback = entry
+            alive = true
             break
           }
           if (!fallback) fallback = entry
@@ -77,10 +79,12 @@ async function resolveTarget(env, selection) {
       // Try next discovery candidate.
     }
   }
-  // Once selected, track that file through restarts rather than switching to a different install.
+  // Once a live install is found, track its file through restarts rather than switching to a different
+  // install; a dead install's leftover file is never pinned, so a live install found later still wins.
   if (selection && fallback) {
-    selection.file ??= fallback.file
-    if (selection.file !== fallback.file) return resolveTarget(env, selection)
+    if (alive) selection.file ??= fallback.file
+    // A resolve running beside this one (the poll and a request) may have pinned another file meanwhile.
+    if (selection.file && selection.file !== fallback.file) return resolveTarget(env, selection)
   }
   return fallback
 }
@@ -134,13 +138,16 @@ export async function forwardJsonRpcLine(line, env = process.env, fetchImpl = fe
   const id = parsed && typeof parsed === 'object' && 'id' in parsed ? parsed.id : null
   const isNotification = parsed && typeof parsed === 'object' && !('id' in parsed)
 
+  // A message without a method is the client's response to a server request: answering it would confuse the client.
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && !('method' in parsed)) return null
   const { method, params } = parsed ?? {}
   const error = (code, message) => ({ jsonrpc: '2.0', id, error: { code, message } })
   if (parsed?.jsonrpc !== '2.0' || typeof method !== 'string') return error(-32600, 'Invalid JSON-RPC request')
   const isList = Object.hasOwn(listKeys, method)
   let status
   const send = async (target) => {
-    const timeout = AbortSignal.timeout(isList || method === 'initialize' || method === 'ping' ? 1500 : 300_000)
+    // Only the health probe needs to be quick; a busy MossStudio may take a while to list its tools.
+    const timeout = AbortSignal.timeout(isList || method === 'initialize' || method === 'ping' ? 30_000 : 300_000)
     const response = await fetchImpl(target.url, {
       method: 'POST',
       headers: {
@@ -166,17 +173,30 @@ export async function forwardJsonRpcLine(line, env = process.env, fetchImpl = fe
     return rpc
   }
   let target = await resolveTarget(env, selection)
+  let failure
   for (let attempt = 0; target; attempt++) {
     try {
       return await send(target)
-    } catch {
+    } catch (err) {
+      failure = err
       if (!isList || !target.file || attempt || isNotification || signal?.aborted) break
       target = await resolveTarget(env, selection)
     }
   }
+  // The client no longer holds the live list, so the next healthy poll must tell it to ask again.
+  if (isList) selection.catalog = null
   if (isNotification) return null
-  if (status !== undefined || signal?.aborted)
-    return error(-32002, `MossStudio MCP: ${status === undefined ? 'request aborted' : `invalid response (HTTP ${status})`}`)
+  // Nothing listening (a stale discovery file) is as offline as no file: the request never reached MossStudio.
+  const refused = failure?.cause?.code === 'ECONNREFUSED' && status === undefined && !signal?.aborted
+  if (failure && !refused) {
+    // After a lost or late answer the request may have run (a picture generated), so never invite a blind retry.
+    const unknown = 'The request may still have been carried out in MossStudio.'
+    let reason = `invalid response (HTTP ${status})`
+    if (signal?.aborted) reason = 'request cancelled'
+    else if (failure?.name === 'TimeoutError') reason = `no answer in time. ${unknown}`
+    else if (status === undefined) reason = `connection lost (${failure?.cause?.code ?? failure?.message ?? failure}). ${unknown}`
+    return error(-32002, `MossStudio MCP: ${reason}`)
+  }
   const result = offlineResult(method, params?.protocolVersion)
   return result ? { jsonrpc: '2.0', id, result } : error(-32001, 'MossStudio is not running. Launch MossStudio and retry.')
 }
@@ -187,13 +207,15 @@ export async function forwardJsonRpcLine(line, env = process.env, fetchImpl = fe
  * (sent by a client whose tool call timed out) aborts the matching request, so
  * MossStudio drops an approval nobody is waiting for any more.
  */
-export function createBridge({ env = process.env, fetchImpl = fetch, write = writeOut } = {}) {
+export function createBridge({ env = process.env, fetchImpl = fetch, write = writeOut, pollMs = 1500 } = {}) {
   const shutdown = new AbortController()
   const requests = new Map()
   const inflight = new Set()
   let initBarrier = Promise.resolve()
   const selection = { catalog: null }
   let timer, probing, probe
+  let started = false
+  let delay = pollMs
   const poll = async () => {
     let current = null
     probe = new AbortController()
@@ -212,14 +234,17 @@ export function createBridge({ env = process.env, fetchImpl = fetch, write = wri
       // A stale file, bad token or dead listener projects the same empty catalog as no file.
     }
     probe = null
+    // While MossStudio is away, poll less and less often, up to three times the base interval.
+    delay = current ? pollMs : Math.min(delay * 1.5, pollMs * 3)
     if (!shutdown.signal.aborted && current !== selection.catalog) {
       selection.catalog = current
       for (const name of Object.keys(changes)) write({ jsonrpc: '2.0', method: `notifications/${name}/list_changed` })
     }
   }
   const tick = () => {
-    probing ??= poll().finally(() => {
+    probing = poll().finally(() => {
       probing = null
+      if (!shutdown.signal.aborted) timer = setTimeout(tick, delay).unref()
     })
   }
 
@@ -241,7 +266,8 @@ export function createBridge({ env = process.env, fetchImpl = fetch, write = wri
       const requestId = parsed.params?.requestId
       requests.get(JSON.stringify(requestId ?? null))?.abort()
     }
-    const key = parsed && typeof parsed === 'object' && 'id' in parsed ? JSON.stringify(parsed.id) : null
+    // Only requests can be cancelled; a client's response may reuse the id of one of its own requests.
+    const key = method && 'id' in parsed ? JSON.stringify(parsed.id) : null
     const controller = new AbortController()
     if (key !== null) requests.set(key, controller)
     const run = async () => {
@@ -249,8 +275,8 @@ export function createBridge({ env = process.env, fetchImpl = fetch, write = wri
       shutdown.signal.addEventListener('abort', abort, { once: true })
       try {
         if (shutdown.signal.aborted) return
-        if (method === 'notifications/initialized' && parsed.jsonrpc === '2.0' && key === null && !timer) {
-          timer = setInterval(tick, 1500).unref()
+        if (method === 'notifications/initialized' && parsed.jsonrpc === '2.0' && key === null && !started) {
+          started = true
           tick()
         }
         const reply = await forwardJsonRpcLine(line, env, fetchImpl, controller.signal, selection)
@@ -270,7 +296,7 @@ export function createBridge({ env = process.env, fetchImpl = fetch, write = wri
   }
 
   const close = () => {
-    clearInterval(timer)
+    clearTimeout(timer)
     probe?.abort()
     shutdown.abort()
     return Promise.allSettled([...inflight, probing])
