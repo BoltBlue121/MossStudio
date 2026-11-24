@@ -212,7 +212,7 @@ export function hostSavePayload(form: HostForm): Record<string, unknown> {
     password: form.authMethod === 'password' ? form.password || undefined : undefined,
     remoteBackend: form.remoteBackend,
     ...(form.remoteBackend === 'worker-daemon'
-      ? { workerDiscoveryPath: form.workerDiscoveryPath.trim(), workerWorkflow: form.workerWorkflow.trim() || undefined }
+      ? { workerDiscoveryPath: form.workerDiscoveryPath.trim(), workerWorkflow: form.workerWorkflow.trim() }
       : {}),
     // Hidden while the worker daemon is chosen, but kept, so switching back finds them as they were.
     trainerRoot: form.trainerRoot.trim() || REMOTE_DEFAULT_PATHS.trainerRoot,

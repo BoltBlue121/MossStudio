@@ -1,19 +1,12 @@
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { APPROVAL_WAIT_MS } from '../agentHub/approvalQueue'
-import { childEnv, resolveAcpLaunch } from '../agentHub/acpDriver'
+import { isDeepStrictEqual } from 'node:util'
+import type { BridgeLaunch, ManagedClientId, McpClientStatus } from '@shared/mcpClients'
+import { childEnv, cliLaunch, findCli } from '../lib/cliDiscovery'
+import { isNetworkPath } from '../lib/localPath'
+export type { McpClientId, McpClientStatus } from '@shared/mcpClients'
 import { paths } from '../lib/paths'
 import { run, type RunResult } from '../lib/run'
 import { getMcpServerState } from './server'
@@ -29,21 +22,6 @@ import { getMcpServerState } from './server'
  * app version (another `app-<version>` folder) registers again with its own
  * path, and uninstalling removes exactly what MossStudio added.
  */
-
-export type McpClientId = 'codex' | 'claude-code'
-
-export interface McpClientStatus {
-  id: McpClientId
-  label: string
-  /** The client's config file, for reference; MossStudio changes it only through the client's CLI. */
-  configPath: string
-  /** The client's CLI was found. */
-  detected: boolean
-  installed: boolean
-  /** `copy-only`: no CLI here, so the person copies the MCP settings into the client by hand. */
-  installMode: 'auto' | 'copy-only'
-  detail: string
-}
 
 /** MCP server name MossStudio registers under in each client. */
 export const MCP_SERVER_NAME = 'mossstudio'
@@ -77,14 +55,7 @@ interface Resolved {
   runCli: (command: string, args: string[]) => Promise<RunResult>
 }
 
-/** How a client starts the bridge: the person's own node when there is one, else this app running as node. */
-export interface BridgeLaunch {
-  command: string
-  args: string[]
-  env: Record<string, string>
-}
-
-type Records = Partial<Record<McpClientId, BridgeLaunch>>
+type Records = Partial<Record<ManagedClientId, BridgeLaunch>>
 
 function resolve(options: McpClientInstallerOptions = {}): Resolved {
   const state = options.stdioBridgePath !== undefined && options.discoveryPath !== undefined ? null : getMcpServerState(false)
@@ -101,45 +72,14 @@ function resolve(options: McpClientInstallerOptions = {}): Resolved {
     runCli:
       options.runCli ??
       (async (command, args) => {
-        const launch = await resolveAcpLaunch(command, args, platform)
+        const launch = cliLaunch(command, args, { platform, env, home: options.homeDir }, options.execPath)
         // A Windows shim may resolve to this app's own binary, which runs the script only as node.
         return run(launch.command, launch.args, {
           timeoutMs: options.cliTimeoutMs ?? CLI_TIMEOUT_MS,
-          env: { ...env, ...childEnv(launch.command) },
+          env: childEnv(launch.command, env, options.execPath),
         })
       }),
   }
-}
-
-/** Pure-FS PATH scan (no child process), so a freshly installed CLI is found before it ever ran. */
-export function findExecutableOnPath(
-  names: readonly string[],
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
-): string | null {
-  const rawPath = env.PATH ?? env.Path ?? ''
-  if (!rawPath) return null
-  const sep = platform === 'win32' ? ';' : delimiter
-  const dirs = rawPath
-    .split(sep)
-    .map((entry) => entry.trim().replace(/^"(.*)"$/, '$1'))
-    .filter(Boolean)
-  const exts =
-    platform === 'win32'
-      ? (env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM')
-          .split(';')
-          .map((ext) => ext.trim())
-          .filter(Boolean)
-      : ['']
-  for (const dir of dirs) {
-    for (const name of names) {
-      for (const ext of exts) {
-        const full = join(dir, `${name}${ext}`)
-        if (existsSync(full) && statSync(full).isFile()) return full
-      }
-    }
-  }
-  return null
 }
 
 export function bridgeLaunch(options: McpClientInstallerOptions = {}): BridgeLaunch {
@@ -150,7 +90,8 @@ export function bridgeLaunch(options: McpClientInstallerOptions = {}): BridgeLau
 function launchOf(resolved: Resolved): BridgeLaunch {
   const env = { MOSSSTUDIO_MCP_DISCOVERY: resolved.discoveryPath }
   // Electron runs a script as node only with this variable, and only this app's binary needs it.
-  if (findExecutableOnPath(['node'], resolved.env, resolved.platform)) return { command: 'node', args: [resolved.stdioBridgePath], env }
+  const node = findCli('node', resolved)
+  if (node.kind === 'ready') return { command: node.path, args: [resolved.stdioBridgePath], env }
   return { command: resolved.execPath, args: [resolved.stdioBridgePath], env: { ...env, ELECTRON_RUN_AS_NODE: '1' } }
 }
 
@@ -171,7 +112,7 @@ function writeRecords(path: string, records: Records): void {
   renameSync(tmp, path)
 }
 
-const CLIENTS: Record<McpClientId, { label: string; cli: string }> = {
+const CLIENTS: Record<ManagedClientId, { label: string; cli: string }> = {
   codex: { label: 'Codex', cli: 'codex' },
   'claude-code': { label: 'Claude Code', cli: 'claude' },
 }
@@ -181,122 +122,190 @@ function codexConfigPath(resolved: Resolved): string {
 }
 
 function claudeConfigPath(resolved: Resolved): string {
-  return join(resolved.home, '.claude.json')
+  return join(resolved.env.CLAUDE_CONFIG_DIR || resolved.home, '.claude.json')
 }
 
-/** Whether Claude Code has a user-scope `mossstudio` server: read, never written, by MossStudio. */
-function claudeHasServer(resolved: Resolved): boolean {
-  try {
-    const parsed = JSON.parse(readFileSync(claudeConfigPath(resolved), 'utf8')) as { mcpServers?: Record<string, unknown> }
-    return Boolean(parsed.mcpServers && typeof parsed.mcpServers === 'object' && MCP_SERVER_NAME in parsed.mcpServers)
-  } catch {
-    // Missing or unreadable: not registered as far as can be told.
-    return false
+const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
+
+/** Only a confirmed missing server permits an add; a broken config or a failed lookup is not absence. */
+async function readEntry(
+  id: ManagedClientId,
+  cli: string,
+  r: Resolved,
+): Promise<{ transport: unknown; disabled?: boolean; restricted?: boolean } | undefined> {
+  if (id === 'codex') {
+    const result = await r.runCli(cli, ['mcp', 'get', MCP_SERVER_NAME, '--json'])
+    if (result.code === 1 && !result.timedOut && /^Error: No MCP server named 'mossstudio' found\.\s*$/m.test(result.stderr))
+      return undefined
+    if (result.code !== 0) throw new Error('Codex 未能读取 MCP 配置，请在终端检查 codex mcp get mossstudio --json')
+    const entry: unknown = JSON.parse(result.stdout)
+    if (!object(entry) || entry.name !== MCP_SERVER_NAME || !object(entry.transport)) throw new Error('Codex 返回了无法识别的 MCP 配置')
+    // An empty Codex allowlist denies every tool; an empty denylist denies none.
+    const restricted = Array.isArray(entry.enabled_tools) || (Array.isArray(entry.disabled_tools) && entry.disabled_tools.length > 0)
+    return { transport: entry.transport, disabled: entry.enabled === false, restricted }
   }
+  let config: unknown
+  try {
+    config = JSON.parse(readFileSync(claudeConfigPath(r), 'utf8'))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw new Error('无法读取 Claude Code 用户配置，请检查文件格式和权限')
+  }
+  if (!object(config) || (config.mcpServers !== undefined && !object(config.mcpServers))) throw new Error('Claude Code 用户配置格式不正确')
+  const transport = config.mcpServers?.[MCP_SERVER_NAME]
+  return transport === undefined ? undefined : { transport }
 }
 
-async function codexHasServer(resolved: Resolved, cli: string): Promise<boolean> {
-  const result = await resolved.runCli(cli, ['mcp', 'get', MCP_SERVER_NAME, '--json'])
-  return result.code === 0
+function matches(entry: unknown, launch: BridgeLaunch | undefined, r: Resolved): boolean {
+  return (
+    !!launch &&
+    typeof launch.command === 'string' &&
+    (launch.command === 'node' || isAbsolute(launch.command)) &&
+    isDeepStrictEqual(launch.args, [r.stdioBridgePath]) &&
+    launch.env?.MOSSSTUDIO_MCP_DISCOVERY === r.discoveryPath &&
+    object(entry) &&
+    (entry.type === undefined || entry.type === 'stdio') &&
+    entry.command === launch.command &&
+    isDeepStrictEqual(entry.args, launch.args) &&
+    isDeepStrictEqual(entry.env, launch.env)
+  )
 }
 
-async function statusOf(id: McpClientId, resolved: Resolved): Promise<McpClientStatus> {
-  const client = CLIENTS[id]
-  const cli = findExecutableOnPath([client.cli], resolved.env, resolved.platform)
-  const configPath = id === 'codex' ? codexConfigPath(resolved) : claudeConfigPath(resolved)
-  const installed = cli ? (id === 'codex' ? await codexHasServer(resolved, cli) : claudeHasServer(resolved)) : false
-  return {
+async function inspect(id: ManagedClientId, r: Resolved) {
+  const { label, cli: name } = CLIENTS[id]
+  const cli = findCli(name, r)
+  const record = readRecords(r.recordPath)[id]
+  const status: McpClientStatus = {
     id,
-    label: client.label,
-    configPath,
-    detected: Boolean(cli),
-    installed,
-    installMode: cli ? 'auto' : 'copy-only',
-    // The state shows as a pill; only the way out of a missing CLI needs words.
-    detail: cli ? '' : `没有找到 ${client.cli} 命令，可以复制 MCP 配置手动添加`,
+    label,
+    configPath: id === 'codex' ? codexConfigPath(r) : claudeConfigPath(r),
+    state: 'not_found',
+    installMode: 'copy-only',
+    detail: '',
+  }
+  if (cli.kind !== 'ready') {
+    status.state = cli.kind === 'unsupported' ? 'unsupported' : 'not_found'
+    status.detail = cli.kind === 'unsupported' ? `${name} 不可执行或不是支持的启动脚本` : `没有找到 ${name} 命令`
+    if (record) status.detail += '；清理记录已保留，请恢复命令后再卸载'
+    return { status, cli: null }
+  }
+  status.installMode = 'auto'
+  try {
+    const entry = await readEntry(id, cli.path, r)
+    if (!entry) status.state = 'not_configured'
+    else if (matches(entry.transport, launchOf(r), r)) status.state = 'configured'
+    else if (matches(entry.transport, record, r)) status.state = 'needs_refresh'
+    else status.state = 'conflict'
+    if (status.state === 'conflict') status.detail = '同名 mossstudio 配置不属于本实例，请在客户端检查；不会覆盖或卸载。'
+    else if (entry?.disabled || entry?.restricted) {
+      status.state = 'custom_policy'
+      const policy = [entry.disabled && '已禁用此服务', entry.restricted && '已限制可用工具'].filter(Boolean).join('，')
+      status.detail = `Codex ${policy}，未自动覆盖。`
+    }
+  } catch (err) {
+    status.state = 'unknown'
+    status.detail = err instanceof SyntaxError ? '客户端返回的 MCP 配置不是有效的 JSON' : String(err instanceof Error ? err.message : err)
+  }
+  return { status, cli: cli.path }
+}
+
+function dshStatus(r: Resolved): McpClientStatus {
+  const home = r.env.DSH_HOME?.trim() || join(r.home, '.dsh')
+  let state: McpClientStatus['state'] = 'not_found'
+  try {
+    if (isAbsolute(home) && !isNetworkPath(home) && statSync(home, { throwIfNoEntry: false })?.isDirectory()) state = 'detected'
+  } catch {
+    state = 'unknown'
+  } // No DSH settings or credentials are opened.
+  return {
+    id: 'dsh',
+    label: 'DeepSeek Harness 桌面版',
+    configPath: home,
+    state,
+    installMode: 'copy-only',
+    detail: '复制后，在 DSH 中手动填写并保存 MCP 客户端配置。',
   }
 }
 
 export async function getMcpClientsStatus(options: McpClientInstallerOptions = {}): Promise<McpClientStatus[]> {
-  const resolved = resolve(options)
-  return Promise.all((['codex', 'claude-code'] as const).map((id) => statusOf(id, resolved)))
+  const r = resolve(options)
+  return [...(await Promise.all((['codex', 'claude-code'] as const).map(async (id) => (await inspect(id, r)).status))), dshStatus(r)]
 }
 
 function failure(client: string, result: RunResult): Error {
-  const reason = (result.stderr || result.stdout).trim().split('\n').at(-1)?.slice(0, 200)
-  return new Error(`${client} 没有完成，请在终端里查看 ${client} 是否可用${reason ? `（${reason}）` : ''}`)
+  return new Error(`${client} ${result.timedOut ? '超时' : `失败（退出码 ${result.code}）`}，请在终端检查客户端后重试`)
 }
 
-async function register(id: McpClientId, resolved: Resolved, launch: BridgeLaunch): Promise<void> {
-  const cli = findExecutableOnPath([CLIENTS[id].cli], resolved.env, resolved.platform)
-  if (!cli) throw new Error(`没有找到 ${CLIENTS[id].cli} 命令，请先安装 ${CLIENTS[id].label}`)
-  if (id === 'claude-code') {
-    // Removed first so a changed path replaces the old entry; a missing entry is not an error here.
-    await resolved.runCli(cli, ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME])
-    // No `timeout`: Claude Code's default for a stdio server (about 28 hours) already outlasts an approval.
-    const config = { type: 'stdio', command: launch.command, args: launch.args, env: launch.env }
-    const result = await resolved.runCli(cli, ['mcp', 'add-json', '--scope', 'user', MCP_SERVER_NAME, JSON.stringify(config)])
-    if (result.code !== 0) throw failure('claude mcp add-json', result)
-    return
+async function change(
+  id: ManagedClientId,
+  r: Resolved,
+  action: 'install' | 'reconnect' | 'refresh' | 'uninstall',
+): Promise<McpClientStatus> {
+  const { cli, status } = await inspect(id, r)
+  if (!cli || status.state === 'conflict' || status.state === 'unknown') throw new Error(status.detail)
+  const remove = action === 'uninstall'
+  if (action === 'refresh' && status.state !== 'needs_refresh') return status
+  if (status.state === 'custom_policy' && action === 'install') throw new Error(`${status.detail} 请确认是否重新连接。`)
+  const launch = launchOf(r)
+  if (status.state === 'needs_refresh' || status.state === 'custom_policy' || (remove && status.state === 'configured')) {
+    const args = ['mcp', 'remove', ...(id === 'claude-code' ? ['--scope', 'user'] : []), MCP_SERVER_NAME]
+    const res = await r.runCli(cli, args)
+    if (res.code !== 0) throw failure(`${CLIENTS[id].cli} mcp remove`, res)
   }
-  await resolved.runCli(cli, ['mcp', 'remove', MCP_SERVER_NAME])
-  const env = Object.entries(launch.env).flatMap(([key, value]) => ['--env', `${key}=${value}`])
-  const result = await resolved.runCli(cli, ['mcp', 'add', MCP_SERVER_NAME, ...env, '--', launch.command, ...launch.args])
-  if (result.code !== 0) throw failure('codex mcp add', result)
-  setCodexToolTimeout(codexConfigPath(resolved), CLIENT_TOOL_TIMEOUT_SEC)
-}
-
-export async function installMcpClient(id: McpClientId, options: McpClientInstallerOptions = {}): Promise<McpClientStatus> {
-  const resolved = resolve(options)
-  const launch = launchOf(resolved)
-  await register(id, resolved, launch)
-  writeRecords(resolved.recordPath, { ...readRecords(resolved.recordPath), [id]: launch })
-  return statusOf(id, resolved)
-}
-
-export async function uninstallMcpClient(id: McpClientId, options: McpClientInstallerOptions = {}): Promise<McpClientStatus> {
-  const resolved = resolve(options)
-  const cli = findExecutableOnPath([CLIENTS[id].cli], resolved.env, resolved.platform)
-  if (cli) {
-    const args = id === 'claude-code' ? ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME] : ['mcp', 'remove', MCP_SERVER_NAME]
-    const result = await resolved.runCli(cli, args)
-    // Removing what is not there is fine; anything else is reported.
-    if (result.code !== 0 && (id === 'codex' ? await codexHasServer(resolved, cli) : claudeHasServer(resolved))) {
-      throw failure(`${CLIENTS[id].cli} mcp remove`, result)
-    }
+  if (!remove && status.state !== 'configured') {
+    const env = Object.entries(launch.env).flatMap(([key, value]) => ['--env', `${key}=${value}`])
+    const args =
+      id === 'codex'
+        ? ['mcp', 'add', MCP_SERVER_NAME, ...env, '--', launch.command, ...launch.args]
+        : ['mcp', 'add-json', '--scope', 'user', MCP_SERVER_NAME, JSON.stringify({ type: 'stdio', ...launch })]
+    const res = await r.runCli(cli, args)
+    if (res.code !== 0) throw failure(`${CLIENTS[id].cli} mcp ${args[1]}`, res)
   }
-  const records = readRecords(resolved.recordPath)
-  delete records[id]
-  writeRecords(resolved.recordPath, records)
-  return statusOf(id, resolved)
+  const next = (await inspect(id, r)).status
+  if (next.state !== (remove ? 'not_configured' : 'configured')) throw new Error(next.detail || '未能确认配置结果，请重新检测')
+  const records = readRecords(r.recordPath)
+  if (remove) delete records[id]
+  else records[id] = launch
+  writeRecords(r.recordPath, records)
+  if (!remove && id === 'codex' && !setCodexToolTimeout(codexConfigPath(r), CLIENT_TOOL_TIMEOUT_SEC))
+    throw new Error('Codex 已配置，请在客户端将工具超时设置为 180 秒')
+  return next
 }
 
-/**
- * Registers again every client MossStudio registered whose launch changed: a
- * new app version runs from another folder, or node appeared or went away.
- */
+// Startup refresh and IPC mutations must inspect the state left by the preceding operation.
+let tail: Promise<unknown> = Promise.resolve()
+function enqueue<T>(work: () => Promise<T>): Promise<T> {
+  const next = tail.then(work)
+  tail = next.catch(() => undefined)
+  return next
+}
+
+export function installMcpClient(id: ManagedClientId, options: McpClientInstallerOptions & { resetPolicy?: true } = {}) {
+  return enqueue(() => change(id, resolve(options), options.resetPolicy === true ? 'reconnect' : 'install'))
+}
+
+export function uninstallMcpClient(id: ManagedClientId, options: McpClientInstallerOptions = {}) {
+  return enqueue(() => change(id, resolve(options), 'uninstall'))
+}
+
 export async function refreshMcpClientRegistrations(options: McpClientInstallerOptions = {}): Promise<void> {
-  const resolved = resolve(options)
-  const records = readRecords(resolved.recordPath)
-  const launch = launchOf(resolved)
-  for (const id of Object.keys(records) as McpClientId[]) {
-    if (!(id in CLIENTS) || JSON.stringify(records[id]) === JSON.stringify(launch)) continue
-    try {
-      await register(id, resolved, launch)
-      records[id] = launch
-    } catch (error) {
-      console.warn('[mcp] could not register again', id, error instanceof Error ? error.message : String(error))
-    }
+  const r = resolve(options)
+  for (const id of Object.keys(readRecords(r.recordPath)) as ManagedClientId[]) {
+    if (Object.hasOwn(CLIENTS, id)) await enqueue(() => change(id, r, 'refresh')).catch((err) => console.warn('[mcp]', String(err)))
   }
-  writeRecords(resolved.recordPath, records)
 }
 
-/** Removes only the registrations MossStudio recorded under `dataRoot` (used while uninstalling). */
 export async function uninstallRecordedMcpClients(dataRoot: string, options: McpClientInstallerOptions = {}): Promise<void> {
   const recordPath = join(dataRoot, 'mcp', 'clients.json')
-  for (const id of Object.keys(readRecords(recordPath)) as McpClientId[]) {
-    // A client that hangs must not hold up the uninstall for long.
-    if (id in CLIENTS) await uninstallMcpClient(id, { cliTimeoutMs: 8000, ...options, recordPath, stdioBridgePath: '', discoveryPath: '' })
+  for (const id of Object.keys(readRecords(recordPath)) as ManagedClientId[]) {
+    if (Object.hasOwn(CLIENTS, id))
+      await uninstallMcpClient(id, {
+        cliTimeoutMs: 8000,
+        stdioBridgePath: join(dataRoot, 'mcp', 'mossstudio-mcp-stdio.mjs'),
+        discoveryPath: join(dataRoot, 'mcp-server.json'),
+        ...options,
+        recordPath,
+      }).catch((err) => console.warn('[mcp]', String(err)))
   }
 }
 

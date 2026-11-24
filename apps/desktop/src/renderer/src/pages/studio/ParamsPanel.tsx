@@ -452,7 +452,7 @@ function CanvasParams({
                   />
                 </section>
 
-                {inputs ? <SamplingSection canvas={canvas} features={inputs.features} onChange={onChange} /> : null}
+                {inputs ? <SamplingSection canvas={canvas} features={inputs.features} worker={inputs.worker} onChange={onChange} /> : null}
 
                 {remoteEnabled ? (
                   <section className="flex flex-col gap-2">

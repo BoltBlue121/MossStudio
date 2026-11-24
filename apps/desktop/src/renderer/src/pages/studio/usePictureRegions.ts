@@ -81,6 +81,7 @@ export function usePictureRegions(
     })
 
   const parse = (sourceId: string): void => {
+    if (useApp.getState().settings?.gbcEnabled !== true) return
     if (gbc.blocker) {
       void navigate(sectionPath('features'))
       return
@@ -89,6 +90,8 @@ export function usePictureRegions(
   }
 
   const parseNow = (sourceId: string): void => {
+    // Connecting a model can outlive the feature toggle.
+    if (useApp.getState().settings?.gbcEnabled !== true) return
     const made = regionsCanvasFrom(project.canvasesRef.current, sourceId, { fallback: options.latestSettings() })
     if (!made) return
     const canvasId = made.created.id
