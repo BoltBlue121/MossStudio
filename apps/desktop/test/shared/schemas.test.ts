@@ -1034,6 +1034,7 @@ const cases = {
     output: { ...job, negativePrompt: '', profile: 'base', mode: 'runner' },
     accepts: {
       'size bounds': { ...job, width: 256, height: 2048 },
+      'wide 4MP within pixel budget': { ...job, width: 2656, height: 1488 },
       'seed bounds': { ...job, seed: 4294967295 },
       'steps 100 and cfg 20': { ...job, steps: 100, cfg: 20 },
       'every option': {
@@ -1050,7 +1051,8 @@ const cases = {
     rejects: {
       'width not multiple of 16': { ...job, width: 520 },
       'width below 256': { ...job, width: 240 },
-      'height above 2048': { ...job, height: 2064 },
+      'height above 4096': { ...job, height: 4112 },
+      'pixels above 4.2MP budget': { ...job, width: 2048, height: 2064 },
       'steps 0': { ...job, steps: 0 },
       'steps 101': { ...job, steps: 101 },
       'cfg above 20': { ...job, cfg: 20.01 },

@@ -33,6 +33,7 @@ import {
   useCopyText,
 } from '../../components/ui'
 import {
+  MP_TIERS,
   QUALITY_PRESETS,
   SIZE_PRESETS,
   clampDimension,
@@ -41,10 +42,14 @@ import {
   qualityFor,
   qualityPreset,
   qualityLabel,
-  sizePresetFor,
+  sizeChoiceFor,
+  sizeForMegapixels,
+  type ImageSize,
+  type MegapixelTier,
   type QualityId,
   type SizePresetId,
 } from './defaults'
+import { dimensions, pixelCount } from '../../lib/format'
 import { canvasDescription, withDescription, type CompiledPrompt } from './prompt'
 import { installedBundles, type Blocker, type BundleChoice } from './readiness'
 import { isWorkerDaemonHost, workerModelBundles, type WorkerAdapterEntry } from './remoteWorkerLoras'
@@ -64,20 +69,26 @@ import { styleUsers, UPSCALE_DETAIL, UPSCALE_DETAIL_DEFAULT, UPSCALE_SCALES, wit
 
 const SHORTCUT = typeof window !== 'undefined' && window.clover?.platform === 'darwin' ? '⌘ ↵' : 'Ctrl ↵'
 
+function imageSizeLabel({ width, height }: ImageSize): string {
+  return `${dimensions(width, height)} · ${pixelCount(width * height)}`
+}
+
 /** Commit-on-blur number field, so typing "1" on the way to "1024" is not clamped. */
 function DimensionInput({
   label,
   value,
+  otherEdge,
   onCommit,
 }: {
   label: string
   value: number
+  otherEdge?: number
   onCommit: (value: number) => void
 }): React.JSX.Element {
   const [draft, setDraft] = useState(String(value))
   useEffect(() => setDraft(String(value)), [value])
   const commit = (): void => {
-    const next = clampDimension(Number(draft), value)
+    const next = clampDimension(Number(draft), value, otherEdge)
     setDraft(String(next))
     if (next !== value) onCommit(next)
   }
@@ -196,10 +207,18 @@ function CanvasParams({
   const copyText = useCopyText()
   const openUpdate = useApp((state) => state.setUpdatePopoverOpen)
   const readOnly = canvas.kind === 'result'
-  const [customSize, setCustomSize] = useState(false)
+  const [customSize, setCustomSize] = useState<{ aspect: ImageSize; mp?: MegapixelTier } | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [promptOpen, setPromptOpen] = useState(false)
-  const sizePreset: SizePresetId = customSize ? 'custom' : sizePresetFor(canvas.width, canvas.height)
+  const preset = sizeChoiceFor(canvas.width, canvas.height)
+  const sizePreset: SizePresetId = customSize ? 'custom' : (preset?.id ?? 'custom')
+  const aspect = sizePreset === 'custom' ? (customSize?.aspect ?? canvas) : sizePreset
+  const tier = sizePreset === 'custom' ? customSize?.mp : preset?.mp
+  const changeSize = (size: ImageSize): void => onChange((current) => resizeCanvas(current, size.width, size.height))
+  const typeSize = (width: number, height: number): void => {
+    setCustomSize({ aspect: { width, height } })
+    changeSize({ width, height })
+  }
   const quality = qualityFor(canvas.steps)
   const installed = installedBundles(catalog)
   const adapters = normalizeCanvasAdapters(canvas.adapters)
@@ -210,7 +229,7 @@ function CanvasParams({
   const description = canvasDescription(canvas)
   const seedLocked = isSeedLocked(canvas)
 
-  useEffect(() => setCustomSize(false), [canvas.id])
+  useEffect(() => setCustomSize(null), [canvas.id])
 
   const engineReadiness = useApp((state) => state.engineReadiness)
   const defaultGpu =
@@ -434,36 +453,54 @@ function CanvasParams({
                   <UpscaleSection canvas={canvas} canvases={inputs?.canvases ?? []} onChange={onChange} />
                 ) : (
                   <section className="flex flex-col gap-2.5">
-                    <FieldLabel value={`${canvas.width} × ${canvas.height}`}>尺寸</FieldLabel>
+                    <FieldLabel value={imageSizeLabel(canvas)}>尺寸</FieldLabel>
                     <Segmented<SizePresetId>
                       block
                       label="尺寸"
                       value={sizePreset}
                       onChange={(value) => {
                         if (value === 'custom') {
-                          setCustomSize(true)
+                          setCustomSize({ aspect: { width: canvas.width, height: canvas.height } })
                           return
                         }
-                        setCustomSize(false)
-                        const preset = SIZE_PRESETS.find((item) => item.id === value)
-                        if (preset) onChange((current) => resizeCanvas(current, preset.width, preset.height))
+                        setCustomSize(null)
+                        changeSize(sizeForMegapixels(value, tier ?? 1))
                       }}
                       options={[
-                        ...SIZE_PRESETS.map((preset) => ({
-                          value: preset.id,
-                          label: preset.id,
-                          hint: `${preset.width} × ${preset.height}`,
+                        ...SIZE_PRESETS.map(({ id }) => ({
+                          value: id,
+                          label: id,
+                          hint: imageSizeLabel(sizeForMegapixels(id, tier ?? 1)),
                         })),
                         { value: 'custom' as const, label: '自定义' },
                       ]}
-                      className="[&>button]:px-1"
+                      className="grid grid-cols-4 gap-0.5 [&>button]:px-1"
+                    />
+                    <FieldLabel htmlFor="studio-size-tier">像素档位</FieldLabel>
+                    <Select
+                      id="studio-size-tier"
+                      value={tier === undefined ? '' : String(tier)}
+                      onValueChange={(value) => {
+                        const mp = MP_TIERS.find((item) => String(item) === value)
+                        if (mp === undefined) return
+                        if (typeof aspect !== 'string') setCustomSize({ aspect: { width: aspect.width, height: aspect.height }, mp })
+                        changeSize(sizeForMegapixels(aspect, mp))
+                      }}
+                      options={[
+                        ...(tier === undefined ? [{ value: '', label: '自定义像素', disabled: true }] : []),
+                        ...MP_TIERS.map((mp) => {
+                          const size = sizeForMegapixels(aspect, mp)
+                          return { value: String(mp), label: `${pixelCount(mp * 1_000_000)} · ${dimensions(size.width, size.height)}` }
+                        }),
+                      ]}
                     />
                     {sizePreset === 'custom' && !readOnly ? (
                       <div className="flex items-center gap-2">
                         <DimensionInput
                           label="宽度"
                           value={canvas.width}
-                          onCommit={(width) => onChange((current) => resizeCanvas(current, width, current.height))}
+                          otherEdge={canvas.height}
+                          onCommit={(width) => typeSize(width, canvas.height)}
                         />
                         <span aria-hidden="true" className="text-ink-2">
                           ×
@@ -471,7 +508,8 @@ function CanvasParams({
                         <DimensionInput
                           label="高度"
                           value={canvas.height}
-                          onCommit={(height) => onChange((current) => resizeCanvas(current, current.width, height))}
+                          otherEdge={canvas.width}
+                          onCommit={(height) => typeSize(canvas.width, height)}
                         />
                       </div>
                     ) : null}

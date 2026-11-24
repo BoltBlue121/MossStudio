@@ -5,15 +5,21 @@
  */
 
 import type { ModelBundle } from '@shared/types'
+import { MIN_DIMENSION, clampDimension, fitImageSize, type ImageSize } from '@shared/imageGeometry'
+
+export {
+  MIN_DIMENSION,
+  MAX_DIMENSION,
+  DIMENSION_STEP,
+  MAX_PIXELS,
+  clampDimension,
+  fitImageSize,
+  type ImageSize,
+} from '@shared/imageGeometry'
 
 export const DEFAULT_NEGATIVE = 'nsfw, worst quality, bad anatomy, watermark, jpeg artifact'
 
-export const MIN_DIMENSION = 256
-export const MAX_DIMENSION = 2048
-/** The engine works on 16-pixel tiles; every width and height is a multiple of this. */
-export const DIMENSION_STEP = 16
-
-export type SizePresetId = '1:1' | '4:3' | '3:4' | '16:9' | 'custom'
+export type SizePresetId = '1:1' | '4:3' | '3:4' | '3:2' | '2:3' | '16:9' | '9:16' | 'custom'
 
 export interface SizePreset {
   id: Exclude<SizePresetId, 'custom'>
@@ -21,26 +27,42 @@ export interface SizePreset {
   height: number
 }
 
+export const MP_TIERS = [0.5, 1, 1.5, 2, 3, 4] as const
+
 /** About one megapixel each, every side a multiple of 16. */
 export const SIZE_PRESETS: readonly SizePreset[] = [
   { id: '1:1', width: 1024, height: 1024 },
   { id: '4:3', width: 1152, height: 864 },
   { id: '3:4', width: 864, height: 1152 },
+  { id: '3:2', width: 1248, height: 832 },
+  { id: '2:3', width: 832, height: 1248 },
   { id: '16:9', width: 1280, height: 720 },
+  { id: '9:16', width: 720, height: 1280 },
 ]
 
 export const DEFAULT_SIZE = { width: 1024, height: 1024 } as const
 
-/** Which preset a size matches exactly; anything else is shown as 自定义. */
-export function sizePresetFor(width: number, height: number): SizePresetId {
-  return SIZE_PRESETS.find((preset) => preset.width === width && preset.height === height)?.id ?? 'custom'
+export type MegapixelTier = (typeof MP_TIERS)[number]
+
+/** The 1 MP tier retains the original sizes; the other tiers target decimal megapixels. */
+export function sizeForMegapixels(ratio: SizePreset['id'] | ImageSize, mp: MegapixelTier): ImageSize {
+  const preset = typeof ratio === 'string' ? SIZE_PRESETS.find((item) => item.id === ratio)! : ratio
+  const { width, height } = preset
+  if (mp === 1 && typeof ratio === 'string') return { width, height }
+  const scale = Math.sqrt((mp * 1_000_000) / (width * height))
+  return fitImageSize(width * scale, height * scale)
 }
 
-/** Snap a typed dimension to the engine grid and the supported range. */
-export function clampDimension(value: number, fallback: number = DEFAULT_SIZE.width): number {
-  if (!Number.isFinite(value) || value <= 0) return fallback
-  const snapped = Math.round(value / DIMENSION_STEP) * DIMENSION_STEP
-  return Math.min(MAX_DIMENSION, Math.max(MIN_DIMENSION, snapped))
+const tierPresets = SIZE_PRESETS.flatMap(({ id }) => MP_TIERS.map((mp) => ({ id, mp, ...sizeForMegapixels(id, mp) })))
+
+/** Match stored dimensions, not merely a nearby ratio or rounded pixel count. */
+export function sizeChoiceFor(width: number, height: number) {
+  return tierPresets.find((preset) => preset.width === width && preset.height === height)
+}
+
+/** Which preset a size matches; anything else is shown as 自定义. */
+export function sizePresetFor(width: number, height: number): SizePresetId {
+  return sizeChoiceFor(width, height)?.id ?? 'custom'
 }
 
 /**
@@ -49,7 +71,11 @@ export function clampDimension(value: number, fallback: number = DEFAULT_SIZE.wi
  * already as small as the engine goes.
  */
 export function smallerSize(width: number, height: number): { width: number; height: number } | null {
-  const next = { width: clampDimension(width * 0.75, MIN_DIMENSION), height: clampDimension(height * 0.75, MIN_DIMENSION) }
+  // An edge already under the floor stays as it is: a step down never grows one.
+  const next = {
+    width: Math.min(width, clampDimension(width * 0.75, MIN_DIMENSION)),
+    height: Math.min(height, clampDimension(height * 0.75, MIN_DIMENSION)),
+  }
   return next.width < width || next.height < height ? next : null
 }
 

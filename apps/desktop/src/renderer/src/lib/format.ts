@@ -58,6 +58,11 @@ export function dimensions(width: number, height: number): string {
   return `${width} × ${height}`
 }
 
+/** A picture's pixel count, as people say it: "约 105 万像素". */
+export function pixelCount(pixels: number): string {
+  return `约 ${Math.round(pixels / 10_000)} 万像素`
+}
+
 /**
  * A strength. `share` values run 0–1 and read as a percentage ("60%"); `weight`
  * values (LoRA, control, adapters) read as a plain multiplier ("0.8", "1").

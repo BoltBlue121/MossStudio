@@ -15,6 +15,7 @@ import {
   jobTitle,
   memorySize,
   percent,
+  pixelCount,
   relative,
   shortSha,
   stageLabel,
@@ -105,6 +106,12 @@ describe('lib/format sizes and numbers', () => {
 
   it('writes picture sizes with spaces around ×', () => {
     expect(dimensions(1024, 768)).toBe('1024 × 768')
+  })
+
+  it('writes a pixel count in 万, the way people say it', () => {
+    expect(pixelCount(1024 * 1024)).toBe('约 105 万像素')
+    expect(pixelCount(4_000_000)).toBe('约 400 万像素')
+    expect(pixelCount(500_000)).toBe('约 50 万像素')
   })
 
   it('writes a share as a percentage and a weight as a plain number', () => {
