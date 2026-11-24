@@ -2,7 +2,7 @@ import { bestBundleFor, bundleGpusProblem, bundleWeightProblem, isFileBundle, is
 import type { AdapterEntry, DownloadTask, GpuInventoryDevice, ModelBundle, ModelEntry, ModelSource, ModelSourcesView } from '@shared/types'
 import { isSharedModelId } from '@shared/sharedModels'
 import { goneOwnPart, isLostOwnFile, isOwnFile, lostFile } from '@shared/modelImport'
-import { eta } from '../../lib/format'
+import { eta, MODEL_READY_TEXT } from '../../lib/format'
 
 /**
  * Pure helpers for the Models page. A "model" here is a whole catalog bundle
@@ -170,7 +170,7 @@ function bundleState(
   if (components.length < ids.length) {
     return { ...base, status: 'unavailable', stateText: '模型信息不完整，刷新后再试', action: null, actionLabel: '' }
   }
-  if (missing.length === 0) return { ...base, status: 'ready', stateText: '可以使用', action: null, actionLabel: '' }
+  if (missing.length === 0) return { ...base, status: 'ready', stateText: MODEL_READY_TEXT, action: null, actionLabel: '' }
   const active = partTasks.filter((task) => ACTIVE_STATES.has(task.state))
   // Parts shared with another model (text encoder, VAE, configs) downloading for
   // that one do not make this model "downloading" while its main model waits.
@@ -215,6 +215,8 @@ function bundleState(
 /** Where the page points: this computer (its GPUs, once read, and which of them run a CLI engine) or another computer. */
 export interface ModelPlace {
   remote: boolean
+  /** Worker daemon host: runs moss-server with single-file support, so catalog single-file bundles fit too. */
+  workerDaemon?: boolean
   gpus: readonly GpuInventoryDevice[]
   /** GPUs running 兼容模式 / AMD 原生, which read only the official bf16 folders. */
   cliGpus?: ReadonlySet<string>
@@ -226,7 +228,15 @@ export function bundleBlocker(bundle: ModelBundle, models: readonly ModelEntry[]
   if (lostFile(bundle, models)) return null
   const weights = bundleWeightProblem(bundle, models)
   if (weights) return weights
-  if (place.remote) return isLocalOnlyBundle(bundle, models) ? '只能在这台电脑上使用，其他电脑请用官方模型' : null
+  if (place.remote) {
+    if (place.workerDaemon) {
+      const localShareOrImport =
+        Object.values(bundle.components).some(isSharedModelId) ||
+        Object.values(bundle.components).some((id) => models.find((m) => m.id === id)?.provider === 'local')
+      return localShareOrImport ? '只能在这台电脑上使用，远端请用在线模型或远端已有权重' : null
+    }
+    return isLocalOnlyBundle(bundle, models) ? '只能在这台电脑上使用，其他电脑请用官方模型' : null
+  }
   return bundleGpusProblem(bundle, place.gpus, { cliGpus: place.cliGpus, files: isFileBundle(bundle, models) })
 }
 
@@ -254,7 +264,9 @@ export function modelSections(
   place: ModelPlace,
   preferredId?: string | null,
 ): ModelSections {
-  const candidates = views.map((view) => view.bundle).filter((bundle) => !place.remote || !isLocalOnlyBundle(bundle, models))
+  const candidates = views
+    .map((view) => view.bundle)
+    .filter((bundle) => !place.remote || place.workerDaemon || !isLocalOnlyBundle(bundle, models))
   const best = bestBundleFor(candidates, place.remote ? [] : place.gpus, place.cliGpus)
   const featured = views.find((view) => view.bundle.id === preferredId) ?? views.find((view) => view.bundle.id === best?.bundle.id)
   const listed = views.filter((view) => view !== featured && view.status !== 'unavailable')

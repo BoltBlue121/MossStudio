@@ -3,7 +3,7 @@ import { Copy, Download, RefreshCw, X } from 'lucide-react'
 import { composeOfficialGuide, type GuideTopic } from '@shared/capabilities'
 import { Notice } from '../../../components/common/Notice'
 import { Button, ConfirmDialog, FieldLabel, IconButton, LoadingRow, Modal, Pill, cn, useCopyText, useToast } from '../../../components/ui'
-import { PROFILE_LABELS, projectedToolset, type ToolProfileState } from './CollabToolbar'
+import { PROFILE_LABELS, projectedToolset, useToolFlags, type ToolProfileState } from './CollabToolbar'
 import { mcpConfigJson, normalizeMcpClients, type CollabClient, type McpClientStatus, type McpConfigKind } from './collabClient'
 
 export const PROMPTCRAFT_SKILL_URI = 'mossstudio://skill/promptcraft'
@@ -58,7 +58,7 @@ export function McpConnectDialog({
   const [clients, setClients] = useState<McpClientStatus[] | null | undefined>(undefined)
   const [busy, setBusy] = useState<string | null>(null)
   const [reconnect, setReconnect] = useState<McpClientStatus | null>(null)
-  const projected = projectedToolset(profile)
+  const projected = projectedToolset(profile, useToolFlags())
 
   const load = useCallback(async () => {
     setClients(undefined)

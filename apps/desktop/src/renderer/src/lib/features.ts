@@ -8,6 +8,7 @@ export type FeatureKey =
   | 'gbcEnabled'
   | 'lanWebEnabled'
   | 'externalAgentsEnabled'
+  | 'externalImageEditEnabled'
   | 'toolHubEnabled'
 
 export interface FeatureInfo {
@@ -50,6 +51,7 @@ export const FEATURES: FeatureInfo[] = [
     label: '外部 Agent',
     description: '让 Codex、Claude Code 等 Agent 通过 MCP 在创作页上画图，并在助手旁协同。',
   },
+  { key: 'externalImageEditEnabled', label: '外接重绘', description: '通过自己选择的图像服务重绘图片。' },
   {
     key: 'toolHubEnabled',
     label: '工具与节点管理器',

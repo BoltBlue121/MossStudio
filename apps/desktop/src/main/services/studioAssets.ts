@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { nativeImage } from 'electron'
 import { codedError } from '../lib/codedError'
@@ -35,21 +35,23 @@ function hashOf(data: Uint8Array): string {
   return createHash('sha256').update(data).digest('hex').slice(0, 24)
 }
 
-async function writeOnce(target: string, data: Uint8Array): Promise<void> {
+async function writeOnce(target: string, data: Uint8Array, signal?: AbortSignal): Promise<void> {
   try {
-    if ((await stat(target)).isFile()) return
+    if ((await lstat(target)).isFile()) return
   } catch {
     // not there yet
   }
   // Unique per call: two imports of the same picture may run at once.
   const temporary = `${target}.${randomUUID()}.tmp`
-  await writeFile(temporary, data)
   try {
+    await writeFile(temporary, data, { signal })
+    signal?.throwIfAborted()
     await rename(temporary, target)
   } catch (error) {
     // The other import won (on Windows a rename onto an open file can fail): its copy is the same bytes.
     await rm(temporary, { force: true }).catch(() => undefined)
-    const exists = await stat(target).then(
+    signal?.throwIfAborted()
+    const exists = await lstat(target).then(
       (info) => info.isFile(),
       () => false,
     )
@@ -78,7 +80,7 @@ function webpToPng(data: Uint8Array): Uint8Array {
 }
 
 /** Copy picture bytes into the project's assets: `<hash>.png|jpg`. */
-export async function importImageBytes(projectId: string, bytes: Uint8Array): Promise<ImportedImage> {
+export async function importImageBytes(projectId: string, bytes: Uint8Array, signal?: AbortSignal): Promise<ImportedImage> {
   const dir = assetsDirFor(projectId)
   if (!bytes.byteLength) throw codedError('E_IMAGE_FORMAT', '图片是空的')
   if (bytes.byteLength > MAX_IMPORT_BYTES) throw codedError('E_IMAGE_TOO_LARGE', '图片文件太大了（不超过 80 MB）')
@@ -91,7 +93,8 @@ export async function importImageBytes(projectId: string, bytes: Uint8Array): Pr
   const ext = header.format === 'png' ? 'png' : 'jpg'
   await mkdir(dir, { recursive: true })
   const target = join(dir, `${hashOf(data)}.${ext}`)
-  await writeOnce(target, data)
+  await writeOnce(target, data, signal)
+  signal?.throwIfAborted()
   return { path: target, width: header.width, height: header.height }
 }
 

@@ -21,6 +21,42 @@ export interface RemoteWorkerLoraItem {
   registered: boolean
 }
 
+export interface RemoteWorkerModelItem {
+  id: string
+  name: string
+  description?: string
+  variant?: string[]
+  precision?: string
+  tier?: 'reference' | 'high' | 'turbo'
+  profile?: string
+  catalogBundleId?: string
+  sizeBytes?: number
+  installed?: boolean
+  deletable?: boolean
+  defaults?: { steps?: number; cfg?: number }
+}
+
+export interface RemoteWorkerComponentItem {
+  id: string
+  installed: boolean
+  path?: string
+  sizeBytes?: number
+}
+
+export interface RemoteWorkerModelInventory {
+  root?: string
+  models: RemoteWorkerModelItem[]
+  components: RemoteWorkerComponentItem[]
+  defaultModelId?: string | null
+  /** Set when the daemon does not name `models` in `/v1/capabilities` (an older, single-profile daemon). */
+  unsupported?: boolean
+}
+
+/** Portable identifier for a model advertised by a Worker daemon. */
+export function isWorkerModelId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value)
+}
+
 /** Only portable, worker-relative identifiers cross the registry boundary. */
 export function isWorkerLoraId(value: unknown): value is string {
   return (

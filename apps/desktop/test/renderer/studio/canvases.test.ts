@@ -23,6 +23,8 @@ import {
   smallerCanvas,
   taskCanvasFor,
 } from '@renderer/pages/studio/canvases'
+import { MAX_PIXELS, clampDimension } from '@renderer/pages/studio/defaults'
+import { schemas } from '@shared/schemas'
 import { canvas, layer } from './fixtures'
 
 describe('studio/canvases creation', () => {
@@ -434,6 +436,31 @@ describe('studio/canvases inputs and pictures', () => {
     const plainTask = taskCanvasFor(plain, [plain], 'pt').canvases.find((item) => item.id === 'pt')!
     expect(plainTask).toMatchObject({ width: 1024, height: 1024 })
     expect('baseSize' in plainTask).toBe(false)
+  })
+
+  it('fits every size a 画面 is given into the engine pixel budget, keeping its shape', () => {
+    const resized = resizeCanvas(canvas(), 4096, 4096)
+    expect(resized).toMatchObject({ width: 2048, height: 2048 })
+    // 拆成区域-like sizes: one edge alone is within range, the area is not.
+    const wide = resizeCanvas(canvas(), 3504, 1200)
+    expect(wide.width * wide.height).toBeLessThanOrEqual(MAX_PIXELS)
+    expect(wide.width / wide.height).toBeCloseTo(3504 / 1200, 1)
+    const fromGallery = canvasFromReuse(
+      { id: 'r', createdAt: '', sourcePath: '/o.png', prompt: 'p', width: 4096, height: 4096 },
+      [],
+      defaultSettings(),
+    )
+    expect(fromGallery.canvas).toMatchObject({ width: 2048, height: 2048 })
+    const scene = sceneCanvas({ title: 's', prompt: 'p', width: 4096, height: 2048 }, [], defaultSettings())
+    expect(scene.width * scene.height).toBeLessThanOrEqual(MAX_PIXELS)
+    // A size already in the budget is kept as it is.
+    expect(resizeCanvas(canvas(), 2656, 1488)).toMatchObject({ width: 2656, height: 1488 })
+  })
+
+  it('never makes a 画面 too small for the project to save', () => {
+    const tiny = resizeCanvas(canvas(), clampDimension(32), 32)
+    expect(tiny).toMatchObject({ width: 256, height: 256 })
+    expect(schemas.projectSave.safeParse({ name: 'Project', canvases: [tiny] }).success).toBe(true)
   })
 
   it('resizing keeps a hires target in proportion', () => {

@@ -4,9 +4,10 @@ import {
   isWorkerDaemonHost,
   stopAllWorkerHostTunnels,
   workerHostProviderId,
+  workerDaemonSupports,
   workerHostsOn,
 } from './services/workerHostManager'
-import { listRemoteWorkerLoras, changeRemoteWorkerLora } from './services/remoteWorker'
+import { listRemoteWorkerLoras, changeRemoteWorkerLora, listRemoteWorkerModels } from './services/remoteWorker'
 import { mergeLoraMeta } from './services/loraProfiles'
 import { resolveAdapterFile } from './services/models'
 import type { CapabilityId } from '@shared/capabilities'
@@ -110,6 +111,7 @@ import { pushTestNotification } from './services/desktopNotifications'
 import { isInside } from './lib/paths'
 import { codedError, errorCode } from './lib/codedError'
 import { getEngineFeatures } from './services/engineFeatures'
+import { listImageChannels, saveImageChannel, removeImageChannel, discoverImageModels, runImageEdit } from './services/imageEdit'
 import { importImageBytes, importImageFile, pruneProjectMasks, saveMask } from './services/studioAssets'
 import { listControlAdapters, removeControlAdapter } from './services/controlAdapters'
 import { applyThemeSource, applyUiScale, controlWindow, openWindow } from './windows'
@@ -361,6 +363,11 @@ export function registerIpc(): void {
 
   handle(Ipc.backendInfo, null, () => getBackendInfo())
 
+  handle(Ipc.imageEditChannelsList, schemas.imageEditChannelsList, listImageChannels)
+  handle(Ipc.imageEditChannelsSave, schemas.imageEditChannelsSave, saveImageChannel)
+  handle(Ipc.imageEditChannelsRemove, schemas.imageEditChannelsRemove, ({ id }) => removeImageChannel(id))
+  handle(Ipc.imageEditDiscoverModels, schemas.imageEditDiscoverModels, discoverImageModels)
+  handle(Ipc.imageEditRun, schemas.imageEditRun, (input) => runImageEdit(input))
   const capabilities = createBuiltinMainDispatcher()
   attachCapabilityApproval(capabilities)
 
@@ -373,6 +380,7 @@ export function registerIpc(): void {
   )
   handleExternal(Ipc.agentHubConnect, schemas.agentHubConnect, (input) => agentHub.connect(input))
   handleExternal(Ipc.agentHubDisconnect, schemas.agentHubBackend, ({ backendId }) => agentHub.disconnect(backendId))
+  handleExternal(Ipc.agentHubProjects, schemas.agentHubBackend, ({ backendId }) => agentHub.projects(backendId))
   handleExternal(Ipc.agentHubSessions, schemas.agentHubBackend, ({ backendId }) => agentHub.sessions(backendId))
   handleExternal(Ipc.agentHubCreateSession, schemas.agentHubCreateSession, (input) => agentHub.createSession(input))
   handleExternal(Ipc.agentHubMessages, schemas.agentHubSession, ({ backendId, sessionId }) => agentHub.messages(backendId, sessionId))
@@ -425,6 +433,12 @@ export function registerIpc(): void {
     const result = await changeRemoteWorkerLora(await workerProfileFor({ hostId, providerId }), id, action)
     invalidateCatalog()
     return result
+  })
+  handle(Ipc.remoteWorkerModels, schemas.remoteWorkerModels, async ({ hostId, providerId, rescan }) => {
+    const profile = await workerProfileFor({ hostId, providerId })
+    // An older daemon serves only its one profile: the run goes there without a model id.
+    if (!workerDaemonSupports(profile.hostId, 'models')) return { models: [], components: [], defaultModelId: null, unsupported: true }
+    return listRemoteWorkerModels(profile, Boolean(rescan))
   })
   handle(Ipc.loraProfilesList, schemas.loraProfilesList, () => listLoraProfiles())
   handle(Ipc.loraProfilesSave, schemas.loraProfilesSave, async (input) => {

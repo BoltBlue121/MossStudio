@@ -9,6 +9,7 @@ import {
   DEFAULT_QUALITY,
   DEFAULT_SIZE,
   clampDimension,
+  fitImageSize,
   isSeedLocked,
   nextCanvasTitle,
   nextNodeTitle,
@@ -139,8 +140,9 @@ export function createLayoutCanvas(
   settings: CanvasSettings,
   id: string = crypto.randomUUID(),
 ): ProjectCanvas {
-  const position = nextFreeSpot(boardCanvases(existing), settings)
-  return {
+  const size = fitImageSize(settings.width, settings.height)
+  const position = nextFreeSpot(boardCanvases(existing), size)
+  const canvas: ProjectCanvas = {
     id,
     kind: 'layout',
     title: nextCanvasTitle(existing.map((item) => item.title)),
@@ -154,6 +156,7 @@ export function createLayoutCanvas(
     deviceId: settings.deviceId || undefined,
     deviceUuid: settings.deviceUuid || undefined,
   }
+  return resizeCanvas(canvas, size.width, size.height)
 }
 
 /**
@@ -572,12 +575,16 @@ export function reorderLayers(layers: readonly ProjectLayer[], fromId: string, t
   return next
 }
 
-/** Change the picture size, pull every region back inside it and keep a 高清修复 target in proportion. */
+/**
+ * Change the picture size, pull every region back inside it and keep a 高清修复 target in proportion.
+ * Every way a 画面 gets a size passes here, so the size is fitted to the engine's range and pixel budget.
+ */
 export function resizeCanvas<T extends Pick<ProjectCanvas, 'width' | 'height' | 'layers'> & { sampling?: ProjectCanvas['sampling'] }>(
   canvas: T,
-  width: number,
-  height: number,
+  askedWidth: number,
+  askedHeight: number,
 ): T {
+  const { width, height } = fitImageSize(askedWidth, askedHeight)
   const next = {
     ...canvas,
     width,

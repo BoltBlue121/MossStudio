@@ -13,6 +13,7 @@ describe('lib/features', () => {
       'gbcEnabled',
       'lanWebEnabled',
       'externalAgentsEnabled',
+      'externalImageEditEnabled',
       'toolHubEnabled',
     ])
     expect(FEATURES.every((feature) => feature.label && feature.description)).toBe(true)

@@ -1,5 +1,6 @@
 import { UI_SCALES } from './uiScale'
 import { z } from 'zod'
+import { DIMENSION_STEP, MAX_DIMENSION, MIN_DIMENSION, PIXEL_BUDGET_MESSAGE, withinPixelBudget } from './imageGeometry'
 import { agentCardAnswerSchema } from './agent/cards'
 import { UPDATE_CHANNELS } from './install'
 import { mangaSeriesSaveSchema } from './manga/model'
@@ -337,7 +338,45 @@ export const loraProfileSchema = z.strictObject({
   notes: z.string().max(4000).optional(),
 })
 
+export const editProtocols = ['openai-edits', 'openai-chat', 'gemini-native'] as const
+const channelText = (max: number) => z.string().trim().min(1).max(max)
+const printableKey = z
+  .string()
+  .min(1)
+  .max(4096)
+  .regex(/^[!-~]+$/)
+const channelFields = {
+  name: channelText(80),
+  protocol: z.enum(editProtocols),
+  model: channelText(256).regex(/^[^\s\p{Cc}?#\\]+$/u),
+  baseUrl: z
+    .url({ protocol: /^https$/ })
+    .max(2048)
+    .refine(
+      (s) => URL.canParse(s) && !/[?#\\]/.test(s) && !new URL(s).username && !new URL(s).password,
+      '请输入不带凭据或参数的 HTTPS 地址',
+    ),
+}
+export const editChannel = z.strictObject({ ...channelFields, id: z.uuid(), revision: z.uuid() })
+export type ImageEditChannel = z.infer<typeof editChannel> & { hasKey: boolean }
+export const imageEditArgs = z.strictObject({
+  projectId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/),
+  path: inputPath,
+  prompt: z.string().trim().min(1).max(8000),
+  channelId: z.uuid().optional(),
+})
+const editEndpoint = {
+  id: z.uuid().optional(),
+  protocol: channelFields.protocol,
+  baseUrl: channelFields.baseUrl,
+  apiKey: printableKey.nullable().optional(),
+}
 export const schemas = {
+  imageEditChannelsList: z.strictObject({}),
+  imageEditChannelsSave: z.strictObject({ ...channelFields, ...editEndpoint }),
+  imageEditChannelsRemove: z.strictObject({ id: z.uuid() }),
+  imageEditDiscoverModels: z.strictObject(editEndpoint),
+  imageEditRun: imageEditArgs.extend({ channelId: z.uuid(), revision: z.uuid() }),
   remoteWorkerLoras: z
     .object({
       hostId: z.string().min(1).max(120).optional(),
@@ -351,6 +390,13 @@ export const schemas = {
       providerId: z.string().min(1).max(120).optional(),
       id: z.string().min(1).max(4096),
       action: z.enum(['register', 'unregister']),
+    })
+    .refine((value) => Boolean(value.hostId || value.providerId), 'hostId or providerId is required'),
+  remoteWorkerModels: z
+    .object({
+      hostId: z.string().min(1).max(120).optional(),
+      providerId: z.string().min(1).max(120).optional(),
+      rescan: z.boolean().optional(),
     })
     .refine((value) => Boolean(value.hostId || value.providerId), 'hostId or providerId is required'),
   loraProfilesList: z.strictObject({}).optional(),
@@ -383,6 +429,12 @@ export const schemas = {
         )
         .max(100)
         .optional(),
+      /** A DSH Desktop's own local pairing address; the driver validates it is this machine's. */
+      pairingUrl: z
+        .string()
+        .max(2048)
+        .regex(/^http:\/\/(?:127\.0\.0\.1|\[::1\]|localhost):\d{1,5}\/\?token=[\w-]{1,512}$/)
+        .optional(),
     })
     .strict(),
   agentHubBackend: z.object({ backendId: agentBackend }).strict(),
@@ -393,6 +445,7 @@ export const schemas = {
       cwd: pathLike.optional(),
       createCwd: z.boolean().optional(),
       projectId: z.string().min(1).max(128).optional(),
+      workspaceId: z.string().min(1).max(256).optional(),
       agentPreset: z.string().min(1).max(128).optional(),
       model: z.string().min(1).max(256).optional(),
       provider: z.string().min(1).max(128).optional(),
@@ -540,6 +593,7 @@ export const schemas = {
       gbcEnabled: z.boolean(),
       toolHubEnabled: z.boolean(),
       externalAgentsEnabled: z.boolean(),
+      externalImageEditEnabled: z.boolean(),
       workerHostsEnabled: z.boolean(),
       gbcProviderId: z.string().min(1).max(120).nullable(),
       languageProviderId: z.string().min(1).max(120).nullable(),
@@ -974,23 +1028,25 @@ export const schemas = {
   sshTerminalInput: z.object({ id: z.string().min(1).max(120), data: z.string().max(65536) }),
   sshTerminalClose: z.object({ id: z.string().min(1).max(120) }),
 
-  jobStart: z.object({
-    instanceId: z.string().min(1).max(120),
-    prompt: z.string().max(32768),
-    negativePrompt: z.string().max(8192).default(''),
-    width: z.number().int().min(256).max(2048).multipleOf(16),
-    height: z.number().int().min(256).max(2048).multipleOf(16),
-    steps: z.number().int().min(1).max(100),
-    cfg: z.number().min(0).max(20),
-    seed: z.number().int().min(0).max(4294967295),
-    profile: z.enum(['base', 'dmd8']).default('base'),
-    mode: z.enum(['runner', 'simulate']).default('runner'),
-    caseId: z.string().max(80).optional(),
-    caseName: z.string().max(120).optional(),
-    workspace: z.literal('clover').optional(),
-    deviceId: z.string().max(120).optional(),
-    kind: z.enum(['inference', 'training']).optional(),
-  }),
+  jobStart: z
+    .object({
+      instanceId: z.string().min(1).max(120),
+      prompt: z.string().max(32768),
+      negativePrompt: z.string().max(8192).default(''),
+      width: z.number().int().min(MIN_DIMENSION).max(MAX_DIMENSION).multipleOf(DIMENSION_STEP),
+      height: z.number().int().min(MIN_DIMENSION).max(MAX_DIMENSION).multipleOf(DIMENSION_STEP),
+      steps: z.number().int().min(1).max(100),
+      cfg: z.number().min(0).max(20),
+      seed: z.number().int().min(0).max(4294967295),
+      profile: z.enum(['base', 'dmd8']).default('base'),
+      mode: z.enum(['runner', 'simulate']).default('runner'),
+      caseId: z.string().max(80).optional(),
+      caseName: z.string().max(120).optional(),
+      workspace: z.literal('clover').optional(),
+      deviceId: z.string().max(120).optional(),
+      kind: z.enum(['inference', 'training']).optional(),
+    })
+    .refine(withinPixelBudget, PIXEL_BUDGET_MESSAGE),
 
   jobId: z.object({ id: z.string().min(1).max(120) }),
 

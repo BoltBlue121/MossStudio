@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { defaultSettings } from '@renderer/pages/studio/canvases'
+import { MAX_PIXELS } from '@renderer/pages/studio/defaults'
 import { canvasDescription } from '@renderer/pages/studio/prompt'
 import { regionsCanvasFrom, sizeLike, untouched, withParsedRegions } from '@renderer/pages/studio/pictureRegions'
 import { canvas, layer } from './fixtures'
@@ -26,6 +27,13 @@ describe('拆成区域 on the board', () => {
     expect(sizeLike({ width: 1200, height: 800 }, { width: 1024, height: 1024 })).toEqual({ width: 1248, height: 832 })
     expect(sizeLike({ width: 800, height: 1200 }, { width: 1024, height: 1024 })).toEqual({ width: 832, height: 1248 })
     expect(sizeLike({ width: 500, height: 500 }, { width: 1024, height: 1024 })).toEqual({ width: 1024, height: 1024 })
+  })
+
+  it('keeps a large 画面 shaped like a wide picture within the engine pixel budget', () => {
+    const wide = canvas({ ...picture, id: 'w', imageSize: { width: 3911, height: 1333 }, width: 3911, height: 1333 })
+    const made = regionsCanvasFrom([wide], 'w', { fallback: { ...defaultSettings(), width: 2048, height: 2048 }, id: 'n' })!
+    expect(made.created.width * made.created.height).toBeLessThanOrEqual(MAX_PIXELS)
+    expect(made.created.width / made.created.height).toBeCloseTo(3911 / 1333, 1)
   })
 
   it('puts an empty 画面 to the right of the picture, not wired to it, and names the file to read', () => {

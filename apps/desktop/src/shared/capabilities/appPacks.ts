@@ -1,3 +1,4 @@
+import { imageEditArgs } from '../schemas'
 import { z } from 'zod'
 import { mangaSeriesSaveSchema } from '../manga/model'
 import { TRAINING_KINDS, TRAINING_LENGTHS, trainingRecipeSchema } from '../training'
@@ -40,6 +41,7 @@ const trainingPatchSchema = z
   .describe('Fields to update on a draft training project.')
 
 export const APP_ACTION_SCHEMAS = {
+  'image.edit.run': imageEditArgs,
   // ---- remote.hosts ----
   'remote.hosts.list': z.strictObject({}),
   'remote.hosts.test': z.strictObject({ hostId: z.string().trim().min(1).max(120) }),
@@ -290,6 +292,40 @@ function short(value: string, limit = 20): string {
 }
 
 export const APP_CAPABILITY_PACKS: readonly BuiltinCapabilityPack[] = [
+  {
+    protocolVersion: CAPABILITY_PROTOCOL_VERSION,
+    id: 'image.edit',
+    title: '外接重绘',
+    version: '1.0.0',
+    featureFlag: 'externalImageEditEnabled',
+    requiresPacks: [],
+    contexts: [],
+    skills: [
+      {
+        id: 'image.skill.edit',
+        requiresActions: ['image.edit.run'],
+        order: 81,
+        audience: ['tools', 'resources'],
+        markdown: '用 `image.edit.run` 将项目或作品库的图片发到指定渠道重绘；先确认源图、目的地和费用。',
+      },
+    ],
+    actions: [
+      {
+        id: 'image.edit.run',
+        title: '外接重绘',
+        description:
+          'Upload a local project or library image and prompt to a configured image channel. Omit channelId to use the first channel. Requires approval; returns a project asset.',
+        inputSchema: imageEditArgs,
+        target: 'main',
+        scope: 'project',
+        effects: ['run', 'write', 'export'],
+        policyFloor: 'approval',
+        requires: [],
+        headless: 'requires-ui',
+        summarize: (args) => `上传图片到 ${text(args.destination)} 重绘（可能产生费用）`,
+      },
+    ],
+  },
   {
     protocolVersion: CAPABILITY_PROTOCOL_VERSION,
     id: 'remote.hosts',

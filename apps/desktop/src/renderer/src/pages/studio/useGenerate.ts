@@ -13,8 +13,15 @@ import { profileFor, randomSeed, samplingForBundle, seedForRun } from './default
 import { resolveJobInputs } from './jobInputs'
 import { compileCanvasPrompt } from './prompt'
 import { loraProfileStore } from '../../components/studio/loraProfilesClient'
+import type { RemoteWorkerModelInventory } from '@shared/remoteWorker'
 import { isWorkerRun, resolveBundle } from './readiness'
-import { isWorkerDaemonHost, missingWorkerAdapters, workerBundleChoice, type WorkerAdapterEntry } from './remoteWorkerLoras'
+import {
+  isWorkerDaemonHost,
+  missingWorkerAdapters,
+  resolveWorkerBundle,
+  workerModelsUnread,
+  type WorkerAdapterEntry,
+} from './remoteWorkerLoras'
 import { generatedSnapshot, generationCanvas, nodeBlockers, styleLoraNote, withUpscaleSize } from './nodes'
 import { queuedRunsOf, runsOf, shownRun, staleRunIds } from './runs'
 import type { StudioProject } from './useStudioProject'
@@ -77,6 +84,10 @@ export function useGenerate(options: {
   catalog: Catalog | null
   preferredBundleId: string | null
   remoteHost: ManagedHost | null
+  /** Real models detected on the picked Worker host (`unsupported` for an older daemon); null while not read. */
+  workerModels?: RemoteWorkerModelInventory | null
+  /** The model last picked on a Worker; the 画面 keeps a model of this computer's library. */
+  workerModelId?: string | null
   /** The LoRA the picked Worker host has; null or absent while unknown (never reported missing then). */
   workerAdapters?: readonly WorkerAdapterEntry[] | null
   /** Registered control adapters (a canvas's control adapter id resolves to its file). */
@@ -120,9 +131,13 @@ export function useGenerate(options: {
       const runs = runsOf(source, canvases)
       if (queuedRunsOf(runs).length >= MAX_QUEUED_RUNS) return { error: '排队已满，等前面的画完再加' }
 
-      // A Worker host brings its own model; a canvas keeps the model it names for when it runs here again.
+      // A Worker host resolves against the real models detected on that Worker daemon.
       const workerHost = isWorkerDaemonHost(remoteHost) ? remoteHost : null
-      const choice = workerHost ? workerBundleChoice(workerHost, catalog) : resolveBundle(catalog, source.modelBundleId, preferredBundleId)
+      const { workerModels, workerModelId } = latest.current
+      if (workerHost && !workerModels) return { error: workerModelsUnread(workerHost.name) }
+      const choice = workerHost
+        ? resolveWorkerBundle(workerHost, workerModels, [workerModelId, source.modelBundleId, preferredBundleId], catalog)
+        : resolveBundle(catalog, source.modelBundleId, preferredBundleId)
       if (!choice.bundle)
         return { error: choice.unavailable ? '这个画面用的模型已经不在模型库里，请换一个模型' : '还没有可用的模型，请先到模型页下载' }
       if (!choice.installed) return { error: `「${choice.bundle.name}」还没有下载完` }
@@ -131,7 +146,8 @@ export function useGenerate(options: {
       const remoteModelPath = remoteHost?.modelPath?.trim()
       if (remoteHost && !worker && !remoteModelPath)
         return { error: `「${remoteHost.name}」还没有设置模型位置，请到 设置 › 设备与引擎 填写` }
-      const adapters = normalizeCanvasAdapters(generating.adapters)
+      // Strength 0 turns a LoRA off: it is neither required nor sent.
+      const adapters = normalizeCanvasAdapters(generating.adapters).filter((adapter) => adapter.strength > 0)
       // A 风格's LoRA count too; the message says where they come from.
       const fromStyles = styleLoraNote(source, canvases)
       if (remoteHost && !worker && adapters.length)
@@ -166,9 +182,13 @@ export function useGenerate(options: {
       const shownSeed = jobs.find((job) => job.id === shown.jobId)?.params.seed ?? shown.outputs?.[0]?.seed ?? source.seed
       const seed = seedMode === 'same' ? shownSeed : seedMode === 'new' ? randomSeed() : seedForRun(source)
       // A canvas that never picked a model runs with the one it resolves to; a few-step
-      // model (Turbo) then brings its own steps and CFG, as picking it by hand does.
+      // model (Turbo / Heal) then brings its own steps and CFG, as picking it by hand does.
+      const hasRealWorkerModel = Boolean(workerHost && workerModels?.models.length)
       const sampling =
-        source.modelBundleId || workerHost ? { steps: source.steps, cfg: source.cfg } : samplingForBundle(source, null, choice.bundle)
+        source.modelBundleId || (workerHost && !hasRealWorkerModel)
+          ? { steps: source.steps, cfg: source.cfg }
+          : samplingForBundle(source, null, choice.bundle)
+      // A Worker's own model id never goes into the 画面: it keeps the model it runs with on this computer.
       const modelBundleId = workerHost ? source.modelBundleId : choice.bundle.id
       // The run keeps what it was really generated with, so running it again repeats it.
       const snapshot = generatedSnapshot(source, generating)
@@ -206,7 +226,7 @@ export function useGenerate(options: {
         seed,
         remoteHost,
         remoteModelPath,
-        modelName: workerHost ? workerHost.name || choice.bundle.name : choice.bundle.name,
+        modelName: workerHost ? (hasRealWorkerModel ? choice.bundle.name : workerHost.name || choice.bundle.name) : choice.bundle.name,
       }
     },
     [],

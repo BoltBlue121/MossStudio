@@ -6,6 +6,7 @@ import {
   enumOptions,
   generationSize,
   hiresChoice,
+  hiresScaleFits,
   hiresSize,
   outputSize,
   samplingSummary,
@@ -14,6 +15,8 @@ import {
   withHiresScale,
   withSampling,
 } from '@renderer/pages/studio/sampling'
+import { resizeCanvas } from '@renderer/pages/studio/canvases'
+import { MAX_PIXELS } from '@renderer/pages/studio/defaults'
 import { engineFeaturesFixture } from '@test/mocks/backend'
 import { canvas } from './fixtures'
 
@@ -46,8 +49,10 @@ describe('studio/sampling 高清修复', () => {
   it('scales the first-pass size onto the 16-pixel grid', () => {
     expect(hiresSize({ width: 1024, height: 1024 }, 1.5)).toEqual({ width: 1536, height: 1536 })
     expect(hiresSize({ width: 1152, height: 864 }, 1.5)).toEqual({ width: 1728, height: 1296 })
-    expect(hiresSize({ width: 2048, height: 2048 }, 2)).toEqual({ width: 4096, height: 4096 })
-    expect(hiresSize({ width: 3000, height: 3000 }, 2)).toEqual({ width: 4096, height: 4096 })
+    // The engine refuses more than 4.2 million pixels, so a larger target is fitted inside, keeping its shape.
+    expect(hiresSize({ width: 2048, height: 2048 }, 2)).toEqual({ width: 2048, height: 2048 })
+    expect(hiresSize({ width: 3000, height: 3000 }, 2)).toEqual({ width: 2048, height: 2048 })
+    expect(hiresSize({ width: 1920, height: 1088 }, 1.5)).toEqual({ width: 2720, height: 1536 })
     expect(clampHiresDimension(1500, 7)).toBe(1504)
     expect(clampHiresDimension(Number.NaN, 7)).toBe(7)
     // A result card takes this size and cards are at least 64 a side.
@@ -76,6 +81,22 @@ describe('studio/sampling 高清修复', () => {
     })
     expect(scaleHires(sampling, { width: 1024, height: 1024 }, { width: 1024, height: 1024 })).toBe(sampling)
     expect(scaleHires({ sampler: 'euler' }, { width: 1, height: 1 }, { width: 2, height: 2 })).toEqual({ sampler: 'euler' })
+  })
+
+  it('keeps every 高清修复 target within the engine pixel budget, and offers only the scales that fit', () => {
+    // A 1024² 画面 at ×2, then a bigger pixel tier: the target would be 2912² (8.5 million pixels).
+    const on = withHiresScale(canvas({ width: 1024, height: 1024 }), 2)
+    const bigger = resizeCanvas(on, 1456, 1456)
+    expect(bigger.sampling?.hires).toMatchObject({ width: 2048, height: 2048 })
+    // ×2 no longer fits that 画面, so it is not shown as ×2; ×1.5 (2176², 4.7 million) does not fit either.
+    expect(hiresScaleFits(bigger, 2)).toBe(false)
+    expect(hiresScaleFits(bigger, 1.5)).toBe(false)
+    expect(hiresChoice(bigger)).toBe('custom')
+    expect(hiresScaleFits(canvas({ width: 1024, height: 1024 }), 2)).toBe(true)
+    // Typed sizes, from the panel or the assistant, are fitted too.
+    const typed = withHiresPatch(on, { width: 4096, height: 4096 }).sampling?.hires
+    expect(typed!.width * typed!.height).toBeLessThanOrEqual(MAX_PIXELS)
+    expect(withSampling(on, { hires: { width: 4096, height: 2048 } }).sampling?.hires).toMatchObject({ width: 2880, height: 1456 })
   })
 
   it('knows the first-pass and output sizes, including a recorded base size', () => {

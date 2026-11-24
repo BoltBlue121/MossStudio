@@ -1,6 +1,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { useApp } from '@renderer/store'
 import { Ipc } from '@shared/channels'
 import { canvasFixture, settingsFixture } from '@test/mocks/backend/fixtures'
 import { createMockBackend } from '@test/mocks/backend'
@@ -29,7 +30,7 @@ import {
   normalizeStats,
   sanitizeMessageText,
 } from '@renderer/pages/studio/assistant/collabClient'
-import { CollabPanel, agentShortName } from '@renderer/pages/studio/assistant/CollabPanel'
+import { CollabPanel, agentShortName, replyImages } from '@renderer/pages/studio/assistant/CollabPanel'
 import { capabilityLabel, contextChips, formatBoardContext } from '@renderer/pages/studio/assistant/collabContext'
 import { GlobalApprovalOverlay } from '@renderer/pages/studio/assistant/GlobalApprovalOverlay'
 import { McpConnectDialog } from '@renderer/pages/studio/assistant/McpConnectDialog'
@@ -219,6 +220,36 @@ describe('collab client', () => {
     expect(sanitizeMessageText('<system-reminder>only</system-reminder>')).toBe('')
     expect(sanitizeMessageText('普通回复')).toBe('普通回复')
   })
+
+  it('keeps only embedded raster pictures in messages and replies', () => {
+    const png = 'data:image/png;base64,iVBORw0KGgo='
+    expect(
+      normalizeMessages({
+        messages: [
+          {
+            seq: 1,
+            role: 'assistant',
+            text: '',
+            images: [png, 'data:image/svg+xml;base64,PHN2Zz4=', 'https://example.com/a.png', 'file:///etc/passwd', 7, png, png, png],
+          },
+          { seq: 2, role: 'user', text: 'x', images: 'data:image/png;base64,AAAA' },
+        ],
+      }).messages,
+    ).toEqual([
+      { seq: 1, role: 'assistant', text: '', images: [png] },
+      { seq: 2, role: 'user', text: 'x' },
+    ])
+    const { urlTransform, components } = replyImages
+    const transform = urlTransform as (url: string, key: string) => string
+    expect(transform(png, 'src')).toBe(png)
+    for (const url of ['https://example.com/a.png', 'file:///etc/passwd', 'data:image/svg+xml;base64,PHN2Zz4='])
+      expect(transform(url, 'src')).toBe('')
+    expect(transform('https://example.com/', 'href')).toBe('https://example.com/')
+    expect(transform('javascript:alert(1)', 'href')).toBe('')
+    const img = components!.img as (props: { node: { properties: { src?: string } } }) => { type: unknown; props: { path?: string } }
+    expect(img({ node: { properties: { src: png } } }).props.path).toBe(png)
+    expect(img({ node: { properties: { src: 'https://example.com/a.png' } } }).type).toBe('span')
+  })
 })
 
 describe('collab panel helpers', () => {
@@ -232,8 +263,10 @@ describe('collab panel helpers', () => {
   })
 
   it('lists every built-in pack and turns pack ticks into a custom profile starting from what the mode showed', () => {
-    // 14 MossStudio packs, the shared remote.hosts pack and the two opt-in guide packs.
+    // 14 MossStudio packs, the shared remote.hosts pack and the two opt-in guide packs; image.edit only when switched on.
     expect(listPackRows()).toHaveLength(17)
+    expect(listPackRows(true).map((row) => row.id)).toContain('image.edit')
+    expect(listPackRows().map((row) => row.id)).not.toContain('image.edit')
     expect(listPackRows().map((row) => row.id)).toContain('remote.hosts')
     expect(listPackRows().map((row) => row.id)).toContain('skill.moss.standard')
     expect(listPackRows().map((row) => row.id)).toContain('skill.moss.layout')
@@ -380,6 +413,41 @@ describe('CollabPanel', () => {
     act(() => document.querySelector<HTMLButtonElement>('dialog [aria-label="关闭"]')!.click())
     act(() => svg.querySelector<HTMLButtonElement>('[aria-label="移除图片 vector.svg"]')!.click())
     expect(view.querySelector('[data-attachment="vector.svg"]')).toBeNull()
+  })
+
+  it('copies the checked image edit pack only while its live opt-in is on', async () => {
+    const backend = createMockBackend(withExternalAgents())
+    backend.install()
+    localStorage.setItem('mossstudio.collab.toolProfile', 'custom')
+    localStorage.setItem('mossstudio.collab.toolPacks', '["image.edit"]')
+    const previous = useApp.getState().settings
+    const settings = settingsFixture({ externalAgentsEnabled: true, externalImageEditEnabled: true })
+    useApp.setState({ settings })
+    const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    try {
+      const view = mount(
+        createElement(CollabPanel, {
+          board: { projectId: 'p', projectName: 'P', canvas: null },
+          projectKey: 1,
+          visible: true,
+          onStandalone: () => {},
+        }),
+      )
+      await settle()
+      act(() => view.querySelector<HTMLButtonElement>('[data-tool-packs]')!.click())
+      const copySkill = () => act(async () => document.querySelector<HTMLButtonElement>('[data-copy-workbench-skill]')!.click())
+      await copySkill()
+      expect(copy.mock.lastCall?.[0]).toContain('image.edit.run')
+      act(() => useApp.setState({ settings: { ...settings, externalImageEditEnabled: false } }))
+      await copySkill()
+      expect(copy.mock.lastCall?.[0]).not.toContain('image.edit.run')
+      act(() => useApp.setState({ settings: { ...settings, externalAgentsEnabled: false } }))
+      await copySkill()
+      expect(copy.mock.lastCall?.[0]).not.toContain('image.edit.run')
+    } finally {
+      copy.mockRestore()
+      act(() => useApp.setState({ settings: previous }))
+    }
   })
 
   it('shows the compact header, connects an ACP Agent and switches to the built-in assistant', async () => {

@@ -100,6 +100,30 @@ describe('studio', () => {
     expect(second!.seed).not.toBe(first!.seed)
   })
 
+  it('offers seven shapes and a pixel tier, and sends the size they make', async () => {
+    for (const theme of ['light', 'dark'] as const) {
+      const page = await app.open({ scenario: 'ready', route: '/studio', theme })
+      await openStudio(page)
+      await describeCanvas(page, '山间小屋，清晨')
+      const summary = page.locator('[data-settings-summary]')
+      await summary.click()
+      const shapes = page.getByRole('group', { name: '尺寸' })
+      expect(await shapes.getByRole('button').allTextContents()).toEqual(['1:1', '4:3', '3:4', '3:2', '2:3', '16:9', '9:16', '自定义'])
+      await shapes.getByRole('button', { name: '9:16' }).click()
+      const tier = page.getByLabel('像素档位')
+      expect(await tier.locator('option:checked').textContent()).toBe('约 100 万像素 · 720 × 1280')
+      await tier.selectOption('2')
+      expect(await tier.locator('option:checked').textContent()).toBe('约 200 万像素 · 1056 × 1888')
+      // A bigger tier keeps the shape.
+      expect(await summary.textContent()).toBe('MOSS-Image SFT 9:16')
+      await expectVisualRules(page, `size shapes and pixel tier (${theme})`)
+
+      await page.locator('[data-studio-generate]').click()
+      const [job] = await submitted(page, 1)
+      expect(job).toMatchObject({ width: 1056, height: 1888 })
+    }
+  })
+
   it('keeps a typed seed locked until unlocked', async () => {
     const page = await app.open({ scenario: 'ready', route: '/studio' })
     await openStudio(page)

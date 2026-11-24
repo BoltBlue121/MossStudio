@@ -37,7 +37,7 @@ interface Capabilities {
   engineVersion?: string
   devices: Array<{ index: number; name: string; totalBytes?: number }>
   /** What the daemon says it does (`features` in `/v1/capabilities`); anything it does not name is off. */
-  features: { lora: boolean; samplers: boolean }
+  features: { lora: boolean; samplers: boolean; models: boolean; downloads: boolean }
   /** Accepted names per enum parameter (`values`), as the engine's own `hello` gives them. */
   values: Record<string, string[]>
 }
@@ -181,7 +181,12 @@ function parseCapabilities(raw: unknown): Capabilities {
   )
   return {
     profile: 'profile' in raw && typeof raw.profile === 'string' && raw.profile.length <= 120 ? raw.profile.trim() || undefined : undefined,
-    features: { lora: features.lora === true, samplers: features.samplers === true },
+    features: {
+      lora: features.lora === true,
+      samplers: features.samplers === true,
+      models: features.models === true,
+      downloads: features.downloads === true,
+    },
     values,
     engineVersion: typeof engine.version === 'string' ? engine.version.slice(0, 128) : undefined,
     devices: devices.slice(0, 64).flatMap((row: unknown, index) => {
@@ -356,6 +361,20 @@ export async function connectWorkerHost(
   } finally {
     if (inflight.get(host.id)?.promise === promise) inflight.delete(host.id)
   }
+}
+/** Whether the connected daemon of a Worker host names `feature` in `/v1/capabilities`. */
+export function workerDaemonSupports(hostId: string, feature: 'models' | 'downloads'): boolean {
+  return sessions.get(hostId)?.capabilities.features[feature] === true
+}
+/**
+ * The connected profile of a Worker host whose daemon lists (`models`) or
+ * fetches (`downloads`) model files itself; null for any other host and for an
+ * older daemon, which keep the SSH path of the 模型 page.
+ */
+export async function workerProfileWith(host: WorkerHostConfig, feature: 'models' | 'downloads'): Promise<RemoteWorkerProfile | null> {
+  if (!isWorkerDaemonHost(host)) return null
+  const profile = await connectWorkerHost(host)
+  return workerDaemonSupports(host.id, feature) ? profile : null
 }
 export async function ensureWorkerHostReady(host: WorkerHostConfig): Promise<RemoteWorkerProfile> {
   return connectWorkerHost(host)

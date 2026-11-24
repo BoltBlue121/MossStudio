@@ -58,6 +58,11 @@ export function dimensions(width: number, height: number): string {
   return `${width} × ${height}`
 }
 
+/** A picture's pixel count, as people say it: "约 105 万像素". */
+export function pixelCount(pixels: number): string {
+  return `约 ${Math.round(pixels / 10_000)} 万像素`
+}
+
 /**
  * A strength. `share` values run 0–1 and read as a percentage ("60%"); `weight`
  * values (LoRA, control, adapters) read as a plain multiplier ("0.8", "1").
@@ -144,6 +149,9 @@ export function duration(startedAt: string | undefined, endedAt: string | undefi
   const rest = seconds % 60
   return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分钟`
 }
+
+/** A model whose files are all there, on the 模型 page. */
+export const MODEL_READY_TEXT = '可以使用'
 
 /* ------------------------------------------------------------------ */
 /* Jobs: one vocabulary for the Activity panel and the Studio cards     */
