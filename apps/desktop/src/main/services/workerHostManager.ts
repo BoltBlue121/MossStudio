@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
-import type { RemoteWorkerProfile } from '@shared/remoteWorker'
+import { isWorkerSamplingKey, type RemoteWorkerProfile } from '@shared/remoteWorker'
 import type { ComputeDevice, EngineFeatures, RemoteEngineInfo, Settings, TrainingHost } from '@shared/types'
 import { codedError } from '../lib/codedError'
 import { run } from '../lib/run'
@@ -33,6 +33,7 @@ export interface WorkerHostDeps {
   fetchImpl: typeof fetch
 }
 interface Capabilities {
+  profile?: string
   engineVersion?: string
   devices: Array<{ index: number; name: string; totalBytes?: number }>
   /** What the daemon says it does (`features` in `/v1/capabilities`); anything it does not name is off. */
@@ -161,9 +162,14 @@ function parseCapabilities(raw: unknown): Capabilities {
   if (!raw || typeof raw !== 'object' || !('engine' in raw) || !raw.engine || typeof raw.engine !== 'object')
     throw codedError('E_WORKER_RESPONSE', '远端能力信息无效')
   const engine = raw.engine as Record<string, unknown>
-  const devices = Array.isArray(engine.devices) ? engine.devices : []
-  const features = 'features' in raw && raw.features && typeof raw.features === 'object' ? (raw.features as Record<string, unknown>) : {}
-  const rawValues = 'values' in raw && raw.values && typeof raw.values === 'object' ? (raw.values as Record<string, unknown>) : {}
+  const record = (value: unknown): Record<string, unknown> | undefined =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
+  // Some daemons pass through the engine hello instead of flattening its fields.
+  const probeDevices = record(engine.probe)?.devices
+  const devices =
+    Array.isArray(engine.devices) && engine.devices.length > 0 ? engine.devices : Array.isArray(probeDevices) ? probeDevices : []
+  const features = record('features' in raw ? raw.features : undefined) ?? record(engine.capabilities) ?? {}
+  const rawValues = record('values' in raw ? raw.values : undefined) ?? record(engine.values) ?? {}
   const values = Object.fromEntries(
     Object.entries(rawValues)
       .slice(0, 16)
@@ -174,6 +180,7 @@ function parseCapabilities(raw: unknown): Capabilities {
       ),
   )
   return {
+    profile: 'profile' in raw && typeof raw.profile === 'string' && raw.profile.length <= 120 ? raw.profile.trim() || undefined : undefined,
     features: { lora: features.lora === true, samplers: features.samplers === true },
     values,
     engineVersion: typeof engine.version === 'string' ? engine.version.slice(0, 128) : undefined,
@@ -192,6 +199,9 @@ function parseCapabilities(raw: unknown): Capabilities {
       ]
     }),
   }
+}
+function selectedWorkflow(host: WorkerHostConfig, capabilities: Capabilities): string | undefined {
+  return host.workerWorkflow?.trim() || capabilities.profile
 }
 export async function disconnectWorkerHost(hostId: string): Promise<void> {
   epochs.set(hostId, (epochs.get(hostId) ?? 0) + 1)
@@ -288,7 +298,6 @@ export async function connectWorkerHost(
       label: host.name?.trim() || '远程算力机',
       hostId: host.id,
       baseUrl: `http://127.0.0.1:${localPort}`,
-      workflow: host.workerWorkflow?.trim() || 'default',
     }
     try {
       const deadline = Date.now() + 30_000
@@ -332,6 +341,7 @@ export async function connectWorkerHost(
       if (!capabilities) throw codedError('E_WORKER_TUNNEL', '远端连接超时，请检查服务状态')
       if ([...sessions.values()].some((session) => session.profile.id === profile.id))
         throw codedError('E_WORKER_CONFIG', '远端服务标识重复，请修改主机配置')
+      profile.workflow = selectedWorkflow(host, capabilities)
       setMemoryWorkerToken(profile.id, token)
       sessions.set(host.id, { profile, signature, tunnel, capabilities, checkedAt: new Date().toISOString() })
       return { ...profile }
@@ -380,6 +390,7 @@ export async function probeWorkerHost(host: WorkerHostConfig, refresh = false, d
     const session = sessions.get(host.id)!
     const capabilities = await requestWorkerDaemon(session.profile, '/v1/capabilities', { fetchImpl: deps?.fetchImpl, timeoutMs: 5000 })
     session.capabilities = parseCapabilities(capabilities)
+    session.profile.workflow = selectedWorkflow(host, session.capabilities)
     session.checkedAt = new Date().toISOString()
     return {
       online: true,
@@ -427,6 +438,6 @@ export async function workerEngineFeatures(host: WorkerHostConfig): Promise<Engi
     hires: false,
     samplers: features.samplers,
     lora: features.lora,
-    values: features.samplers ? values : {},
+    values: features.samplers ? Object.fromEntries(Object.entries(values).filter(([key]) => isWorkerSamplingKey(key))) : {},
   }
 }

@@ -50,7 +50,7 @@ const host: WorkerHostConfig = {
   workerDiscoveryPath: '/srv/worker/discovery.json',
 }
 const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
-function deps(): WorkerHostDeps {
+function deps(capabilities: unknown = { engine: { version: '1', devices: [] } }): WorkerHostDeps {
   return {
     readRemoteFile: vi.fn(async (_host, path) =>
       path.endsWith('discovery.json')
@@ -59,7 +59,7 @@ function deps(): WorkerHostDeps {
     ),
     allocateLocalPort: vi.fn(async () => 41000),
     startTunnel: vi.fn(async () => ({ isAlive: () => true, stop: vi.fn(async () => {}) })),
-    fetchImpl: vi.fn(async () => json({ engine: { version: '1', devices: [] } })),
+    fetchImpl: vi.fn(async () => json(capabilities)),
   }
 }
 afterEach(async () => {
@@ -126,7 +126,7 @@ describe('remote worker', () => {
     const dependencies = deps()
     await Promise.all([connectWorkerHost(host, { deps: dependencies }), connectWorkerHost(host, { deps: dependencies })])
     expect(dependencies.startTunnel).toHaveBeenCalledTimes(1)
-    expect(listActiveWorkerProfiles()).toEqual([expect.objectContaining({ id: 'worker-test', workflow: 'default' })])
+    expect(listActiveWorkerProfiles()).toEqual([expect.objectContaining({ id: 'worker-test', workflow: undefined })])
     expect(JSON.stringify(listActiveWorkerProfiles())).not.toContain('test-token-only-in-memory')
     expect(getMemoryWorkerToken('worker-test')).toBeTruthy()
     await disconnectWorkerHost(host.id)
@@ -169,7 +169,10 @@ describe('remote worker', () => {
       expect(dependencies.startTunnel).not.toHaveBeenCalled()
     }
   })
-  it('maps generic job requests and cancels timed-out remote work', async () => {
+  it.each([
+    [' default ', 'default'],
+    ['   ', undefined],
+  ] as const)('maps generic job requests with workflow %j and cancels timed-out remote work', async (workflow, expected) => {
     setMemoryWorkerToken(profile.id, 'test-token-only-in-memory')
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
       init?.method === 'POST' ? json({ id: 'remote-job', status: 'queued' }) : json({ id: 'remote-job', status: 'running' }),
@@ -177,7 +180,7 @@ describe('remote worker', () => {
     const onEvent = vi.fn()
     await expect(
       runRemoteWorkerJob({
-        profile,
+        profile: { ...profile, workflow },
         jobId: 'local-job',
         params: { prompt: 'test', negativePrompt: '', width: 64, height: 64, steps: 2, cfg: 3, seed: 1, profile: 'base' },
         output: 'unused.png',
@@ -192,27 +195,45 @@ describe('remote worker', () => {
       expect.objectContaining({ method: 'POST' }),
     )
     const request = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))
-    expect(request.profile).toBe('default')
+    if (expected === undefined) expect(request).not.toHaveProperty('profile')
+    else expect(request.profile).toBe(expected)
     expect(request.request_id).toBe('local-job')
     expect(await cancelRemoteWorkerJob('local-job')).toBe(false)
   })
-  it('reports remote cancellation without downloading an image', async () => {
-    setMemoryWorkerToken(profile.id, 'test-token-only-in-memory')
-    const fetchImpl = vi.fn(async () => json({ id: 'remote-job', status: 'cancelled' }))
-    const onEvent = vi.fn()
-    expect(
-      await runRemoteWorkerJob({
-        profile,
-        jobId: 'cancelled-job',
-        params: { prompt: 'test', negativePrompt: '', width: 64, height: 64, steps: 2, cfg: 3, seed: 1, profile: 'base' },
-        output: 'unused.png',
-        fetchImpl,
-        onEvent,
-      }),
-    ).toBe(130)
-    expect(onEvent).toHaveBeenCalledWith({ type: 'canceled', at_stage: 'idle' })
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
-  })
+  it.each([
+    { workerWorkflow: '', declared: 'custom-bf16', expected: 'custom-bf16' },
+    { workerWorkflow: undefined, declared: undefined, expected: undefined },
+    { workerWorkflow: ' explicit-wf ', declared: 'custom-bf16', expected: 'explicit-wf' },
+    { workerWorkflow: ' ', declared: 'a'.repeat(120), expected: 'a'.repeat(120) },
+    { workerWorkflow: undefined, declared: 'a'.repeat(121), expected: undefined },
+    { workerWorkflow: undefined, declared: '   ', expected: undefined },
+    { workerWorkflow: undefined, declared: { name: 'not-a-profile' }, expected: undefined },
+  ])(
+    'submits the selected workflow and reports cancellation without downloading an image (case %$)',
+    async ({ workerWorkflow, declared, expected }) => {
+      const connected = await connectWorkerHost({ ...host, workerWorkflow }, { deps: deps({ engine: {}, profile: declared }) })
+      const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => json({ id: 'remote-job', status: 'cancelled' }))
+      const onEvent = vi.fn()
+      expect(
+        await runRemoteWorkerJob({
+          profile: connected,
+          jobId: 'cancelled-job',
+          params: { prompt: 'test', negativePrompt: '', width: 64, height: 64, steps: 2, cfg: 3, seed: 1, profile: 'base' },
+          output: 'unused.png',
+          fetchImpl,
+          onEvent,
+        }),
+      ).toBe(130)
+      expect(fetchImpl.mock.calls[0]?.[0]).toBe('http://127.0.0.1:41000/v1/jobs')
+      const request = fetchImpl.mock.calls[0]?.[1]
+      expect(request?.method).toBe('POST')
+      const body = JSON.parse(String(request?.body))
+      if (expected === undefined) expect(body).not.toHaveProperty('profile')
+      else expect(body.profile).toBe(expected)
+      expect(onEvent).toHaveBeenCalledWith({ type: 'canceled', at_stage: 'idle' })
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
+    },
+  )
   it('invalidates an in-flight connection when disconnected', async () => {
     const dependencies = deps()
     let release!: () => void

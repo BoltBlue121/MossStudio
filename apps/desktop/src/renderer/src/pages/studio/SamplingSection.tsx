@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { EngineFeatures, ProjectCanvas } from '@shared/types'
+import { isWorkerSamplingKey } from '@shared/remoteWorker'
 import { Notice } from '../../components/common/Notice'
-import { Segmented, Select, Switch } from '../../components/ui'
+import { Button, Segmented, Select, Switch } from '../../components/ui'
 import { FieldLabel, OptionalNumberInput, SliderField } from './InputControls'
 import { percent } from './links'
 import {
@@ -27,10 +28,12 @@ type Change = (update: (canvas: ProjectCanvas) => ProjectCanvas) => void
 export function SamplingSection({
   canvas,
   features,
+  worker,
   onChange,
 }: {
   canvas: ProjectCanvas
   features: EngineFeatures | null | undefined
+  worker: boolean
   onChange: Change
 }): React.JSX.Element {
   const sampling = canvas.sampling ?? {}
@@ -38,8 +41,10 @@ export function SamplingSection({
   const disabled = !known
   const showSamplers = !known || features!.samplers || Boolean(sampling.sampler || sampling.scheduler)
   // A 放大 already is the redraw 高清修复 would do.
-  const showHires = !canvas.upscale && (!known || features!.hires || Boolean(sampling.hires))
-  const showStepCache = enumValues(features, 'step_cache').length > 0 || Boolean(sampling.stepCache)
+  const showHires = !worker && !canvas.upscale && (!known || features!.hires || Boolean(sampling.hires))
+  const showStepCache = !worker && (enumValues(features, 'step_cache').length > 0 || Boolean(sampling.stepCache))
+  const clearUnsupported = (): void =>
+    onChange((current) => withSampling(current, { shift: undefined, hires: undefined, stepCache: undefined, cfgTruncation: undefined }))
   const choice = hiresChoice(canvas)
   const [custom, setCustom] = useState(false)
   useEffect(() => setCustom(false), [canvas.id])
@@ -47,7 +52,7 @@ export function SamplingSection({
 
   return (
     <div className="flex flex-col gap-5" data-sampling-section>
-      {features === null ? <Notice>引擎准备好后才能改采样设置。</Notice> : null}
+      {features === null ? <Notice>引擎准备好后才能选择新的采样值。</Notice> : null}
 
       {showSamplers ? (
         <>
@@ -56,7 +61,7 @@ export function SamplingSection({
             <Select
               id="studio-sampler"
               value={sampling.sampler ?? ''}
-              disabled={disabled}
+              disabled={disabled && !(worker && sampling.sampler)}
               options={enumOptions(features, 'sampler', sampling.sampler)}
               onValueChange={(value) => onChange((current) => withSampling(current, { sampler: value || undefined }))}
             />
@@ -66,7 +71,7 @@ export function SamplingSection({
             <Select
               id="studio-scheduler"
               value={sampling.scheduler ?? ''}
-              disabled={disabled}
+              disabled={disabled && !(worker && sampling.scheduler)}
               options={enumOptions(features, 'scheduler', sampling.scheduler)}
               onValueChange={(value) => onChange((current) => withSampling(current, { scheduler: value || undefined }))}
             />
@@ -74,16 +79,24 @@ export function SamplingSection({
         </>
       ) : null}
 
-      <section className="flex flex-col gap-2">
-        <FieldLabel htmlFor="studio-shift">Shift</FieldLabel>
-        <OptionalNumberInput
-          id="studio-shift"
-          label="Shift"
-          value={sampling.shift}
-          parse={(value) => (Number.isFinite(value) && value > 0 && value <= 100 ? Math.round(value * 100) / 100 : null)}
-          onCommit={(shift) => onChange((current) => withSampling(current, { shift }))}
-        />
-      </section>
+      {worker ? (
+        Object.keys(sampling).some((key) => !isWorkerSamplingKey(key)) && (
+          <Button size="xs" onClick={clearUnsupported}>
+            清除不支持的采样设置
+          </Button>
+        )
+      ) : (
+        <section className="flex flex-col gap-2">
+          <FieldLabel htmlFor="studio-shift">Shift</FieldLabel>
+          <OptionalNumberInput
+            id="studio-shift"
+            label="Shift"
+            value={sampling.shift}
+            parse={(value) => (Number.isFinite(value) && value > 0 && value <= 100 ? Math.round(value * 100) / 100 : null)}
+            onCommit={(shift) => onChange((current) => withSampling(current, { shift }))}
+          />
+        </section>
+      )}
 
       {showHires ? (
         <section className="flex flex-col gap-2.5" data-hires>
@@ -189,7 +202,7 @@ export function SamplingSection({
         </section>
       ) : null}
 
-      {features?.cli && sampling.cfgTruncation === undefined ? null : (
+      {worker || (features?.cli && sampling.cfgTruncation === undefined) ? null : (
         <section className="flex flex-col gap-2">
           <FieldLabel htmlFor="studio-cfg-truncation">CFG 截断</FieldLabel>
           <OptionalNumberInput
