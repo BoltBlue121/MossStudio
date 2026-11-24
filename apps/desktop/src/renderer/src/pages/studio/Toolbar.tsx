@@ -62,6 +62,7 @@ function ToolButton({ on, className, ...props }: React.ComponentProps<'button'> 
 export function Toolbar({
   tool,
   onTool,
+  toolHub,
   zoom,
   onZoom,
   onFit,
@@ -71,6 +72,7 @@ export function Toolbar({
 }: {
   tool: BoardTool
   onTool: (tool: BoardTool) => void
+  toolHub?: React.ReactNode
   zoom: number
   onZoom: (factor: number) => void
   onFit: () => void
@@ -86,6 +88,7 @@ export function Toolbar({
       data-board-ui
       className="absolute left-1/2 top-4 z-20 flex -translate-x-1/2 items-center gap-0.5 rounded-[10px] bg-raised p-1 shadow-float"
     >
+      {toolHub}
       {TOOLS.map((item) => (
         <ToolButton
           key={item.id}

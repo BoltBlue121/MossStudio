@@ -538,6 +538,7 @@ export const schemas = {
       remoteHostsEnabled: z.boolean(),
       trainingEnabled: z.boolean(),
       gbcEnabled: z.boolean(),
+      toolHubEnabled: z.boolean(),
       externalAgentsEnabled: z.boolean(),
       workerHostsEnabled: z.boolean(),
       gbcProviderId: z.string().min(1).max(120).nullable(),
