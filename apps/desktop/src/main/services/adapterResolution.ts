@@ -23,7 +23,8 @@ export async function resolveCanvasAdapters(
   input: unknown,
   options: ResolveAdapterOptions = {},
 ): Promise<ResolvedLora[]> {
-  const adapters = normalizeCanvasAdapters(input)
+  // Strength 0 turns a LoRA off, as in the Studio: it is neither required nor sent.
+  const adapters = normalizeCanvasAdapters(input).filter((adapter) => adapter.strength > 0)
   if (!adapters.length) return []
   if (options.hostId) {
     throw new AdapterResolutionError('远端引擎暂不支持 LoRA：请把此 Canvas 切换到本机 MossInfer，或先移除 LoRA')
