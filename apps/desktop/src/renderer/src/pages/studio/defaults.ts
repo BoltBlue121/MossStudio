@@ -5,9 +5,17 @@
  */
 
 import type { ModelBundle } from '@shared/types'
-import { clampDimension, fitImageSize, type ImageSize } from '@shared/imageGeometry'
+import { MIN_DIMENSION, clampDimension, fitImageSize, type ImageSize } from '@shared/imageGeometry'
 
-export { MIN_DIMENSION, MAX_DIMENSION, DIMENSION_STEP, MAX_PIXELS, clampDimension, type ImageSize } from '@shared/imageGeometry'
+export {
+  MIN_DIMENSION,
+  MAX_DIMENSION,
+  DIMENSION_STEP,
+  MAX_PIXELS,
+  clampDimension,
+  fitImageSize,
+  type ImageSize,
+} from '@shared/imageGeometry'
 
 export const DEFAULT_NEGATIVE = 'nsfw, worst quality, bad anatomy, watermark, jpeg artifact'
 
@@ -57,21 +65,16 @@ export function sizePresetFor(width: number, height: number): SizePresetId {
   return sizeChoiceFor(width, height)?.id ?? 'custom'
 }
 
-export function megapixelLabel(width: number, height: number): string {
-  const mp = (width * height) / 1_000_000
-  return `${Number(mp.toFixed(2))} MP`
-}
-
 /**
  * One size step down for a picture the GPU could not fit: three quarters of
  * each side (about half the pixels), on the engine grid. Null when it is
  * already as small as the engine goes.
  */
 export function smallerSize(width: number, height: number): { width: number; height: number } | null {
-  const floor = 256
+  // An edge already under the floor stays as it is: a step down never grows one.
   const next = {
-    width: Math.max(floor, clampDimension(width * 0.75, floor)),
-    height: Math.max(floor, clampDimension(height * 0.75, floor)),
+    width: Math.min(width, clampDimension(width * 0.75, MIN_DIMENSION)),
+    height: Math.min(height, clampDimension(height * 0.75, MIN_DIMENSION)),
   }
   return next.width < width || next.height < height ? next : null
 }

@@ -8,7 +8,6 @@ import {
   SEED_MAX,
   SIZE_PRESETS,
   clampDimension,
-  megapixelLabel,
   nearestQuality,
   nextCanvasTitle,
   nextProjectName,
@@ -51,7 +50,6 @@ describe('studio/defaults size presets', () => {
         prevPixels = size.width * size.height
       }
     }
-    expect(megapixelLabel(1024, 1024)).toBe('1.05 MP')
   })
 
   it('snaps typed sizes to the 16-pixel grid inside the supported range', () => {
@@ -61,6 +59,12 @@ describe('studio/defaults size presets', () => {
     expect(clampDimension(99999)).toBe(MAX_DIMENSION)
     expect(clampDimension(Number.NaN, 768)).toBe(768)
     expect(clampDimension(0, 640)).toBe(640)
+  })
+
+  it('never goes under 256 a side, so a typed 32 still saves with the project and starts a job', () => {
+    expect(MIN_DIMENSION).toBe(256)
+    expect(clampDimension(32)).toBe(256)
+    expect(clampDimension(32, 1024, 1024)).toBe(256)
   })
 })
 
@@ -72,6 +76,9 @@ describe('studio/defaults quality presets', () => {
     // Never below the OOM step-down floor (256); at the bottom there is no step left.
     expect(smallerSize(300, 1024)).toEqual({ width: 256, height: 768 })
     expect(smallerSize(256, 256)).toBeNull()
+    // An edge under the floor (an older project) is kept, never grown.
+    expect(smallerSize(128, 1024)).toEqual({ width: 128, height: 768 })
+    expect(smallerSize(128, 128)).toBeNull()
   })
 
   it('maps 快速/标准/精细 to 8/20/50 steps with an explicit profile', () => {

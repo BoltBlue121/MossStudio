@@ -36,7 +36,6 @@ import {
   SIZE_PRESETS,
   clampDimension,
   isSeedLocked,
-  megapixelLabel,
   parseSeed,
   qualityFor,
   qualityPreset,
@@ -48,7 +47,7 @@ import {
   type QualityId,
   type SizePresetId,
 } from './defaults'
-import { dimensions } from '../../lib/format'
+import { dimensions, pixelCount } from '../../lib/format'
 import { canvasDescription, withDescription, type CompiledPrompt } from './prompt'
 import { installedBundles, type Blocker, type BundleChoice } from './readiness'
 import { isWorkerDaemonHost, type WorkerAdapterEntry } from './remoteWorkerLoras'
@@ -69,7 +68,7 @@ import { styleUsers, UPSCALE_DETAIL, UPSCALE_DETAIL_DEFAULT, UPSCALE_SCALES, wit
 const SHORTCUT = typeof window !== 'undefined' && window.clover?.platform === 'darwin' ? '⌘ ↵' : 'Ctrl ↵'
 
 function imageSizeLabel({ width, height }: ImageSize): string {
-  return `${dimensions(width, height)} · ${megapixelLabel(width, height)}`
+  return `${dimensions(width, height)} · ${pixelCount(width * height)}`
 }
 
 /** Commit-on-blur number field, so typing "1" on the way to "1024" is not clamped. */
@@ -359,7 +358,7 @@ function CanvasParams({
                   <UpscaleSection canvas={canvas} canvases={inputs?.canvases ?? []} onChange={onChange} />
                 ) : (
                   <section className="flex flex-col gap-2.5">
-                    <FieldLabel value={<span data-image-size>{imageSizeLabel(canvas)}</span>}>尺寸</FieldLabel>
+                    <FieldLabel value={imageSizeLabel(canvas)}>尺寸</FieldLabel>
                     <Segmented<SizePresetId>
                       block
                       label="尺寸"
@@ -394,33 +393,30 @@ function CanvasParams({
                       }}
                       options={[
                         ...(tier === undefined ? [{ value: '', label: '自定义像素', disabled: true }] : []),
-                        ...MP_TIERS.map((mp) => ({
-                          value: String(mp),
-                          label: `${mp} MP 档 · ${imageSizeLabel(sizeForMegapixels(aspect, mp))}`,
-                        })),
+                        ...MP_TIERS.map((mp) => {
+                          const size = sizeForMegapixels(aspect, mp)
+                          return { value: String(mp), label: `${pixelCount(mp * 1_000_000)} · ${dimensions(size.width, size.height)}` }
+                        }),
                       ]}
                     />
                     {sizePreset === 'custom' && !readOnly ? (
-                      <>
-                        <div className="flex items-center gap-2">
-                          <DimensionInput
-                            label="宽度"
-                            value={canvas.width}
-                            otherEdge={canvas.height}
-                            onCommit={(width) => typeSize(width, canvas.height)}
-                          />
-                          <span aria-hidden="true" className="text-ink-2">
-                            ×
-                          </span>
-                          <DimensionInput
-                            label="高度"
-                            value={canvas.height}
-                            otherEdge={canvas.width}
-                            onCommit={(height) => typeSize(canvas.width, height)}
-                          />
-                        </div>
-                        <p className="text-caption text-ink-2">每边 16–4096 像素，按 16 的倍数调整；总像素不超过 420 万。</p>
-                      </>
+                      <div className="flex items-center gap-2">
+                        <DimensionInput
+                          label="宽度"
+                          value={canvas.width}
+                          otherEdge={canvas.height}
+                          onCommit={(width) => typeSize(width, canvas.height)}
+                        />
+                        <span aria-hidden="true" className="text-ink-2">
+                          ×
+                        </span>
+                        <DimensionInput
+                          label="高度"
+                          value={canvas.height}
+                          otherEdge={canvas.width}
+                          onCommit={(height) => typeSize(canvas.width, height)}
+                        />
+                      </div>
                     ) : null}
                   </section>
                 )}

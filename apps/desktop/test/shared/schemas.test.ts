@@ -1009,7 +1009,7 @@ const cases = {
     },
     rejects: {
       'width not multiple of 16': { ...job, width: 520 },
-      'width below 16': { ...job, width: 0 },
+      'width below 256': { ...job, width: 240 },
       'height above 4096': { ...job, height: 4112 },
       'pixels above 4.2MP budget': { ...job, width: 2048, height: 2064 },
       'steps 0': { ...job, steps: 0 },
