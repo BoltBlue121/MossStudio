@@ -349,20 +349,6 @@ function CanvasParams({
             </button>
             {settingsOpen ? (
               <>
-                {remoteEnabled && hosts.length > 0 ? (
-                  <section className="flex flex-col gap-2">
-                    <FieldLabel htmlFor="studio-location">运行位置</FieldLabel>
-                    <Select id="studio-location" value={remoteHost?.id ?? ''} onChange={(event) => onRemoteHostChange(event.target.value)}>
-                      <option value="">这台电脑</option>
-                      {hosts.map((host) => (
-                        <option key={host.id} value={host.id}>
-                          {host.status === 'error' ? `${host.name}（连接不上）` : host.name}
-                        </option>
-                      ))}
-                    </Select>
-                  </section>
-                ) : null}
-
                 <section className="flex flex-col gap-2.5">
                   <FieldLabel
                     htmlFor="studio-model"
@@ -562,6 +548,20 @@ function CanvasParams({
                 </section>
 
                 {inputs ? <SamplingSection canvas={canvas} features={inputs.features} worker={inputs.worker} onChange={onChange} /> : null}
+
+                {remoteEnabled ? (
+                  <section className="flex flex-col gap-2">
+                    <FieldLabel htmlFor="studio-location">运行位置</FieldLabel>
+                    <Select id="studio-location" value={remoteHost?.id ?? ''} onChange={(event) => onRemoteHostChange(event.target.value)}>
+                      <option value="">这台电脑</option>
+                      {hosts.map((host) => (
+                        <option key={host.id} value={host.id}>
+                          {host.status === 'error' ? `${host.name}（连接不上）` : host.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </section>
+                ) : null}
 
                 {remoteHost ? (
                   remoteHost.devices.length ? (
