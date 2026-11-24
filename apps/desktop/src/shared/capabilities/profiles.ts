@@ -53,8 +53,6 @@ export const COMPACT_PROFILE_PACKS: readonly CapabilityId[] = [
   'library.assets',
   'system.runtime',
   'remote.hosts',
-  'skill.moss.standard',
-  'skill.moss.layout',
 ]
 
 export const MOSS_STANDARD_PROFILE_PACKS: readonly CapabilityId[] = [
@@ -111,9 +109,7 @@ export function projectCapabilities(registry: CapabilityRegistry, options: ToolP
   const tools = registry.toToolDefinitions(actions, { nameStyle: options.nameStyle ?? 'canonical' })
   const skill = registry.synthesizeSkill({
     actions,
-    enabledFlags: options.enabledFlags,
     enabledPacks: effectivePacks,
-    includeExternal: options.includeExternal,
     audience: options.audience,
   })
   return {

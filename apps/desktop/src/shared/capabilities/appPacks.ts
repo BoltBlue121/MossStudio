@@ -1371,7 +1371,7 @@ export const APP_CAPABILITY_PACKS: readonly BuiltinCapabilityPack[] = [
   {
     protocolVersion: CAPABILITY_PROTOCOL_VERSION,
     id: 'skill.moss.standard',
-    title: 'MOSS 普通提示词 Skill',
+    title: '描述写法指南',
     version: '1.0.0',
     requiresPacks: [],
     actions: [],
@@ -1389,7 +1389,7 @@ export const APP_CAPABILITY_PACKS: readonly BuiltinCapabilityPack[] = [
   {
     protocolVersion: CAPABILITY_PROTOCOL_VERSION,
     id: 'skill.moss.layout',
-    title: 'MOSS Layout 构图 Skill',
+    title: '分区构图指南',
     version: '1.0.0',
     requiresPacks: [],
     actions: [],

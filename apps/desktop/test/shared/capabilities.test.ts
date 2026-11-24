@@ -5,8 +5,11 @@ import {
   APP_ACTION_SCHEMAS,
   BUILTIN_CAPABILITY_REGISTRY,
   CAPABILITY_PROTOCOL_VERSION,
+  MOSS_LAYOUT_DESIGN_SKILL_MD,
+  MOSS_PROMPTCRAFT_SKILL_MD,
   STUDIO_ACTION_SCHEMAS,
   STUDIO_CAPABILITY_PACKS,
+  composeOfficialGuide,
   createBuiltinCapabilityRegistry,
   createCapabilityRegistry,
   createStudioCapabilityRegistry,
@@ -241,12 +244,45 @@ describe('shared/capabilities protocol and registry', () => {
     expect(standardProjected.actions.some((a) => a.packId === 'studio.board.regions')).toBe(false)
     expect(standardProjected.skill.fragmentIds).toContain('skill.moss.standard.guide')
     expect(standardProjected.skill.fragmentIds).not.toContain('skill.moss.layout.guide')
-    expect(standardProjected.skill.markdown).toContain('Unidirectional Causal Ordering')
+    expect(standardProjected.skill.markdown).toContain('Ordering (Macro -> Micro)')
 
     const layoutProjected = projectCapabilities(builtin, { profile: 'moss-layout' })
     expect(layoutProjected.actions.some((a) => a.packId === 'studio.board.regions')).toBe(true)
     expect(layoutProjected.skill.fragmentIds).toContain('skill.moss.standard.guide')
     expect(layoutProjected.skill.fragmentIds).toContain('skill.moss.layout.guide')
     expect(layoutProjected.skill.markdown).toContain('MOSS Layout Design Skill')
+  })
+
+  it('keeps the two guide packs out of every Skill until the person picks them', () => {
+    const guidePacks = new Set(['skill.moss.standard', 'skill.moss.layout'])
+    const withGuides = createBuiltinCapabilityRegistry()
+    const withoutGuides = createCapabilityRegistry(ALL_CAPABILITY_PACKS.filter((pack) => !guidePacks.has(pack.id)))
+    const enabledFlags = { gbcEnabled: true, trainingEnabled: true, remoteHostsEnabled: true }
+    for (const profile of ['compact', 'atomic', 'proposal-only'] as const) {
+      const projected = projectCapabilities(withGuides, { profile, enabledFlags })
+      expect(projected.skill.markdown, profile).toBe(projectCapabilities(withoutGuides, { profile, enabledFlags }).skill.markdown)
+      for (const topic of ['tools', 'all'] as const) {
+        expect(composeOfficialGuide(projected.skill.markdown, topic), `${profile} ${topic}`).toBe(
+          composeOfficialGuide(projectCapabilities(withoutGuides, { profile, enabledFlags }).skill.markdown, topic),
+        )
+      }
+    }
+
+    const picked = projectCapabilities(withGuides, { profile: 'custom', enabledPacks: ['studio.board.read', 'skill.moss.layout'] })
+    expect(picked.skill.fragmentIds).toContain('skill.moss.layout.guide')
+    expect(picked.skill.fragmentIds).not.toContain('skill.moss.standard.guide')
+  })
+
+  it('puts each creative guide into the full guide once, whether or not its pack is on', () => {
+    const count = (text: string, needle: string): number => text.split(needle).length - 1
+    const registry = createBuiltinCapabilityRegistry()
+    for (const profile of ['compact', 'moss-standard', 'moss-layout'] as const) {
+      const tools = projectCapabilities(registry, { profile }).skill.markdown
+      const all = composeOfficialGuide(tools, 'all')
+      expect(all.startsWith(tools), profile).toBe(true)
+      expect(count(all, MOSS_PROMPTCRAFT_SKILL_MD), profile).toBe(1)
+      expect(count(all, MOSS_LAYOUT_DESIGN_SKILL_MD), profile).toBe(1)
+      expect(composeOfficialGuide(tools, 'tools')).toBe(tools)
+    }
   })
 })

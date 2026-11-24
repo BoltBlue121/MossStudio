@@ -20,7 +20,7 @@ const TOOL_PACKS_KEY = 'mossstudio.collab.toolPacks'
 export const PROFILE_LABELS: Record<ToolProfileId, string> = {
   compact: '精简工具组',
   'moss-standard': '普通绘画预设',
-  'moss-layout': 'Layout 构图预设',
+  'moss-layout': '分区构图预设',
   atomic: '原子全工具',
   'proposal-only': '仅提案确认',
   custom: '自定义包',
@@ -28,7 +28,7 @@ export const PROFILE_LABELS: Record<ToolProfileId, string> = {
 
 export const PROFILE_ORDER: readonly ToolProfileId[] = ['compact', 'moss-standard', 'moss-layout', 'atomic', 'proposal-only', 'custom']
 
-/** The packs the 精简 profile exposes: the board, models, pictures, runtime and both MOSS drawing Skills. */
+/** The packs the 精简 profile exposes: the board, models, pictures and the runtime, without GBC, comics or training. */
 export const COMPACT_PACKS: readonly CapabilityId[] = [
   'studio.board.read',
   'studio.ask',
@@ -41,8 +41,6 @@ export const COMPACT_PACKS: readonly CapabilityId[] = [
   'models.catalog',
   'library.assets',
   'system.runtime',
-  'skill.moss.standard',
-  'skill.moss.layout',
 ]
 
 export const MOSS_STANDARD_PACKS: readonly CapabilityId[] = MOSS_STANDARD_PROFILE_PACKS.filter((id) => id !== 'remote.hosts')
@@ -77,6 +75,8 @@ export function listPackRows(): readonly PackRow[] {
 }
 
 const allPackIds = (): CapabilityId[] => PACK_ROWS.map((row) => row.id)
+// The guide packs are opt-in: the atomic and proposal-only projections leave them out, so the ticks do too.
+const toolPackIds = (): CapabilityId[] => PACK_ROWS.filter((row) => !row.isSkill).map((row) => row.id)
 
 /** The packs a mode actually exposes, for the ticks in the pack list. */
 export function effectivePacks(state: ToolProfileState): readonly CapabilityId[] {
@@ -84,7 +84,7 @@ export function effectivePacks(state: ToolProfileState): readonly CapabilityId[]
   if (state.mode === 'compact') return COMPACT_PACKS
   if (state.mode === 'moss-standard') return MOSS_STANDARD_PACKS
   if (state.mode === 'moss-layout') return MOSS_LAYOUT_PACKS
-  return allPackIds()
+  return toolPackIds()
 }
 
 /** Ticking a pack always lands in `custom`, starting from what the current mode showed. */
@@ -130,7 +130,7 @@ export function toolProfileLine(state: ToolProfileState): string {
   const skillGuidance: string[] = ['Active MOSS Creative Skills:']
   if (standard) {
     skillGuidance.push(
-      '- [skill.moss.standard · 普通提示词] Follow Qwen3.5-9B unidirectional macro->micro ordering: (1) medium/style/camera framing -> (2) environment & global lighting -> (3) subject pose/gaze/orientation -> (4) outer-to-inner attire & materials -> (5) props & 2-4 color palette. Describe visible optical/painterly traits rather than bare camera/engine/unindexed artist names; use selective focus on face/eyes/hair and `<|block|>...<|/block|>` + `In sharp contrast, NO ...` when separating multiple subjects in a pure Caption.' +
+      '- [skill.moss.standard · 描述写法指南] Write prompts macro to micro: (1) medium/style/camera framing -> (2) environment & global lighting -> (3) subject pose/gaze/orientation -> (4) outer-to-inner attire & materials -> (5) props & 2-4 color palette. Describe visible optical/painterly traits rather than bare camera or engine names; use selective focus on face/eyes/hair and `In sharp contrast, NO ...` anchors when separating multiple subjects in a pure Caption.' +
         (!layout
           ? ' Pure Caption mode is selected: write cohesive prose via studio__board__set_prompt without region boxes unless asked.'
           : ''),
@@ -138,7 +138,7 @@ export function toolProfileLine(state: ToolProfileState): string {
   }
   if (layout) {
     skillGuidance.push(
-      '- [skill.moss.layout · Layout 构图] Spatial region mode is enabled: write global style/lighting (+ character sheet for multi-panel) in studio__board__set_prompt and place regions via studio__regions__add / studio__regions__add_text (normalized 0..1 {x,y,w,h}; never hand-write raw JSON or abs_centralized/yxyx). Use `object` (`Extreme close-up showing ONLY ...`) for inset close-ups to avoid extra heads; in text/speech bubbles put lettering/bubble geometry + pointer direction in `caption` and exact characters in `text`, then verify with studio__board__diagnose.',
+      '- [skill.moss.layout · 分区构图指南] Spatial region mode is enabled: write global style/lighting (+ character sheet for multi-panel) in studio__board__set_prompt and place regions via studio__regions__add / studio__regions__add_text (normalized 0..1 {x,y,w,h}; never hand-write raw JSON or abs_centralized/yxyx). Use `object` (`Extreme close-up showing ONLY ...`) for inset close-ups to avoid extra heads; in text/speech bubbles put lettering/bubble geometry + pointer direction in `caption` and exact characters in `text`, then verify with studio__board__diagnose.',
     )
   }
   return `${toolsLine}\n${skillGuidance.join('\n')}`
@@ -247,7 +247,7 @@ export function CollabToolbar({
                 checked={ticked.has(row.id)}
                 onCheckedChange={() => onProfileChange(togglePack(profile, row.id))}
                 label={row.title}
-                description={row.isSkill ? '提示词与构图专属指南（Skill）' : `${row.actionCount} 项动作`}
+                description={row.isSkill ? '给 Agent 的写法指南' : `${row.actionCount} 项动作`}
                 className="gap-2 rounded-md px-2 py-1.5"
               />
             ))}

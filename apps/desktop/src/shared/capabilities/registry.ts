@@ -352,18 +352,12 @@ export function createCapabilityRegistry(initialPacks: readonly (BuiltinCapabili
       })
     const activeActionIds = new Set<CapabilityId>(actions.map((action) => action.id))
     const audienceFilter = options.audience?.length ? new Set(options.audience) : null
-    // Zero-action Skill packs (`skill.*`) have no actions in `activeActionIds`, so gate them on activePacks directly.
-    const activePackIds = new Set<CapabilityId>(
-      activePacks({
-        enabledFlags: options.enabledFlags,
-        enabledPacks: options.enabledPacks,
-        includeExternal: options.includeExternal,
-      }).map((stored) => stored.descriptor.id),
-    )
+    // A guide-only pack adds its text to every request, so it counts only when the person picked it by name.
+    const pickedPacks = new Set(options.enabledPacks ?? [])
 
     const fragments: SkillFragment[] = []
     for (const stored of packs.values()) {
-      if (!activePackIds.has(stored.descriptor.id)) continue
+      if (GUIDE_ONLY_PACKS.has(stored.descriptor.id) && !pickedPacks.has(stored.descriptor.id)) continue
       for (const fragment of stored.descriptor.skills) {
         if (!fragment.requiresActions.every((requiredId) => activeActionIds.has(requiredId))) continue
         if (audienceFilter && !fragment.audience.some((item) => audienceFilter.has(item))) continue
@@ -405,7 +399,10 @@ export function createCapabilityRegistry(initialPacks: readonly (BuiltinCapabili
   }
 }
 
+/** Built-in packs that carry only a Skill guide and no actions. */
+const GUIDE_ONLY_PACKS: ReadonlySet<CapabilityId> = new Set(['skill.moss.standard', 'skill.moss.layout'])
+
 function isBuiltinPack(pack: BuiltinCapabilityPack | CapabilityPack): pack is BuiltinCapabilityPack {
   const first = pack.actions[0]
-  return first ? 'inputSchema' in first : true
+  return first ? 'inputSchema' in first : GUIDE_ONLY_PACKS.has(pack.id)
 }
