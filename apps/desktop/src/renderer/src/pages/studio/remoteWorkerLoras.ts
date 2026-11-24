@@ -1,7 +1,7 @@
 import type { AdapterEntry, CanvasAdapter, Catalog, LoraMetadata, ManagedHost, ModelBundle, RemoteHostBackend } from '@shared/types'
 import type { RemoteWorkerLoraItem, RemoteWorkerModelInventory, RemoteWorkerModelItem } from '@shared/remoteWorker'
 import { isWorkerLoraId, workerCanvasAdapter } from '@shared/remoteWorker'
-import type { BundleChoice } from './readiness'
+import { bundleInstalled, type BundleChoice } from './readiness'
 
 /**
  * A Worker daemon picked as 运行位置 is used exactly like an SSH host: the
@@ -134,16 +134,16 @@ export function resolveWorkerBundle(
 
 /**
  * The model a 画面 keeps when a Worker model is picked: the catalog model it
- * is, when this computer's library has that, else the one it had. A Worker's
+ * is, when that is downloaded on this computer, else the one it had. A Worker's
  * own id never goes into the 画面, so it still runs back on this computer.
  */
 export function canvasModelForWorkerPick(
   item: Pick<RemoteWorkerModelItem, 'catalogBundleId'> | undefined,
-  catalog: Pick<Catalog, 'bundles'> | null | undefined,
+  catalog: Pick<Catalog, 'bundles' | 'models'> | null | undefined,
   current: string | undefined,
 ): string | undefined {
-  const twin = item?.catalogBundleId
-  return twin && catalog?.bundles.some((bundle) => bundle.id === twin) ? twin : current
+  const twin = catalog?.bundles.find((bundle) => bundle.id === item?.catalogBundleId)
+  return twin && bundleInstalled(twin, catalog!.models) ? twin.id : current
 }
 
 /** Why a run waits on a Worker host whose model list has not been read (yet, or at all). */

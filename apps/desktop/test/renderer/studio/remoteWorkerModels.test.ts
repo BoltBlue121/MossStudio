@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { RemoteWorkerModelInventory } from '@shared/remoteWorker'
 import type { ModelBundle, ModelEntry } from '@shared/types'
+import { catalogFixture, SFT_BUNDLE_IDS } from '@test/mocks/backend'
 import { bundleBlocker } from '../../../src/renderer/src/pages/models/logic'
 import { applyLoraAutoTriggers } from '../../../src/renderer/src/pages/studio/prompt'
 import {
@@ -9,6 +10,8 @@ import {
   resolveWorkerBundle,
   workerAdapterEntries,
 } from '../../../src/renderer/src/pages/studio/remoteWorkerLoras'
+
+const SFT_INT8_IDS = ['moss-sft-comfy-int8_convrot', 'qwen35-comfy-int8_convrot', 'flux2-vae-comfy-small', 'moss-runtime-config']
 
 const HOST = { id: 'ssh-gpu-1', name: 'GPU Worker', workerProviderId: 'worker-gpu-1' }
 
@@ -90,14 +93,20 @@ describe('Worker real model resolution and strength=0 LoRAs', () => {
     expect(unsupported.installed).toBe(true)
   })
 
-  it('keeps a catalog model in the 画面 when a Worker model is picked, never the Worker’s own id', () => {
-    const catalog = { bundles: [{ id: 'moss-sft-int8' }, { id: 'moss-sft' }] as ModelBundle[] }
+  it('keeps a downloaded catalog model in the 画面 when a Worker model is picked, never the Worker’s own id', () => {
+    const catalog = catalogFixture({ installed: [...SFT_BUNDLE_IDS, ...SFT_INT8_IDS] })
     const [, int8, finetune] = WORKER_INVENTORY.models
     expect(canvasModelForWorkerPick(int8, catalog, 'moss-sft')).toBe('moss-sft-int8')
     expect(canvasModelForWorkerPick(finetune, catalog, 'moss-sft')).toBe('moss-sft')
     expect(canvasModelForWorkerPick(finetune, catalog, undefined)).toBeUndefined()
     // A catalog id this computer's library does not have is not kept either.
     expect(canvasModelForWorkerPick({ catalogBundleId: 'moss-elsewhere' }, catalog, 'moss-sft')).toBe('moss-sft')
+  })
+
+  it('keeps the 画面’s model when the picked Worker model is not downloaded here', () => {
+    // moss-sft is installed, SFT INT8 only on the Worker: back here the 画面 must still run moss-sft.
+    const catalog = catalogFixture({ installed: SFT_BUNDLE_IDS })
+    expect(canvasModelForWorkerPick(WORKER_INVENTORY.models[1], catalog, 'moss-sft')).toBe('moss-sft')
   })
 
   it('allows single-file catalog bundles on worker-daemon hosts while still blocking them on plain SSH hosts', () => {
