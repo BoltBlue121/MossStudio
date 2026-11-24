@@ -84,7 +84,21 @@ The bridge forwards each JSON-RPC line to the server; requests after `initialize
 
 ## 8. The 协同 panel
 
-`pages/studio/assistant/CollabPanel.tsx`, opened with 协同 in the 助手's header, talks to an ACP Agent (`main/agentHub/acpDriver.ts`): Codex ACP, or a command the person enters. `session/new` and `session/load` attach the MCP server (HTTP when the Agent supports it, else the stdio bridge). An Agent that advertises `loadSession` and `sessionCapabilities.list` keeps its conversations across a restart: they are listed with `session/list` and loaded again on first use, history replayed without being streamed as new text. For any other Agent a project's conversation list lasts for this run only (`setSessionsResumable` in `sessionBindings.ts`). A turn that streams nothing for 10 minutes is cancelled. Pictures go to the Agent inline in the prompt; nothing is written to disk.
+`pages/studio/assistant/CollabPanel.tsx`, opened with 协同 in the 助手's header, talks to an ACP Agent (`main/agentHub/acpDriver.ts`): Codex ACP, or a command the person enters; or to DSH Desktop (below). `session/new` and `session/load` attach the MCP server (HTTP when the Agent supports it, else the stdio bridge). An Agent that advertises `loadSession` and `sessionCapabilities.list` keeps its conversations across a restart: they are listed with `session/list` and loaded again on first use, history replayed without being streamed as new text. For any other Agent a project's conversation list lasts for this run only (`setSessionsResumable` in `sessionBindings.ts`). A turn that streams nothing for 10 minutes is cancelled. Pictures go to the Agent inline in the prompt; nothing is written to disk.
+
+Codex ACP is the default for someone who never picked an Agent; DSH Desktop is the default only when Codex ACP is not installed and DSH Desktop is running (`backends` in `main/agentHub/hub.ts`).
+
+### DSH Desktop
+
+`main/agentHub/dshDriver.ts` talks to a DeepSeek Harness desktop app running on this computer. It never contacts anything but loopback.
+
+| Step | What runs | Rule |
+| --- | --- | --- |
+| Find the app | Windows: `powershell.exe` (`Get-Process`, `Get-NetTCPConnection`). macOS and Linux: `ps -A -o pid=,comm=`, then `lsof` on the app's own pids. On Linux, where `comm` is cut to 15 characters, the name is confirmed with `/proc/<pid>/exe` | No shell, 6-second timeout, ended on disconnect (`dshDiscovery.ts`). Only listeners on `127.0.0.1` or `::1` count |
+| Pick the pairing address | The address the person pastes, else `MOSSSTUDIO_DSH_PAIRING_URL`, else `<dataRoot>/dsh-desktop-live.json` (`{ version: 1, pid, pairingUrl }`) | The file is used only when it is a regular file of at most 4 KiB with one link, not a symlink or on a network path, on macOS and Linux owned by this user with mode `0600` or stricter, unchanged between check and read, and its `pid` and origin match a found listener (`pairingFor`) |
+| Pair | `GET /connect` on the found listener, then one WebSocket (`/api/remote.mux`) and `POST /api/<method>` calls | The address must be `http://127.0.0.1`, `[::1]` or `localhost` with a `token`, and belong to a found listener (`pairDesktop` in `dshPeer.ts`). Redirects are not followed; replies are capped at 16 MiB; pairing and calls time out after 15 seconds |
+
+Conversations are grouped by DSH workspace (`agent-hub:projects`). After a connection drops, the driver looks for the app again at most every 10 seconds and pairs again by itself unless the person pasted the address or disconnected. Pictures in its messages are shown only when they are inline PNG, JPEG or WebP; main decodes and checks each one once and keeps its hash, since the panel polls the same history every few seconds. The panel never loads an image URL or path from a reply (`replyImages` in `CollabPanel.tsx`).
 
 ## 9. Tests
 
