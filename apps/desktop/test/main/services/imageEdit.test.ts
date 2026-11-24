@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 vi.mock('node:https', async (original) => ({ ...(await original<typeof import('node:https')>()) }))
 vi.mock('node:dns/promises', async (original) => ({ ...(await original<typeof import('node:dns/promises')>()) }))
 import { Readable } from 'node:stream'
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import * as https from 'node:https'
 import * as dns from 'node:dns/promises'
@@ -332,6 +332,19 @@ describe('external redraw boundaries', () => {
     writeFileSync(paths.imageEditChannels(), 'broken')
     expect(() => edit.saveImageChannel(draft)).toThrow()
     expect(readFileSync(paths.imageEditChannels(), 'utf8')).toBe('broken')
+  })
+  it('redraws in a project under a data folder reached through a link', async () => {
+    const link = `${root()}-link`
+    symlinkSync(root(), link, 'junction')
+    try {
+      process.env['MOSSSTUDIO_DATA'] = link
+      const { input } = fixture()
+      expect(input.path.startsWith(link)).toBe(true)
+      peer({ data: [{ b64_json: samples.png }] })
+      expect(await edit.runImageEdit(input)).toMatchObject({ width: 2, height: 3 })
+    } finally {
+      rmSync(link, { force: true })
+    }
   })
   it('rejects an oversized source before connecting', async () => {
     const { input } = fixture()

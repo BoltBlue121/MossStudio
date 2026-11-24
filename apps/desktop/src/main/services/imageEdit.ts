@@ -12,7 +12,7 @@ import { IMAGE_BYTES, publicImageUrl } from '../lib/imageEditHttp'
 import { paths } from '../lib/paths'
 import { hasAiKey, getAiKey, saveAiKeys } from './aiCredentials'
 import { queryChannel } from './imageEditProtocols'
-import { getProject, projectAssetsDir } from './projects'
+import { getProject, projectAssetsDir, projectsRootDir } from './projects'
 import { getSettings } from './settings'
 import { importImageBytes } from './studioAssets'
 
@@ -98,7 +98,11 @@ export async function runImageEdit(input: z.infer<typeof schemas.imageEditRun>, 
     signal?.throwIfAborted()
     const dir = projectAssetsDir(input.projectId)
     const doc = join(dirname(dir), 'project.json')
-    const unsafe = async (p: string) => isNetworkPath(p) || (await pathLinksToNetwork(p)) || !!relative(await realpath(p), p)
+    // The data root itself may be a link (MOSSSTUDIO_DATA, a Windows junction); nothing below it may be.
+    const root = projectsRootDir(),
+      realRoot = await realpath(root)
+    const unsafe = async (p: string) =>
+      isNetworkPath(p) || (await pathLinksToNetwork(p)) || (await realpath(p)) !== join(realRoot, relative(root, p))
     if ((await unsafe(dir)) || (await unsafe(doc)) || getProject(input.projectId)?.id !== input.projectId)
       throw new Error('项目位置已改变，请重新打开项目')
   }
