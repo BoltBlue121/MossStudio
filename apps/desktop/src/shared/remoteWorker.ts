@@ -48,7 +48,7 @@ export interface RemoteWorkerModelInventory {
   models: RemoteWorkerModelItem[]
   components: RemoteWorkerComponentItem[]
   defaultModelId?: string | null
-  /** Set when the daemon returns HTTP 404 for `/v1/models` (legacy single-model daemon). */
+  /** Set when the daemon does not name `models` in `/v1/capabilities` (an older, single-profile daemon). */
   unsupported?: boolean
 }
 

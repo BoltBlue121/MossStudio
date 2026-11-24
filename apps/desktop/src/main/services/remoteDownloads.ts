@@ -10,7 +10,7 @@ import { getTrainingHost, listTrainingHosts, updateTrainingHostModelPath } from 
 import { posixQuote, sshExec } from './ssh'
 import { resolveFiles, safePath, selectFiles, type ModelFile } from './modelFiles'
 import { controlRemoteWorkerDownload, listRemoteWorkerDownloads, startRemoteWorkerDownload } from './remoteWorker'
-import { connectWorkerHost, isWorkerDaemonHost, listActiveWorkerProfiles } from './workerHostManager'
+import { isWorkerDaemonHost, listActiveWorkerProfiles, workerProfileWith } from './workerHostManager'
 import rawWorkerSource from './remoteModelWorker.sh?raw'
 
 const workerSource = rawWorkerSource.replace(/\r\n/g, '\n')
@@ -434,11 +434,9 @@ export async function refreshRemoteDownloads(hostId: string): Promise<DownloadTa
   if (!host || host.kind !== 'ssh') throw new Error('远端设备不存在')
   const pending = serial(host, async () => {
     try {
-      if (isWorkerDaemonHost(host)) {
-        const profile = await connectWorkerHost(host)
-        const tasks = await listRemoteWorkerDownloads(profile)
-        return updateTasks(host, tasks)
-      }
+      // A daemon that fetches models itself owns their tasks; an older one keeps the SSH tasks.
+      const profile = await workerProfileWith(host, 'downloads')
+      if (profile) return updateTasks(host, await listRemoteWorkerDownloads(profile))
       let entries = await worker(host)
       const activeLegacy = entries.filter(
         (entry) => entry.legacy && entry.desired === 'running' && ['queued', 'running', 'verifying'].includes(entry.task.state),
@@ -499,8 +497,8 @@ export async function startRemoteDownload(
   kind: DownloadTask['kind'] = 'model',
 ): Promise<DownloadTask> {
   return serial(host, async () => {
-    if (isWorkerDaemonHost(host)) {
-      const profile = await connectWorkerHost(host)
+    const profile = await workerProfileWith(host, 'downloads')
+    if (profile) {
       const network = networkFor(host)
       const created = await startRemoteWorkerDownload(profile, {
         targetId: model.id,
@@ -577,8 +575,8 @@ export async function controlRemoteDownload(
   const host = getTrainingHost(getSettings(), hostId)
   if (!host || host.kind !== 'ssh') throw new Error('远端设备不存在')
   return serial(host, async () => {
-    if (isWorkerDaemonHost(host)) {
-      const profile = await connectWorkerHost(host)
+    const profile = await workerProfileWith(host, 'downloads')
+    if (profile) {
       const tasks = await controlRemoteWorkerDownload(profile, taskId, operation)
       startRemoteDownloadMonitor()
       return updateTasks(host, tasks)

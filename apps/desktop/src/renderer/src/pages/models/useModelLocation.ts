@@ -22,7 +22,7 @@ export interface RemoteInventory {
  */
 export interface ModelLocation {
   kind: 'local' | 'remote'
-  /** True when the selected remote host runs a Worker daemon (supports single-file bundles & daemon downloads). */
+  /** True when the selected remote host's Worker daemon lists its own models (single-file bundles fit there too). */
   workerDaemon: boolean
   host: ManagedHost | null
   /** False for a remote host until its inventory has been read; actions are hidden until then. */
@@ -211,7 +211,8 @@ export function useModelLocation(host: ManagedHost | null): ModelLocation {
 
   return {
     kind: hostId ? 'remote' : 'local',
-    workerDaemon: Boolean(hostId && host?.remoteBackend === 'worker-daemon'),
+    // Only a daemon that lists its own models answers for them; an older one is read over SSH like any host.
+    workerDaemon: Boolean(hostId && inventory?.workerModels),
     host,
     ready: !hostId || inventory !== null,
     tasks,

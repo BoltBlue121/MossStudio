@@ -4,6 +4,7 @@ import {
   isWorkerDaemonHost,
   stopAllWorkerHostTunnels,
   workerHostProviderId,
+  workerDaemonSupports,
   workerHostsOn,
 } from './services/workerHostManager'
 import { listRemoteWorkerLoras, changeRemoteWorkerLora, listRemoteWorkerModels } from './services/remoteWorker'
@@ -424,6 +425,8 @@ export function registerIpc(): void {
   })
   handle(Ipc.remoteWorkerModels, schemas.remoteWorkerModels, async ({ hostId, providerId, rescan }) => {
     const profile = await workerProfileFor({ hostId, providerId })
+    // An older daemon serves only its one profile: the run goes there without a model id.
+    if (!workerDaemonSupports(profile.hostId, 'models')) return { models: [], components: [], defaultModelId: null, unsupported: true }
     return listRemoteWorkerModels(profile, Boolean(rescan))
   })
   handle(Ipc.loraProfilesList, schemas.loraProfilesList, () => listLoraProfiles())

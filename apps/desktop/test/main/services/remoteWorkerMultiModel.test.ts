@@ -33,7 +33,7 @@ function fakePng(width: number, height: number): Uint8Array {
   return buf
 }
 
-describe('remoteWorker multi-model, downloads, legacy 404 fallback, and strength=0 LoRA bypass', () => {
+describe('remoteWorker multi-model, downloads, and strength=0 LoRA bypass', () => {
   afterEach(() => {
     setMemoryWorkerToken(PROFILE.id, null)
   })
@@ -118,27 +118,33 @@ describe('remoteWorker multi-model, downloads, legacy 404 fallback, and strength
     expect(calls[1]).toEqual({ url: 'http://127.0.0.1:53877/v1/models/rescan', method: 'POST' })
   })
 
-  it('falls back gracefully on HTTP 404 for legacy daemons without /v1/models or /v1/downloads', async () => {
+  it('fails on HTTP 404 instead of answering an empty list, so cached download tasks are never wiped', async () => {
     setMemoryWorkerToken(PROFILE.id, 'secret-token-1234567890')
     const fetch404 = vi.fn<typeof fetch>(async () => new Response('not found', { status: 404 }))
+    await expect(listRemoteWorkerDownloads(PROFILE, fetch404)).rejects.toMatchObject({ code: 'E_WORKER_HTTP' })
+    await expect(listRemoteWorkerModels(PROFILE, false, fetch404)).rejects.toMatchObject({ code: 'E_WORKER_HTTP' })
+  })
 
-    const inv = await listRemoteWorkerModels(PROFILE, false, fetch404)
-    expect(inv).toEqual({ models: [], components: [], defaultModelId: null, unsupported: true })
+  it('keeps only defaults a 画面 accepts, and bounds download rows and their text', async () => {
+    setMemoryWorkerToken(PROFILE.id, 'secret-token-1234567890')
+    const model = (id: string, defaults: unknown) => ({ id, name: id, defaults })
+    const models = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        models: [model('a', { steps: 8.5, cfg: 25 }), model('b', { steps: 5000, cfg: 3 }), model('c', { steps: 12, cfg: -1 })],
+      }),
+    )
+    const listed = await listRemoteWorkerModels(PROFILE, false, models)
+    expect(listed.models.map((item) => item.defaults)).toEqual([undefined, { cfg: 3 }, { steps: 12 }])
 
-    const downloads = await listRemoteWorkerDownloads(PROFILE, fetch404)
-    expect(downloads).toEqual([])
-
-    await expect(
-      startRemoteWorkerDownload(
-        PROFILE,
-        { targetId: 'moss-sft-comfy-int4_convrot', label: 'INT4', kind: 'model', repo: 'OpenMOSS-Team/MOSS-Image-SFT' },
-        fetch404,
-      ),
-    ).rejects.toMatchObject({ code: 'E_WORKER_UNSUPPORTED' })
-
-    await expect(deleteRemoteWorkerModels(PROFILE, ['moss-sft-comfy-int4_convrot'], fetch404)).rejects.toMatchObject({
-      code: 'E_WORKER_UNSUPPORTED',
-    })
+    const row = { id: 'task', label: 'x'.repeat(5000), error: 'e'.repeat(5000), bytes: -5 }
+    const downloads = vi.fn<typeof fetch>(async () =>
+      Response.json({ items: Array.from({ length: 500 }, (_, i) => ({ ...row, id: `t${i}` })) }),
+    )
+    const tasks = await listRemoteWorkerDownloads(PROFILE, downloads)
+    expect(tasks).toHaveLength(200)
+    expect(tasks[0]!.label.length).toBe(200)
+    expect(tasks[0]!.error!.length).toBe(600)
+    expect(tasks[0]!.bytes).toBe(0)
   })
 
   it('starts, lists, controls downloads and deletes models via daemon API', async () => {

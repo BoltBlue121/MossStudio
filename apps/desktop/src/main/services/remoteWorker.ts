@@ -68,9 +68,7 @@ export async function requestWorkerDaemon<T = unknown>(
   } catch {
     throw codedError('E_WORKER_NETWORK', '远端请求失败或超时，请检查连接')
   }
-  if (!response.ok) {
-    throw Object.assign(codedError('E_WORKER_HTTP', `远端请求失败（HTTP ${response.status}）`), { status: response.status })
-  }
+  if (!response.ok) throw codedError('E_WORKER_HTTP', `远端请求失败（HTTP ${response.status}）`)
   const limit = options.bytes ? 128 * 1024 * 1024 : 8 * 1024 * 1024
   const reader = response.body?.getReader()
   const chunks: Uint8Array[] = []
@@ -149,11 +147,6 @@ export async function changeRemoteWorkerLora(
   if (row?.id !== id || row.registered !== (action === 'register')) throw badInventory()
   return { id, registered: row.registered }
 }
-function isWorkerHttpStatus(error: unknown, status: number): boolean {
-  return Boolean(
-    error && typeof error === 'object' && 'code' in error && error.code === 'E_WORKER_HTTP' && 'status' in error && error.status === status,
-  )
-}
 
 export async function resolveRemoteWorkerAdapters(
   profile: RemoteWorkerProfile,
@@ -180,14 +173,12 @@ function parseWorkerModelItem(entry: unknown): RemoteWorkerModelItem | null {
   const row = entry as Record<string, unknown>
   if (!isWorkerModelId(row.id) || typeof row.name !== 'string' || !row.name.trim()) return null
   const tier = typeof row.tier === 'string' && VALID_TIERS.has(row.tier) ? (row.tier as RemoteWorkerModelItem['tier']) : undefined
-  const rawDefaults = row.defaults && typeof row.defaults === 'object' ? (row.defaults as Record<string, unknown>) : undefined
+  const rawDefaults = row.defaults && typeof row.defaults === 'object' ? (row.defaults as Record<string, unknown>) : {}
+  // Only values a 画面 and a job accept (steps 1–100, CFG 0–20) become its defaults.
+  const steps = Number.isInteger(rawDefaults.steps) && Number(rawDefaults.steps) >= 1 && Number(rawDefaults.steps) <= 100
+  const cfg = typeof rawDefaults.cfg === 'number' && rawDefaults.cfg >= 0 && rawDefaults.cfg <= 20
   const defaults =
-    rawDefaults && (typeof rawDefaults.steps === 'number' || typeof rawDefaults.cfg === 'number')
-      ? {
-          ...(typeof rawDefaults.steps === 'number' && Number.isFinite(rawDefaults.steps) ? { steps: rawDefaults.steps } : {}),
-          ...(typeof rawDefaults.cfg === 'number' && Number.isFinite(rawDefaults.cfg) ? { cfg: rawDefaults.cfg } : {}),
-        }
-      : undefined
+    steps || cfg ? { ...(steps ? { steps: Number(rawDefaults.steps) } : {}), ...(cfg ? { cfg: Number(rawDefaults.cfg) } : {}) } : undefined
   return {
     id: row.id,
     name: row.name.trim().slice(0, 200),
@@ -211,19 +202,12 @@ export async function listRemoteWorkerModels(
   rescan = false,
   fetchImpl?: typeof fetch,
 ): Promise<RemoteWorkerModelInventory> {
-  let response: Record<string, unknown>
-  try {
-    response = await requestWorkerDaemon<Record<string, unknown>>(profile, rescan ? '/v1/models/rescan' : '/v1/models', {
-      method: rescan ? 'POST' : 'GET',
-      ...(rescan ? { body: {} } : {}),
-      fetchImpl,
-      timeoutMs: rescan ? 60_000 : 15_000,
-    })
-  } catch (error) {
-    // Legacy daemons without `/v1/models` answer HTTP 404: fall back cleanly to single-model mode.
-    if (isWorkerHttpStatus(error, 404)) return { models: [], components: [], defaultModelId: null, unsupported: true }
-    throw error
-  }
+  const response = await requestWorkerDaemon<Record<string, unknown>>(profile, rescan ? '/v1/models/rescan' : '/v1/models', {
+    method: rescan ? 'POST' : 'GET',
+    ...(rescan ? { body: {} } : {}),
+    fetchImpl,
+    timeoutMs: rescan ? 60_000 : 15_000,
+  })
   const rawModels = Array.isArray(response?.models) ? response.models : []
   const rawComponents = Array.isArray(response?.components) ? response.components : []
   const seenModels = new Set<string>()
@@ -262,20 +246,12 @@ export async function deleteRemoteWorkerModels(
 ): Promise<{ removed: string[]; kept: string[] }> {
   const clean = ids.filter((id) => typeof id === 'string' && id.trim().length > 0).slice(0, 64)
   if (!clean.length) throw codedError('E_WORKER_MODELS', '请选择要删除的模型')
-  let response: { removed?: unknown; kept?: unknown }
-  try {
-    response = await requestWorkerDaemon<{ removed?: unknown; kept?: unknown }>(profile, '/v1/models/delete', {
-      method: 'POST',
-      body: { ids: clean },
-      fetchImpl,
-      timeoutMs: 30_000,
-    })
-  } catch (error) {
-    if (isWorkerHttpStatus(error, 404)) {
-      throw codedError('E_WORKER_UNSUPPORTED', '该远端 Worker 服务暂不支持模型删除接口，请升级远端 Worker 守护进程')
-    }
-    throw error
-  }
+  const response = await requestWorkerDaemon<{ removed?: unknown; kept?: unknown }>(profile, '/v1/models/delete', {
+    method: 'POST',
+    body: { ids: clean },
+    fetchImpl,
+    timeoutMs: 30_000,
+  })
   return {
     removed: Array.isArray(response?.removed) ? response.removed.filter((v): v is string => typeof v === 'string') : [],
     kept: Array.isArray(response?.kept) ? response.kept.filter((v): v is string => typeof v === 'string') : [],
@@ -287,44 +263,39 @@ const VALID_DL_STATES = new Set<DownloadTask['state']>(['queued', 'running', 'pa
 function mapWorkerDownloadTask(profile: RemoteWorkerProfile, raw: unknown): DownloadTask | null {
   if (!raw || typeof raw !== 'object') return null
   const row = raw as Record<string, unknown>
-  if (typeof row.id !== 'string' || !row.id) return null
+  const text = (value: unknown, max: number): string | undefined => (typeof value === 'string' ? value.slice(0, max) : undefined)
+  const count = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0)
+  const id = text(row.id, 200)
+  if (!id) return null
   const state =
     typeof row.state === 'string' && VALID_DL_STATES.has(row.state as DownloadTask['state'])
       ? (row.state as DownloadTask['state'])
       : 'queued'
-  const kind: DownloadTask['kind'] = row.kind === 'adapter' ? 'adapter' : 'model'
+  const targetId = text(row.targetId, 160) || id
   return {
-    id: row.id,
+    id,
     hostId: profile.hostId,
     hostName: profile.label,
-    kind,
-    targetId: typeof row.targetId === 'string' ? row.targetId : row.id,
-    label: typeof row.label === 'string' ? row.label : typeof row.targetId === 'string' ? row.targetId : row.id,
+    kind: row.kind === 'adapter' ? 'adapter' : 'model',
+    targetId,
+    label: text(row.label, 200) || targetId,
     state,
-    bytes: typeof row.bytes === 'number' && Number.isFinite(row.bytes) ? row.bytes : 0,
-    totalBytes: typeof row.totalBytes === 'number' && Number.isFinite(row.totalBytes) ? row.totalBytes : 0,
-    speedBps: typeof row.speedBps === 'number' && Number.isFinite(row.speedBps) ? row.speedBps : 0,
-    filesDone: typeof row.filesDone === 'number' && Number.isFinite(row.filesDone) ? row.filesDone : 0,
-    filesTotal: typeof row.filesTotal === 'number' && Number.isFinite(row.filesTotal) ? row.filesTotal : 0,
-    currentFile: typeof row.currentFile === 'string' ? row.currentFile : undefined,
-    remotePath: typeof row.remotePath === 'string' ? row.remotePath : undefined,
-    error: typeof row.error === 'string' ? row.error : undefined,
-    updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : new Date().toISOString(),
+    bytes: count(row.bytes),
+    totalBytes: count(row.totalBytes),
+    speedBps: count(row.speedBps),
+    filesDone: count(row.filesDone),
+    filesTotal: count(row.filesTotal),
+    currentFile: text(row.currentFile, 1024),
+    remotePath: text(row.remotePath, 4096),
+    error: text(row.error, 600),
+    updatedAt: text(row.updatedAt, 64) || new Date().toISOString(),
   }
 }
 
 export async function listRemoteWorkerDownloads(profile: RemoteWorkerProfile, fetchImpl?: typeof fetch): Promise<DownloadTask[]> {
-  let response: { items?: unknown }
-  try {
-    response = await requestWorkerDaemon<{ items?: unknown }>(profile, '/v1/downloads', {
-      fetchImpl,
-      timeoutMs: 10_000,
-    })
-  } catch (error) {
-    if (isWorkerHttpStatus(error, 404)) return []
-    throw error
-  }
-  const rows = Array.isArray(response?.items) ? response.items : []
+  // A failed read throws, so the cached tasks of this host stay as they were.
+  const response = await requestWorkerDaemon<{ items?: unknown }>(profile, '/v1/downloads', { fetchImpl, timeoutMs: 10_000 })
+  const rows = Array.isArray(response?.items) ? response.items.slice(0, 200) : []
   return rows.map((row) => mapWorkerDownloadTask(profile, row)).filter((task): task is DownloadTask => task !== null)
 }
 
@@ -345,30 +316,22 @@ export async function startRemoteWorkerDownload(
   input: StartRemoteWorkerDownloadInput,
   fetchImpl?: typeof fetch,
 ): Promise<DownloadTask> {
-  let response: unknown
-  try {
-    response = await requestWorkerDaemon<unknown>(profile, '/v1/downloads', {
-      method: 'POST',
-      body: {
-        targetId: input.targetId,
-        label: input.label,
-        kind: input.kind,
-        repo: input.repo,
-        revision: input.revision || 'main',
-        files: input.files ?? [],
-        sizeBytes: input.sizeBytes ?? 0,
-        ...(input.endpoint ? { endpoint: input.endpoint } : {}),
-        ...(input.token ? { token: input.token } : {}),
-      },
-      fetchImpl,
-      timeoutMs: 20_000,
-    })
-  } catch (error) {
-    if (isWorkerHttpStatus(error, 404)) {
-      throw codedError('E_WORKER_UNSUPPORTED', '该远端 Worker 服务暂不支持远端下载接口，请升级远端 Worker 守护进程')
-    }
-    throw error
-  }
+  const response = await requestWorkerDaemon<unknown>(profile, '/v1/downloads', {
+    method: 'POST',
+    body: {
+      targetId: input.targetId,
+      label: input.label,
+      kind: input.kind,
+      repo: input.repo,
+      revision: input.revision || 'main',
+      files: input.files ?? [],
+      sizeBytes: input.sizeBytes ?? 0,
+      ...(input.endpoint ? { endpoint: input.endpoint } : {}),
+      ...(input.token ? { token: input.token } : {}),
+    },
+    fetchImpl,
+    timeoutMs: 20_000,
+  })
   const task = mapWorkerDownloadTask(profile, response)
   if (!task) throw codedError('E_WORKER_RESPONSE', '远端未返回有效的下载任务')
   return task
@@ -380,19 +343,12 @@ export async function controlRemoteWorkerDownload(
   operation: 'pause' | 'resume' | 'cancel',
   fetchImpl?: typeof fetch,
 ): Promise<DownloadTask[]> {
-  try {
-    await requestWorkerDaemon<unknown>(profile, `/v1/downloads/${encodeURIComponent(taskId)}/${operation}`, {
-      method: 'POST',
-      body: {},
-      fetchImpl,
-      timeoutMs: 15_000,
-    })
-  } catch (error) {
-    if (isWorkerHttpStatus(error, 404)) {
-      throw codedError('E_WORKER_UNSUPPORTED', '该远端 Worker 服务暂不支持远端下载接口，请升级远端 Worker 守护进程')
-    }
-    throw error
-  }
+  await requestWorkerDaemon<unknown>(profile, `/v1/downloads/${encodeURIComponent(taskId)}/${operation}`, {
+    method: 'POST',
+    body: {},
+    fetchImpl,
+    timeoutMs: 15_000,
+  })
   return listRemoteWorkerDownloads(profile, fetchImpl)
 }
 
