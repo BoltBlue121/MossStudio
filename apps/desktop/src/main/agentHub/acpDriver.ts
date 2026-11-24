@@ -1,7 +1,5 @@
 import { app } from 'electron'
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import type {
   AgentBackendInfo,
@@ -14,69 +12,21 @@ import type {
   AgentSetModelInput,
 } from '@shared/agentHub'
 import { getMcpServerState } from '../mcp/server'
-import { bridgeLaunch, findExecutableOnPath } from '../mcp/clientInstaller'
+import { childEnv, cliLaunch, findCli } from '../lib/cliDiscovery'
+export { childEnv } from '../lib/cliDiscovery'
+import { bridgeLaunch } from '../mcp/clientInstaller'
 
 /** A turn that streams nothing for this long is stopped: the Agent hung or lost its model. */
 export const PROMPT_IDLE_TIMEOUT_MS = 10 * 60_000
 /** Pages of `session/list` read at most. */
 const SESSION_LIST_PAGES = 10
 
-export async function resolveAcpLaunch(
-  command: string,
-  args: string[],
-  platform: string = process.platform,
-): Promise<{ command: string; args: string[] }> {
-  if (platform !== 'win32') return { command, args }
-  let candidate = command
-  if (!existsSync(candidate)) {
-    const found = await new Promise<string>((done) =>
-      execFile('where.exe', [command], { timeout: 2000, windowsHide: true }, (error, stdout) => done(error ? '' : stdout)),
-    )
-    const matches = found.trim().split(/\r?\n/).filter(Boolean)
-    candidate = matches.find((path) => /\.exe$/i.test(path)) ?? matches.find((path) => /\.cmd$/i.test(path)) ?? command
-  }
-  if (!/\.(?:exe|cmd)$/i.test(candidate) && existsSync(`${candidate}.cmd`)) candidate += '.cmd'
-  if (!/\.cmd$/i.test(candidate)) return { command: candidate, args }
-  const contents = readFileSync(candidate, 'utf8')
-  const match = /"%dp0%[\\/]([^"\r\n%]+\.(?:js|mjs|cjs))"/i.exec(contents)
-  if (!match) throw new Error('此 Windows 命令不是可安全启动的 Node.js shim，请填写脚本入口。')
-  const script = resolve(dirname(candidate), match[1]!.replace(/\\/g, '/'))
-  if (!existsSync(script)) throw new Error('Agent 的脚本入口不存在，请重新安装命令。')
-  // As npm's own shim: the node beside it, else the one on PATH; this app's binary (run as node) only without either.
-  const localNode = resolve(dirname(candidate), 'node.exe')
-  const pathNode = findExecutableOnPath(['node'], process.env, 'win32')
-  return { command: existsSync(localNode) ? localNode : (pathNode ?? process.execPath), args: [script, ...args] }
-}
-
-/** The environment of a child: Electron runs a script as node only with ELECTRON_RUN_AS_NODE, and only this app's own binary needs it. */
-export function childEnv(command: string): NodeJS.ProcessEnv {
-  const env = { ...process.env }
-  delete env.ELECTRON_RUN_AS_NODE
-  return command === process.execPath ? { ...env, ELECTRON_RUN_AS_NODE: '1' } : env
+export async function resolveAcpLaunch(command: string, args: string[], platform: NodeJS.Platform = process.platform) {
+  return cliLaunch(command, args, { platform })
 }
 
 function attachmentSummary(input: AgentSendInput): string {
   return [input.text, ...(input.attachments ?? []).map((file) => `${file.name} (${file.mime})`)].join('\n')
-}
-
-const probes = new Map<string, { expires: number; result: Promise<boolean> }>()
-export function clearAcpProbeCache(): void {
-  probes.clear()
-}
-export function probeAcpCommand(command: string): Promise<boolean> {
-  const cached = probes.get(command)
-  if (cached && cached.expires > Date.now()) return cached.result
-  const result = new Promise<boolean>((resolve) => {
-    execFile(process.platform === 'win32' ? 'where.exe' : 'which', [command], { timeout: 2000, windowsHide: true }, (error) =>
-      resolve(!error),
-    )
-  }).then((found) => {
-    // Never stick a stale negative cache so freshly installed ACP Agents appear immediately on refresh.
-    if (!found) probes.delete(command)
-    return found
-  })
-  probes.set(command, { expires: Date.now() + 30_000, result })
-  return result
 }
 
 /** The prompt's content blocks: the text, then each picture inline (the Agent gets the bytes; nothing is written to disk). */
@@ -365,7 +315,7 @@ export function createAcpDriver(options: {
   return {
     id: options.id,
     async probe() {
-      return info(command ? await probeAcpCommand(command) : true)
+      return info(command ? findCli(command).kind === 'ready' : true)
     },
     async connect(input) {
       await disconnect()

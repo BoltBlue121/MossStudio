@@ -12,7 +12,8 @@ const withExternalAgents = () =>
 import { ToastProvider } from '@renderer/components/ui'
 import { ApiError } from '@renderer/lib/api'
 import { prettyArgs } from '@renderer/pages/studio/assistant/ApprovalDock'
-import { MAX_ATTACHMENT_BYTES, planAttachments } from '@renderer/pages/studio/assistant/AttachmentTray'
+import { AttachmentTray, MAX_ATTACHMENT_BYTES, planAttachments, useAttachments } from '@renderer/pages/studio/assistant/AttachmentTray'
+import { ImageLightbox } from '@renderer/components/common/ImageLightbox'
 import { folderTail } from '@renderer/pages/studio/assistant/CollabStatusBar'
 import { COMPACT_PACKS, effectivePacks, listPackRows, togglePack, toolProfileLine } from '@renderer/pages/studio/assistant/CollabToolbar'
 import {
@@ -31,6 +32,7 @@ import {
 import { CollabPanel, agentShortName, replyImages } from '@renderer/pages/studio/assistant/CollabPanel'
 import { capabilityLabel, contextChips, formatBoardContext } from '@renderer/pages/studio/assistant/collabContext'
 import { GlobalApprovalOverlay } from '@renderer/pages/studio/assistant/GlobalApprovalOverlay'
+import { McpConnectDialog } from '@renderer/pages/studio/assistant/McpConnectDialog'
 import { joinProjectPath, newFolderProblem, parentFolder } from '@renderer/pages/studio/assistant/NewSessionDialog'
 import { bindSession, readSessionBinding } from '@renderer/pages/studio/assistant/sessionBindings'
 import { conversationFigures } from '@renderer/pages/studio/assistant/SessionStats'
@@ -125,16 +127,24 @@ describe('collab client', () => {
     })
   })
 
-  it('offers Codex CLI and Claude Code only, in a fixed order', () => {
-    const clients = normalizeMcpClients({ clients: [{ id: 'claude-code', installed: true, configPath: '/c' }, { id: 'other' }] })
-    expect(clients.map((item) => [item.id, item.installed])).toEqual([
-      ['codex', false],
-      ['claude-code', true],
+  it('reports only verified configuration and copies the bridge resolved by main for both stdio formats', () => {
+    const clients = normalizeMcpClients({ clients: [{ id: 'claude-code', state: 'conflict' }, { id: 'other' }] })
+    expect(clients.map((c) => [c.id, c.state])).toEqual([
+      ['dsh', 'unknown'],
+      ['codex', 'unknown'],
+      ['claude-code', 'conflict'],
     ])
-    const config = JSON.parse(
-      mcpConfigJson({ url: 'http://127.0.0.1:1/mcp', token: 't', toolCount: 3, discoveryPath: '/d.json', stdioBridgePath: '/b.js' }, 'all'),
-    ) as { mcpServers: Record<string, unknown> }
+    const bridge = { command: '/opt/MossStudio', args: ['/b.js'], env: { ELECTRON_RUN_AS_NODE: '1', MOSSSTUDIO_MCP_DISCOVERY: '/d.json' } }
+    const connection = { url: 'http://127.0.0.1:1/mcp', token: 'secret', toolCount: 3, bridge }
+    const config = JSON.parse(mcpConfigJson(connection, 'all'))
     expect(Object.keys(config.mcpServers)).toEqual(['mossstudio', 'mossstudio-stdio'])
+    expect(config.mcpServers['mossstudio-stdio']).toEqual(bridge)
+    expect(JSON.parse(mcpConfigJson(connection, 'dsh'))).toEqual({
+      serverName: 'mossstudio',
+      transport: 'stdio',
+      ...bridge,
+      toolCallTimeoutMs: 180000,
+    })
   })
 
   it('falls back when the hub is missing instead of failing the panel', async () => {
@@ -235,8 +245,8 @@ describe('collab client', () => {
       expect(transform(url, 'src')).toBe('')
     expect(transform('https://example.com/', 'href')).toBe('https://example.com/')
     expect(transform('javascript:alert(1)', 'href')).toBe('')
-    const img = components!.img as (props: { node: { properties: { src?: string } } }) => { type: string }
-    expect(img({ node: { properties: { src: png } } }).type).toBe('img')
+    const img = components!.img as (props: { node: { properties: { src?: string } } }) => { type: unknown; props: { path?: string } }
+    expect(img({ node: { properties: { src: png } } }).props.path).toBe(png)
     expect(img({ node: { properties: { src: 'https://example.com/a.png' } } }).type).toBe('span')
   })
 })
@@ -360,6 +370,32 @@ describe('CollabPanel', () => {
     return host
   }
 
+  it('keeps an SVG attachment removable but offers zoom only on raster thumbnails', async () => {
+    function Tray() {
+      return createElement(AttachmentTray, { state: useAttachments() })
+    }
+    const view = mount(createElement('div', null, createElement(Tray), createElement(ImageLightbox)))
+    const input = view.querySelector('input[type="file"]')!
+    Object.defineProperty(input, 'files', {
+      value: [new File(['<svg/>'], 'vector.svg', { type: 'image/svg+xml' }), new File(['photo'], 'photo.png', { type: 'image/png' })],
+    })
+    act(() => {
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await settle()
+    const svg = view.querySelector('[data-attachment="vector.svg"]')!
+    expect(svg.querySelector('img')?.alt).toBe('vector.svg')
+    expect(svg.querySelector('button[aria-label^="放大预览"]')).toBeNull()
+    act(() => view.querySelector<HTMLButtonElement>('[aria-label="放大预览：photo.png"]')!.click())
+    expect(document.querySelector<HTMLImageElement>('dialog img')?.src).toBe(
+      view.querySelector<HTMLImageElement>('img[alt="photo.png"]')!.src,
+    )
+    expect(document.querySelector('dialog h2')?.textContent).toBe('photo.png')
+    act(() => document.querySelector<HTMLButtonElement>('dialog [aria-label="关闭"]')!.click())
+    act(() => svg.querySelector<HTMLButtonElement>('[aria-label="移除图片 vector.svg"]')!.click())
+    expect(view.querySelector('[data-attachment="vector.svg"]')).toBeNull()
+  })
+
   it('shows the compact header, connects an ACP Agent and switches to the built-in assistant', async () => {
     const backend = createMockBackend(withExternalAgents())
     backend.install()
@@ -402,6 +438,37 @@ describe('CollabPanel', () => {
 
     await act(async () => (view.querySelector('[data-standalone-assistant]') as HTMLButtonElement).click())
     expect(standalone).toBe(1)
+  })
+
+  it('preserves Codex restrictions on cancel and only sends reset consent from the confirmation dialog', async () => {
+    const state = scenario('externalAgents')
+    const codex = state.agents.clients.find((client) => client.id === 'codex')!
+    codex.state = 'custom_policy'
+    codex.detail = 'Codex 已禁用此服务，未自动覆盖。'
+    const backend = createMockBackend(state)
+    backend.install()
+    mount(
+      createElement(McpConnectDialog, {
+        open: true,
+        onClose: () => {},
+        client: createCollabClient(),
+        profile: { mode: 'compact', packs: [] },
+      }),
+    )
+    await settle()
+    const click = async (button: Element | null | undefined) => act(async () => (button as HTMLButtonElement).click())
+    const reconnect = document.querySelector('[data-mcp-install="codex"]')
+    expect(reconnect?.textContent).toBe('重新连接')
+    const confirming = () => [...document.querySelectorAll('dialog[open]')].find((el) => el.textContent?.includes('清除工具限制'))
+    const button = (label: string) => [...(confirming()?.querySelectorAll('button') ?? [])].find((item) => item.textContent === label)
+    await click(reconnect)
+    await click(button('取消'))
+    expect(backend.callsTo(Ipc.mcpClientInstall)).toEqual([])
+    await click(reconnect)
+    await click(button('重置并重新连接'))
+    await settle()
+    expect(backend.callsTo(Ipc.mcpClientInstall)).toEqual([{ clientId: 'codex', resetPolicy: true }])
+    expect(document.querySelector('[data-mcp-client="codex"]')?.getAttribute('data-mcp-client-state')).toBe('configured')
   })
 
   it('shows only this project conversations and imports another one by working folder first', async () => {
@@ -535,6 +602,24 @@ describe('CollabPanel', () => {
       { backendId: 'codex-acp', cwd: 'F:\\work\\harbor', createCwd: true, projectId: 'p-new' },
     ])
     expect(readSessionBinding('codex-acp', 'p-new').pinnedIds).toEqual(['fixture-agent-session'])
+  })
+
+  it('renders only embedded raster pictures in an Agent reply, not remote URLs or filesystem paths', async () => {
+    const { backend, view } = mountWithFolders()
+    const data = 'data:image/png;base64,iVBORw0KGgo='
+    backend.handle(Ipc.agentHubMessages, () => ({
+      messages: [
+        {
+          seq: 1,
+          role: 'assistant',
+          text: `![image](${data}) ![remote](https://remote.invalid/p.png) ![file](file:///secret/p.png) ![svg](data:image/svg+xml;base64,AAAA)`,
+        },
+      ],
+    }))
+    await settle()
+    const log = view.querySelector('[role="log"]')!
+    expect([...log.querySelectorAll('img')].map((el) => el.getAttribute('src'))).toEqual([data])
+    expect(log.querySelector('img')?.closest('button')).not.toBeNull()
   })
 
   it('does not pick a conversation of another folder for a project that has none', async () => {

@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { FEATURES, featureEnabled, featureVisibility } from '@renderer/lib/features'
 import { settingsFixture } from '@test/mocks/backend/fixtures'
 
-const ALL_OFF = { remoteHosts: false, workerHosts: false, training: false, gbc: false, lan: false, externalAgents: false }
+const ALL_OFF = { remoteHosts: false, workerHosts: false, training: false, gbc: false, lan: false, externalAgents: false, toolHub: false }
 
 describe('optional features', () => {
-  it('lists remote hosts, Worker hosts, training, 看图拆区域, LAN access and external Agents with an explanation each', () => {
+  it('lists each optional feature with an explanation', () => {
     expect(FEATURES.map((feature) => feature.key)).toEqual([
       'remoteHostsEnabled',
       'workerHostsEnabled',
@@ -13,6 +13,7 @@ describe('optional features', () => {
       'gbcEnabled',
       'lanWebEnabled',
       'externalAgentsEnabled',
+      'toolHubEnabled',
     ])
     for (const feature of FEATURES) expect(feature.description.length).toBeGreaterThan(8)
   })

@@ -207,7 +207,7 @@ export async function runRemoteWorkerJob(options: RunRemoteWorkerJobOptions): Pr
       cfg: params.cfg,
       seed: params.seed,
       ...(params.sampling ?? {}),
-      profile: profile.workflow ?? 'default',
+      profile: profile.workflow?.trim() || undefined,
       loras: loras.map(({ path, strength }) => ({ id: path, strength })),
     },
   })

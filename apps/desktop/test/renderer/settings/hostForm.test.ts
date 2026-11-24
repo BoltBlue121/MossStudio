@@ -135,7 +135,8 @@ describe('worker daemon hosts', () => {
   })
 
   it('starts on the MossStudio engine and keeps a saved worker host as it was', () => {
-    expect(emptyHostForm().remoteBackend).toBe('moss-ssh')
+    expect(emptyHostForm()).toMatchObject({ remoteBackend: 'moss-ssh', workerWorkflow: '' })
+    expect(hostFormFrom(sshHostFixture({ remoteBackend: 'worker-daemon' })).workerWorkflow).toBe('')
     const form = hostFormFrom(
       sshHostFixture({ remoteBackend: 'worker-daemon', workerDiscoveryPath: 'C:\\worker\\data\\discovery.json', workerWorkflow: 'sdxl' }),
     )
@@ -160,11 +161,12 @@ describe('worker daemon hosts', () => {
     expect(hostSavePayload(worker({ workerWorkflow: '  ' }))).toMatchObject({
       remoteBackend: 'worker-daemon',
       workerDiscoveryPath: '/path/to/worker/discovery.json',
-      workerWorkflow: undefined,
+      workerWorkflow: '',
       trainerRoot: '~/.mossstudio/trainer',
     })
     const plain = hostSavePayload({ ...emptyHostForm(), host: 'gpu', user: 'u' })
     expect(plain.remoteBackend).toBe('moss-ssh')
     expect(plain).not.toHaveProperty('workerDiscoveryPath')
+    expect(plain).not.toHaveProperty('workerWorkflow')
   })
 })

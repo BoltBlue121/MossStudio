@@ -1,8 +1,9 @@
 import { existsSync } from 'node:fs'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ipcMain } from '@test/mocks/electron'
 import { Ipc } from '@shared/channels'
 import { useTempDataRoot } from '@test/helpers/tempDir'
+import * as discovery from '@main/lib/cliDiscovery'
 import { paths } from '@main/lib/paths'
 import { DEFAULT_SETTINGS, updateSettings } from '@main/services/settings'
 import { getActiveMcpServer, stopMcpServer } from '@main/mcp'
@@ -20,6 +21,7 @@ const EXTERNAL_CHANNELS: Record<string, unknown> = {
   [Ipc.capabilitiesExecute]: { name: 'system.guide.read' },
   [Ipc.capabilitiesAudit]: undefined,
   [Ipc.mcpClientsStatus]: undefined,
+  [Ipc.mcpClientUninstall]: { clientId: 'codex' },
   [Ipc.mcpClientInstall]: { clientId: 'codex' },
   [Ipc.mcpInfo]: undefined,
   [Ipc.mcpSetProfile]: { profile: 'compact' },
@@ -43,6 +45,8 @@ describe('设置 › 功能 › 外部 Agent', () => {
   })
 
   it('refuses every channel of the feature while it is off, without starting anything', async () => {
+    const probe = vi.spyOn(discovery, 'findCli')
+    await syncExternalAgents(DEFAULT_SETTINGS)
     for (const [channel, payload] of Object.entries(EXTERNAL_CHANNELS)) {
       const result = await invoke(channel, payload)
       expect(result, channel).toMatchObject({ ok: false, error: { code: 'E_FEATURE_OFF' } })
@@ -50,6 +54,8 @@ describe('设置 › 功能 › 外部 Agent', () => {
     expect(getActiveMcpServer()).toBeNull()
     expect(existsSync(paths.mcpDiscovery())).toBe(false)
     expect(existsSync(paths.mcpDir())).toBe(false)
+    expect(probe).not.toHaveBeenCalled()
+    probe.mockRestore()
   })
 
   it('starts the MCP server and its discovery file when turned on, and removes both when turned off', async () => {

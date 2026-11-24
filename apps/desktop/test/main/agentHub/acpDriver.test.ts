@@ -32,7 +32,24 @@ describe('ACP stdio driver', () => {
       const cmd = join(directory, 'agent.cmd')
       const entry = join(directory, 'entry.mjs')
       await writeFile(entry, '')
-      await writeFile(cmd, '@ECHO off\r\n"%_prog%" "%dp0%\\entry.mjs" %*')
+      await writeFile(
+        cmd,
+        String.raw`@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+IF EXIST "%dp0%\node.exe" (
+  SET "_prog=%dp0%\node.exe"
+) ELSE (
+  SET "_prog=node"
+  SET PATHEXT=%PATHEXT:;.JS;=;%
+)
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\entry.mjs" %*`,
+      )
       const launch = await resolveAcpLaunch(cmd, ['hello & calc'], 'win32')
       expect(launch.command).toBe(process.execPath)
       expect(launch.args).toEqual([entry, 'hello & calc'])

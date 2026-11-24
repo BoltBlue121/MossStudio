@@ -901,6 +901,11 @@ describe('studio board', () => {
     await expect.poll(() => front.getAttribute('src')).toContain('seq=2')
     // Never blank between frames: a front picture is always up.
     expect(await front.count()).toBe(1)
+    const frame = await front.getAttribute('src')
+    await card.hover()
+    await card.getByRole('button', { name: '放大预览：画面 1' }).click()
+    expect(await page.getByRole('dialog').getByRole('img').getAttribute('src')).toBe(frame)
+    await page.keyboard.press('Escape')
 
     await emitJob(page, id, { stage: 'decode', progress: { stage: 'decode', current: 30, total: 30, percent: 100 } })
     await expect.poll(() => card.locator('[data-card-progress]').textContent()).toBe('还原图像')

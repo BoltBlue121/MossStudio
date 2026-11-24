@@ -1,3 +1,5 @@
+import { CLIENT_STATES, type BridgeLaunch, type McpClientId, type McpClientStatus, type ManagedClientId } from '@shared/mcpClients'
+export type { McpClientStatus } from '@shared/mcpClients'
 import { Events, Ipc } from '@shared/channels'
 import type { AgentBackendInfo as HubBackendInfo, AgentConnectInput, AgentCreateSessionInput, AgentProject } from '@shared/agentHub'
 import type { GuideTopic, ToolProfileId } from '@shared/capabilities'
@@ -406,45 +408,28 @@ export function normalizeApprovals(value: unknown): PendingApproval[] {
   return result
 }
 
-/** The Agents MossStudio can write itself into, in the order the wizard shows them. */
-export const MCP_CLIENT_IDS = ['codex', 'claude-code'] as const
-export type McpClientId = (typeof MCP_CLIENT_IDS)[number]
-
-const MCP_CLIENT_LABELS: Record<McpClientId, string> = { codex: 'Codex CLI', 'claude-code': 'Claude Code' }
-
-export interface McpClientStatus {
-  id: McpClientId
-  label: string
-  configPath: string
-  detected: boolean
-  installed: boolean
-  installMode: 'auto' | 'copy-only'
-  detail: string
-  backupPath?: string
-}
+const MCP_CLIENT_IDS = ['dsh', 'codex', 'claude-code'] as const
+const MCP_CLIENT_LABELS: Record<McpClientId, string> = { codex: 'Codex CLI', 'claude-code': 'Claude Code', dsh: 'DeepSeek Harness 桌面版' }
 
 export interface McpConnection {
   url: string
   token: string
   toolCount: number
-  discoveryPath: string
-  stdioBridgePath: string
+  bridge: BridgeLaunch
 }
 
 export function normalizeMcpClient(value: unknown): McpClientStatus | null {
   if (!isRecord(value)) return null
   const id = MCP_CLIENT_IDS.find((item) => item === value.id)
   if (!id) return null
-  const backupPath = text(value.backupPath)
+  const state = CLIENT_STATES.find((s) => s === value.state) ?? 'unknown'
   return {
     id,
     label: text(value.label) || MCP_CLIENT_LABELS[id],
     configPath: text(value.configPath) ?? '',
-    detected: value.detected === true,
-    installed: value.installed === true,
-    installMode: value.installMode === 'copy-only' ? 'copy-only' : 'auto',
+    state,
+    installMode: id !== 'dsh' && value.installMode === 'auto' ? 'auto' : 'copy-only',
     detail: text(value.detail) ?? '',
-    ...(backupPath ? { backupPath } : {}),
   }
 }
 
@@ -461,8 +446,7 @@ export function normalizeMcpClients(value: unknown): McpClientStatus[] {
         id,
         label: MCP_CLIENT_LABELS[id],
         configPath: '',
-        detected: false,
-        installed: false,
+        state: 'unknown',
         installMode: 'copy-only',
         detail: '',
       },
@@ -473,28 +457,34 @@ export function normalizeMcpConnection(value: unknown): McpConnection | null {
   if (!isRecord(value) || value.running !== true) return null
   const url = text(value.url)
   const token = text(value.token)
-  if (!url || !token) return null
+  const bridge = value.bridge
+  if (
+    !url ||
+    !token ||
+    !isRecord(bridge) ||
+    !text(bridge.command) ||
+    !Array.isArray(bridge.args) ||
+    !bridge.args.every((a) => typeof a === 'string') ||
+    !isRecord(bridge.env) ||
+    !Object.values(bridge.env).every((v) => typeof v === 'string')
+  )
+    return null
   return {
     url,
     token,
     toolCount: count(value.toolCount) ?? 0,
-    discoveryPath: text(value.discoveryPath) ?? '',
-    stdioBridgePath: text(value.stdioBridgePath) ?? '',
+    bridge: { command: bridge.command as string, args: bridge.args, env: bridge.env as Record<string, string> },
   }
 }
 
-export type McpConfigKind = 'all' | 'http' | 'stdio'
+export type McpConfigKind = 'all' | 'http' | 'stdio' | 'dsh'
 
 /** The standard `mcpServers` JSON most Agents accept: Streamable HTTP, the stdio bridge, or both. */
 export function mcpConfigJson(connection: McpConnection, kind: McpConfigKind = 'all'): string {
   const http = { mossstudio: { url: connection.url, headers: { Authorization: `Bearer ${connection.token}` } } }
-  const stdio = {
-    'mossstudio-stdio': {
-      command: 'node',
-      args: [connection.stdioBridgePath],
-      env: { MOSSSTUDIO_MCP_DISCOVERY: connection.discoveryPath },
-    },
-  }
+  if (kind === 'dsh')
+    return JSON.stringify({ serverName: 'mossstudio', transport: 'stdio', ...connection.bridge, toolCallTimeoutMs: 180_000 }, null, 2)
+  const stdio = { 'mossstudio-stdio': connection.bridge }
   const servers = kind === 'http' ? http : kind === 'stdio' ? stdio : { ...http, ...stdio }
   return JSON.stringify({ mcpServers: servers }, null, 2)
 }
@@ -524,8 +514,8 @@ export interface GuideReadInput {
 
 export interface CollabClient {
   mcpClients(): Promise<McpClientStatus[] | null>
-  installMcpClient(clientId: McpClientId): Promise<McpClientStatus>
-  uninstallMcpClient(clientId: McpClientId): Promise<McpClientStatus>
+  installMcpClient(clientId: ManagedClientId, resetPolicy?: true): Promise<McpClientStatus>
+  uninstallMcpClient(clientId: ManagedClientId): Promise<McpClientStatus>
   /** The live MCP connection, token included, for copying a config; null when the server is not running. */
   mcpConnection(): Promise<McpConnection | null>
   mcpSummary(): Promise<McpSummary | null>
@@ -576,8 +566,8 @@ export function createCollabClient(invoke: Invoke = call, subscribe: Subscribe =
       }
     },
 
-    async installMcpClient(clientId) {
-      const result = normalizeMcpClient(await invoke<unknown>(Ipc.mcpClientInstall, { clientId }))
+    async installMcpClient(clientId, resetPolicy) {
+      const result = normalizeMcpClient(await invoke<unknown>(Ipc.mcpClientInstall, { clientId, ...(resetPolicy && { resetPolicy }) }))
       if (!result) throw new Error('没有收到安装结果，请刷新后查看状态')
       return result
     },

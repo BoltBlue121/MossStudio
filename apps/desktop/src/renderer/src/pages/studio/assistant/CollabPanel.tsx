@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { defaultUrlTransform, type MarkdownProps } from '@openai/apps-sdk-ui/components/Markdown'
 import { BarChart3, Loader2, Plug, Square } from 'lucide-react'
 import type { AgentProject } from '@shared/agentHub'
+import { PreviewButton, isRasterData } from '../../../components/common/ImageLightbox'
 import { Notice } from '../../../components/common/Notice'
 import { DesktopSessionBar, useWorkspaceChoice } from './DesktopSessionBar'
 import { Button, cn, EmptyState, Field, FieldLabel, Input, LoadingRow, MarkdownBody, Textarea } from '../../../components/ui'
@@ -51,13 +52,6 @@ import {
 import { SessionStatsPanel } from './SessionStats'
 import { mergeSteps, StepProgressDock, type ProgressStep } from './StepProgressDock'
 
-const BACKEND_KEY = 'mossstudio.collab.backend'
-const POLL_MS = 2000
-const SESSIONS_POLL_MS = 10_000
-const NO_PROJECTS: readonly CanvasProjectOption[] = []
-const RASTER_DATA_URL = /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+=*$/i
-const isRasterData = (url: string): boolean => url.length <= 14_000_032 && RASTER_DATA_URL.test(url)
-
 // Reply text is untrusted: show embedded raster data, never load a URL or open a path named by the Agent.
 export const replyImages: Pick<MarkdownProps, 'urlTransform' | 'components'> = {
   urlTransform: (url, key) => (key === 'src' ? (isRasterData(url) ? url : '') : defaultUrlTransform(url)),
@@ -65,13 +59,20 @@ export const replyImages: Pick<MarkdownProps, 'urlTransform' | 'components'> = {
     img: ({ node }) => {
       const src = (node.properties as { src?: string } | undefined)?.src
       return src && isRasterData(src) ? (
-        <img src={src} alt="回复图片" className="max-h-48 rounded-md object-contain" />
+        <PreviewButton path={src} title="回复图片" className="h-auto">
+          <img src={src} alt="回复图片" />
+        </PreviewButton>
       ) : (
         <span>外部图片未加载</span>
       )
     },
   },
 }
+
+const BACKEND_KEY = 'mossstudio.collab.backend'
+const POLL_MS = 2000
+const SESSIONS_POLL_MS = 10_000
+const NO_PROJECTS: readonly CanvasProjectOption[] = []
 
 function readBackend(): string {
   try {
