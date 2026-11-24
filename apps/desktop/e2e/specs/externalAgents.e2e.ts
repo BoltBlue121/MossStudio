@@ -145,6 +145,38 @@ describe('外部 Agent on', () => {
     await expect.poll(() => app.calls('agent-hub:resolve-approval')).toEqual([{ id: 'approval-1', decision: 'reject' }])
     await expect.poll(() => overlay.count()).toBe(0)
   })
+
+  it('the model list is headed by its provider, and one id from two providers stays pickable', async () => {
+    const page = await openStudio(app, 'externalAgents')
+    await page.evaluate(() => {
+      window.__mock.state.agents.models = [
+        { id: 'solo', label: 'solo' },
+        { id: 'shared', label: 'shared · alpha', provider: 'alpha' },
+        { id: 'shared', label: 'shared · beta', provider: 'beta' },
+      ]
+    })
+    await openCollab(page)
+    const select = page.locator('[data-model-picker] select[aria-label="会话模型"]')
+    await select.waitFor()
+    // A model without a provider comes first, then one heading per provider; the
+    // provider is no longer repeated inside every entry.
+    expect(await select.locator('optgroup').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('label')))).toEqual([
+      'alpha',
+      'beta',
+    ])
+    expect(await select.locator('option').evaluateAll((nodes) => nodes.map((node) => node.textContent))).toEqual([
+      '选择模型',
+      'solo',
+      'shared',
+      'shared',
+      '手动输入…',
+    ])
+    // The second `shared` is beta's: picking it must send that provider, not the first one found by id.
+    await select.selectOption({ index: 3 })
+    await expect
+      .poll(() => app.calls('agent-hub:set-model').then((calls) => calls.at(-1)))
+      .toMatchObject({ model: 'shared', provider: 'beta' })
+  })
 })
 
 describe('LoRA trigger words', () => {
