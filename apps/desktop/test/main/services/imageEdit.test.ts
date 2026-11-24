@@ -328,10 +328,14 @@ describe('external redraw boundaries', () => {
     expect(existsSync(paths.imageEditChannels())).toBe(false)
     expect(existsSync(paths.imageEditCredentials())).toBe(false)
   })
-  it('handles damaged metadata without overwriting it or revealing stored details', () => {
+  it('sets damaged metadata aside so channels can be added again', () => {
     writeFileSync(paths.imageEditChannels(), 'broken')
-    expect(() => edit.saveImageChannel(draft)).toThrow()
-    expect(readFileSync(paths.imageEditChannels(), 'utf8')).toBe('broken')
+    expect(edit.listImageChannels()).toEqual([])
+    const backups = readdirSync(root()).filter((name) => name.startsWith('image-edit-channels.json.broken-'))
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(join(root(), backups[0]!), 'utf8')).toBe('broken')
+    expect(edit.saveImageChannel(draft).name).toBe(draft.name)
+    expect(edit.listImageChannels()).toHaveLength(1)
   })
   it('redraws in a project under a data folder reached through a link', async () => {
     const link = `${root()}-link`

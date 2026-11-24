@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { open, realpath, stat as pathStat } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
 import { isNetworkPath, pathLinksToNetwork } from '../lib/localPath'
@@ -24,7 +24,18 @@ function enabled(agent = false) {
 function records() {
   enabled()
   const file = paths.imageEditChannels()
-  return existsSync(file) ? z.array(editChannel).parse(readJsonObject(file)?.channels) : []
+  if (!existsSync(file)) return []
+  try {
+    readFileSync(file)
+  } catch {
+    // A lock or missing permission is not damage: moving the file aside would lose the channels.
+    throw new Error('暂时无法读取重绘渠道，请稍后再试')
+  }
+  const channels = z.array(editChannel).safeParse(readJsonObject(file)?.channels)
+  if (channels.success) return channels.data
+  // Keep the damaged file for recovery and start empty, so channels can be added again in settings.
+  renameSync(file, `${file}.broken-${Date.now()}`)
+  return []
 }
 const vault = paths.imageEditCredentials
 // Bind ciphertext to its origin even if only one of the two atomic writes survives a crash.
