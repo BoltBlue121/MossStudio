@@ -1,0 +1,131 @@
+import { describe, expect, it } from 'vitest'
+import { useApp } from '../support/app'
+
+describe('工具与节点', () => {
+  const app = useApp()
+  it('adds no toolbar entry until explicitly enabled', async () => {
+    const page = await app.open({ route: '/studio' })
+    await page.locator('[data-board]').waitFor()
+    const trigger = page.getByRole('button', { name: '工具与节点' })
+    expect(await trigger.count()).toBe(0)
+    const route = async (path: string): Promise<void> => {
+      await page.evaluate((to) => {
+        window.location.hash = to
+      }, path)
+    }
+    await route('/settings/features')
+    const toggle = page.getByRole('switch', { name: '工具与节点管理器' })
+    await toggle.click()
+    await expect.poll(() => toggle.getAttribute('aria-checked')).toBe('true')
+    await route('/studio')
+    await trigger.click()
+    const menu = page.getByRole('menu', { name: '工具与节点' })
+    await menu.waitFor()
+    await route('/settings/features')
+    await menu.waitFor({ state: 'detached' })
+    await toggle.click()
+    await expect.poll(() => toggle.getAttribute('aria-checked')).toBe('false')
+    await route('/studio')
+    await page.locator('[data-assistant-toggle]').waitFor()
+    expect(await trigger.count()).toBe(0)
+  })
+  for (const theme of ['light', 'dark'] as const) {
+    it(`shows grouped actions in ${theme} and undoes an entire recipe in one step`, async () => {
+      const page = await app.open({ theme, size: { width: 1500, height: 500 }, settings: { toolHubEnabled: true } })
+      const trigger = page.getByRole('button', { name: '工具与节点' })
+      await trigger.click()
+      const menu = page.getByRole('menu', { name: '工具与节点' })
+      await menu.waitFor()
+      expect(await menu.getByText('添加节点').isVisible()).toBe(true)
+      expect(await menu.getByText('工作流配方').isVisible()).toBe(true)
+      expect(await menu.getByText('画面工具').count()).toBe(0)
+      const zoom = page.getByRole('toolbar', { name: '画布工具' }).getByTitle('适应窗口', { exact: true })
+      const beforeZoom = await zoom.textContent()
+      await menu.hover()
+      await page.mouse.wheel(0, 690)
+      await expect.poll(() => menu.evaluate((el) => el.scrollTop)).toBeGreaterThan(0)
+      expect(await zoom.textContent()).toBe(beforeZoom)
+      await menu.evaluate((el) => el.scrollTo(0, 0))
+      const initialCards = await page.locator('article[data-canvas-card]').count()
+      await page.keyboard.press('Delete')
+      expect(await page.locator('article[data-canvas-card]').count()).toBe(initialCards)
+      await app.screenshot(`tool-hub-${theme}`)
+      await page.keyboard.press('Escape')
+      await menu.waitFor({ state: 'detached' })
+      await trigger.click()
+      const cards = page.locator('article[data-canvas-card]')
+      const before = await cards.count()
+      await menu.getByRole('menuitem', { name: '一组同风格的图' }).click()
+      await expect.poll(() => cards.count()).toBe(before + 4)
+      await page.getByRole('button', { name: '撤销', exact: true }).click()
+      await expect.poll(() => cards.count()).toBe(before)
+      expect(await app.calls('gbc:status')).toEqual([])
+    })
+  }
+  it('keeps Delete off the board until Tab leaves the picker for the toolbar', async () => {
+    const page = await app.open({ settings: { toolHubEnabled: true } })
+    const toolbar = page.getByRole('toolbar', { name: '画布工具' })
+    await toolbar.getByRole('button', { name: '工具与节点' }).click()
+    const menu = toolbar.getByRole('menu', { name: '工具与节点' })
+    const last = menu.getByRole('menuitem', { disabled: false }).last()
+    await last.focus()
+    const cards = page.locator('article[data-canvas-card]')
+    const before = await cards.count()
+    expect(before).toBeGreaterThan(0)
+    await page.keyboard.press('Delete')
+    expect(await cards.count()).toBe(before)
+    await page.keyboard.press('Tab')
+    expect(await toolbar.getByRole('button', { name: '选择', exact: true }).evaluate((el) => el === document.activeElement)).toBe(true)
+    expect(await menu.count()).toBe(0)
+  })
+
+  it('splits the selected picture using the existing GBC parse command', async () => {
+    const page = await app.open({ scenario: 'ready', settings: { toolHubEnabled: true, gbcEnabled: true }, defer: true })
+    const path = '/fixture/projects/project-1/assets/cat-1600x1200.png'
+    await page.evaluate((imagePath) => {
+      const { canvasFixture, projectFixture, aiProviderFixture, gbcStatusFixture } = window.__mock.fixtures
+      const image = canvasFixture({ id: 'cat', kind: 'image', imagePath, imageSize: { width: 1600, height: 1200 } })
+      window.__mock.state.projects = [projectFixture({ id: 'project-1', canvases: [image], selectedCanvasId: image.id })]
+      window.__mock.state.aiProviders = [aiProviderFixture({ id: 'vision', kind: 'anthropic' })]
+      window.__mock.state.gbc.status = gbcStatusFixture(true)
+    }, path)
+    await app.start()
+    await page.getByRole('button', { name: '工具与节点' }).click()
+    await page.getByRole('menuitem', { name: '拆成区域', exact: true }).click()
+    await expect.poll(() => app.calls<{ path: string }>('gbc:parse').then((calls) => calls.map((call) => call.path))).toEqual([path])
+    await expect.poll(() => page.locator('article[data-canvas-card] [data-region-id]').count()).toBe(2)
+  })
+
+  it('shares the parser panel with the title bar without replacing the assistant', async () => {
+    const page = await app.open({ settings: { toolHubEnabled: true, gbcEnabled: true } })
+    const assistant = page.locator('[data-assistant-toggle]')
+    await assistant.click()
+    const textarea = page.getByRole('complementary', { name: '助手' }).locator('textarea').first()
+    await textarea.fill('还在写')
+    await page.getByRole('button', { name: '工具与节点' }).click()
+    const menu = page.getByRole('menu', { name: '工具与节点' })
+    expect(await menu.getByRole('menuitem', { name: /拆成区域/ }).isDisabled()).toBe(true)
+    await menu.getByRole('menuitem', { name: '解析' }).click()
+    expect(await assistant.getAttribute('aria-pressed')).toBe('false')
+    expect(await page.locator('[data-gbc-toggle]').getAttribute('aria-pressed')).toBe('true')
+    await assistant.click()
+    expect(await textarea.inputValue()).toBe('还在写')
+    const parser = page.locator('[data-gbc-toggle]')
+    expect(await parser.getAttribute('aria-pressed')).toBe('false')
+    await parser.click()
+    await page.evaluate(() => {
+      window.location.hash = '/settings/features'
+    })
+    const gbc = page.getByRole('switch', { name: '看图拆区域' })
+    await gbc.click()
+    await expect.poll(() => gbc.getAttribute('aria-checked')).toBe('false')
+    await gbc.click()
+    await expect.poll(() => gbc.getAttribute('aria-checked')).toBe('true')
+    await page.evaluate(() => {
+      window.location.hash = '/studio'
+    })
+    await parser.waitFor()
+    expect(await parser.getAttribute('aria-pressed')).toBe('false')
+    expect(await page.locator('aside[aria-label="解析"]').count()).toBe(0)
+  })
+})

@@ -86,11 +86,55 @@ describe('外部 Agent on', () => {
     await panel.locator('[data-mcp-wizard]').click()
     const dialog = page.getByRole('dialog', { name: '接入外部 Agent' })
     await dialog.waitFor()
-    await expect.poll(() => dialog.locator('[data-mcp-client="codex"]').getAttribute('data-mcp-client-state')).toBe('installed')
+    await expect.poll(() => dialog.locator('[data-mcp-client="codex"]').getAttribute('data-mcp-client-state')).toBe('configured')
+    await expect.poll(() => dialog.locator('[data-mcp-client="dsh"]').textContent()).toContain('检测到本机 DSH 环境')
+    expect(await dialog.locator('[data-mcp-client]').first().getAttribute('data-mcp-client')).toBe('dsh')
+    await page.evaluate(() =>
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: (text: string) => {
+            document.body.dataset.copied = text
+          },
+        },
+      }),
+    )
+    expect(await dialog.getByRole('heading', { name: '本机客户端' }).isVisible()).toBe(true)
+    expect(await dialog.locator('[data-mcp-client="dsh"]').textContent()).toContain('手动')
+    await dialog.getByRole('button', { name: '复制 DSH stdio 配置' }).click()
+    expect(await app.calls('mcp:client-install')).toEqual([])
+    await expect
+      .poll(() => page.evaluate(() => JSON.parse(document.body.dataset.copied ?? '{}')))
+      .toMatchObject({ serverName: 'mossstudio', transport: 'stdio', command: '/fixture/bin/node', toolCallTimeoutMs: 180000 })
+    await expect.poll(() => app.calls('mcp:info').then((calls) => calls.at(-1))).toEqual({ includeToken: true })
     expect(await dialog.locator('[data-mcp-copy-client="claude-code"]').count()).toBe(1)
     await dialog.locator('[data-mcp-uninstall="codex"]').click()
     await expect.poll(() => app.calls('mcp:client-uninstall')).toEqual([{ clientId: 'codex' }])
-    await expect.poll(() => dialog.locator('[data-mcp-install="codex"]').textContent()).toContain('连接')
+    await expect.poll(() => dialog.locator('[data-mcp-install="codex"]').textContent()).toContain('一键配置')
+    await dialog.locator('[data-mcp-install="codex"]').click()
+    await expect.poll(() => dialog.locator('[data-mcp-client="codex"]').textContent()).toContain('已配置')
+  })
+
+  it('resets a protected Codex configuration only after confirming the reconnect', async () => {
+    const page = await openStudio(app, 'externalAgents')
+    await page.evaluate(() => {
+      const codex = window.__mock.state.agents.clients.find((client) => client.id === 'codex')!
+      codex.state = 'custom_policy'
+      codex.detail = 'Codex 已禁用此服务，已限制可用工具，未自动覆盖。'
+    })
+    await openCollab(page)
+    await page.locator('[data-mcp-wizard]').click()
+    const dialog = page.getByRole('dialog', { name: '接入外部 Agent' })
+    const reconnect = dialog.getByRole('button', { name: '重新连接', exact: true })
+    await reconnect.click()
+    const confirm = page.getByRole('dialog', { name: '重置 Codex 连接？' })
+    expect(await confirm.textContent()).toContain('清除工具限制')
+    await confirm.getByRole('button', { name: '取消' }).click()
+    expect(await app.calls('mcp:client-install')).toEqual([])
+    await reconnect.click()
+    await confirm.getByRole('button', { name: '重置并重新连接' }).click()
+    await expect.poll(() => app.calls('mcp:client-install')).toEqual([{ clientId: 'codex', resetPolicy: true }])
+    await expect.poll(() => dialog.locator('[data-mcp-client="codex"]').textContent()).toContain('已配置')
   })
 
   it('offers one click back when an Agent’s connection drops, and stops saying it is there', async () => {
@@ -125,6 +169,38 @@ describe('外部 Agent on', () => {
     await expect.poll(() => app.calls('agent-hub:resolve-approval')).toEqual([{ id: 'approval-1', decision: 'reject' }])
     await expect.poll(() => overlay.count()).toBe(0)
   })
+
+  it('the model list is headed by its provider, and one id from two providers stays pickable', async () => {
+    const page = await openStudio(app, 'externalAgents')
+    await page.evaluate(() => {
+      window.__mock.state.agents.models = [
+        { id: 'solo', label: 'solo' },
+        { id: 'shared', label: 'shared · alpha', provider: 'alpha' },
+        { id: 'shared', label: 'shared · beta', provider: 'beta' },
+      ]
+    })
+    await openCollab(page)
+    const select = page.locator('[data-model-picker] select[aria-label="会话模型"]')
+    await select.waitFor()
+    // A model without a provider comes first, then one heading per provider; the
+    // provider is no longer repeated inside every entry.
+    expect(await select.locator('optgroup').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('label')))).toEqual([
+      'alpha',
+      'beta',
+    ])
+    expect(await select.locator('option').evaluateAll((nodes) => nodes.map((node) => node.textContent))).toEqual([
+      '选择模型',
+      'solo',
+      'shared',
+      'shared',
+      '手动输入…',
+    ])
+    // The second `shared` is beta's: picking it must send that provider, not the first one found by id.
+    await select.selectOption({ index: 3 })
+    await expect
+      .poll(() => app.calls('agent-hub:set-model').then((calls) => calls.at(-1)))
+      .toMatchObject({ model: 'shared', provider: 'beta' })
+  })
 })
 
 describe('LoRA trigger words', () => {
@@ -146,14 +222,50 @@ describe('LoRA trigger words', () => {
 describe('Worker 远程主机 on', () => {
   const app = useApp()
 
-  it('the host dialog offers the Worker mode with its own fields', async () => {
-    const page = await app.open({ scenario: 'workerHost', route: '/settings/devices' })
+  it.each(['light', 'dark'] as const)('clears a saved Worker workflow back to the service default (%s)', async (theme) => {
+    const page = await app.open({ scenario: 'workerHost', route: '/settings/devices', theme })
     await page.getByRole('button', { name: 'GPU Worker 更多操作' }).click()
     await page.getByRole('menuitem', { name: '编辑' }).click()
     const dialog = page.getByRole('dialog', { name: '编辑 SSH 主机' })
     await dialog.waitFor()
     expect(await dialog.getByRole('group', { name: '运行方式' }).count()).toBe(1)
     expect(await dialog.getByLabel('服务信息文件').inputValue()).toBe('/srv/worker/discovery.json')
+    const workflow = dialog.getByLabel('工作流')
+    expect(await workflow.inputValue()).toBe('explicit-wf')
+    await workflow.fill('')
+    expect(await workflow.getAttribute('placeholder')).toBe('留空自动使用远端服务默认')
+    await dialog.getByRole('button', { name: '保存并测试' }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: 'GPU Worker 更多操作' }).click()
+    await page.getByRole('menuitem', { name: '编辑' }).click()
+    expect(await workflow.inputValue()).toBe('')
+  })
+
+  it('offers only negotiated Worker sampling and lets a saved canvas clear its other choices', async () => {
+    const page = await app.open({ scenario: 'workerHost', route: '/studio', defer: true })
+    await seedLoraBoard(page, { workerHost: true })
+    await page.evaluate(() => {
+      window.__mock.state.projects[0]!.canvases[0]!.sampling = { sampler: 'euler', shift: 4, stepCache: 'off', cfgTruncation: 0 }
+    })
+    await app.start()
+    await page
+      .getByRole('button', { name: /高级设置/ })
+      .first()
+      .click()
+    const clear = page.getByRole('button', { name: '清除不支持的采样设置' })
+    await clear.waitFor()
+    for (const field of ['Shift', 'CFG 截断', '步缓存', '高清修复']) expect(await page.getByLabel(field, { exact: true }).count()).toBe(0)
+    const generate = page.locator('[data-studio-generate]')
+    expect(await generate.isDisabled()).toBe(true)
+    expect(await app.calls('http:POST /api/engine-jobs')).toEqual([])
+    await clear.click()
+    const sampler = page.getByRole('combobox', { name: '采样器' })
+    expect(await sampler.inputValue()).toBe('euler')
+    await page.getByRole('combobox', { name: '调度器' }).selectOption('karras')
+    await generate.click()
+    await expect
+      .poll(() => app.calls('http:POST /api/engine-jobs'))
+      .toMatchObject([{ hostId: 'worker-1', sampling: { sampler: 'euler', scheduler: 'karras' } }])
   })
 
   it('the LoRA picker lists the Worker’s own LoRA when it is the 运行位置', async () => {

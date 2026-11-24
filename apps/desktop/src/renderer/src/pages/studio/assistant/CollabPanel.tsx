@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BarChart3, Loader2, Plug, Square } from 'lucide-react'
+import { defaultUrlTransform, type MarkdownProps } from '@openai/apps-sdk-ui/components/Markdown'
+import { PreviewButton, isRasterData } from '../../../components/common/ImageLightbox'
 import { Notice } from '../../../components/common/Notice'
 import { Button, cn, EmptyState, Field, FieldLabel, Input, LoadingRow, MarkdownBody, Textarea } from '../../../components/ui'
 import { ApiError } from '../../../lib/api'
@@ -47,6 +49,23 @@ import {
 } from './sessionBindings'
 import { SessionStatsPanel } from './SessionStats'
 import { mergeSteps, StepProgressDock, type ProgressStep } from './StepProgressDock'
+
+// Reply text is untrusted: show embedded raster data, never load a URL or open a path named by the Agent.
+const replyImages: Pick<MarkdownProps, 'urlTransform' | 'components'> = {
+  urlTransform: (url, key) => (key === 'src' ? (isRasterData(url) ? url : '') : defaultUrlTransform(url)),
+  components: {
+    img: ({ node }) => {
+      const src = (node.properties as { src?: string } | undefined)?.src
+      return src && isRasterData(src) ? (
+        <PreviewButton path={src} title="回复图片" className="h-auto">
+          <img src={src} alt="回复图片" />
+        </PreviewButton>
+      ) : (
+        <span>外部图片未加载</span>
+      )
+    },
+  },
+}
 
 const BACKEND_KEY = 'mossstudio.collab.backend'
 const POLL_MS = 2000
@@ -895,7 +914,7 @@ function SessionChat({
             <FieldLabel>{message.role === 'user' ? '你' : chat.name}</FieldLabel>
             {message.role === 'assistant' ? (
               <div className="selectable mt-1 break-words text-ui text-ink">
-                <MarkdownBody>{message.text}</MarkdownBody>
+                <MarkdownBody {...replyImages}>{message.text}</MarkdownBody>
               </div>
             ) : (
               <div className="selectable mt-1 whitespace-pre-wrap break-words text-ui text-ink">{message.text}</div>
@@ -906,7 +925,7 @@ function SessionChat({
           <div className="flex flex-col gap-1 rounded-lg bg-panel p-3" data-stream-reply>
             <FieldLabel>{chat.name}</FieldLabel>
             <div className="selectable break-words text-ui text-ink">
-              <MarkdownBody>{streamText}</MarkdownBody>
+              <MarkdownBody {...replyImages}>{streamText}</MarkdownBody>
             </div>
           </div>
         ) : null}

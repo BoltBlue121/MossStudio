@@ -1,6 +1,10 @@
 import { ADAPTERS_PER_CANVAS_MAX, isAdapterId } from './adapters'
 import type { CanvasAdapter } from './types'
 
+export function isWorkerSamplingKey(key: string): key is 'sampler' | 'scheduler' {
+  return key === 'sampler' || key === 'scheduler'
+}
+
 export interface RemoteWorkerProfile {
   id: string
   kind: 'worker-daemon'

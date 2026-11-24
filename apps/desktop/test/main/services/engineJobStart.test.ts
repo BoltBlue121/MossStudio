@@ -7,10 +7,12 @@ import { codedError, errorCode } from '@main/lib/codedError'
 import { useTempDataRoot } from '@test/helpers/tempDir'
 
 const connectWorkerHost = vi.hoisted(() => vi.fn())
+const workerEngineFeatures = vi.hoisted(() => vi.fn())
 const resolveRemoteWorkerAdapters = vi.hoisted(() => vi.fn())
 const workerHost = { id: 'host-worker', kind: 'ssh', remoteBackend: 'worker-daemon' }
 vi.mock('@main/services/workerHostManager', () => ({
   connectWorkerHost,
+  workerEngineFeatures,
   isWorkerDaemonHost: (host: unknown) => host === workerHost,
   listActiveWorkerProfiles: () => [{ id: 'render', hostId: 'host-worker' }],
 }))
@@ -49,7 +51,8 @@ function put(path: string): string {
 
 beforeEach(async () => {
   vi.resetModules()
-  connectWorkerHost.mockReset()
+  connectWorkerHost.mockReset().mockResolvedValue({ id: 'render', hostId: workerHost.id })
+  workerEngineFeatures.mockReset().mockResolvedValue({ ...features, values: { sampler: ['euler'], scheduler: ['moss'] } })
   resolveRemoteWorkerAdapters.mockReset()
   startEngineJob.mockReset().mockImplementation(async (input: unknown) => ({ id: 'job-1', input }))
   getEngineFeatures.mockReset().mockResolvedValue(features)
@@ -103,10 +106,50 @@ describe('startRequestedEngineJob', () => {
     expect(startEngineJob).toHaveBeenCalledWith(expect.objectContaining({ hostId: 'host-worker' }))
   })
 
-  it('rejects advanced inputs selected on a worker host', async () => {
-    await expect(
-      start.startRequestedEngineJob({ ...base, hostId: 'host-worker', initImage: { path: '/image.png', strength: 0.5 } }),
-    ).rejects.toMatchObject({ code: 'E_WORKER_UNSUPPORTED' })
+  it.each([
+    { initImage: { path: '/image.png', strength: 0.5 } },
+    { initImage: { path: '/image.png', strength: 0.5 }, sampling: { sampler: 'euler' } },
+    { init: { path: '/image.png' } },
+    { mask: { path: '/mask.png' } },
+    { control: { images: [{ path: '/depth.png' }] } },
+    { references: { paths: ['/ref.png'] } },
+    { visionReferences: { paths: ['/ref.png'] } },
+    { styles: { links: [{ canvasId: 'style-1' }] } },
+    { sampling: { sampler: 'euler', hires: { width: 2048, height: 2048 } } },
+    { sampling: { sampler: 'euler', hires: null } },
+    { sampling: { sampler: 'euler', shift: 1 } },
+    { sampling: { cfgTruncation: 0 } },
+    { sampling: { stepCache: 'off' } },
+    { sampling: { sampler: 'euler', prompt: 'unexpected' } },
+    { sampling: ['euler'] },
+    { sampling: null },
+    { sampling: {} },
+  ])('rejects pictures and advanced or malformed Worker sampling before connecting: %j', async (input) => {
+    await expect(start.startRequestedEngineJob({ ...base, hostId: workerHost.id, ...input })).rejects.toMatchObject({
+      code: 'E_WORKER_UNSUPPORTED',
+    })
+    expect(connectWorkerHost).not.toHaveBeenCalled()
+    expect(startEngineJob).not.toHaveBeenCalled()
+  })
+
+  it.each([{ scheduler: 'moss' }, { sampler: 'euler', scheduler: 'moss' }])('queues negotiated Worker sampling: %j', async (sampling) => {
+    await start.startRequestedEngineJob({ ...base, hostId: workerHost.id, sampling })
+    expect(startEngineJob).toHaveBeenCalledWith(expect.objectContaining({ hostId: workerHost.id, sampling }))
+  })
+
+  it.each([
+    [true, { sampler: ['euler'] }, { sampler: 'unknown' }],
+    [true, { sampler: ['euler'], scheduler: ['moss'] }, { sampler: 'euler', scheduler: 'euler' }],
+    [true, { sampler: ['euler'] }, { scheduler: 'moss' }],
+    [true, { sampler: [] }, { sampler: 'euler' }],
+    [true, { sampler: ['1'] }, { sampler: 1 }],
+    [false, { sampler: ['euler'] }, { sampler: 'euler' }],
+  ] as const)('refuses unnegotiated Worker choices (samplers=%s, values=%j, request=%j)', async (samplers, values, sampling) => {
+    workerEngineFeatures.mockResolvedValue({ ...features, samplers, values })
+    await expect(start.startRequestedEngineJob({ ...base, hostId: workerHost.id, sampling })).rejects.toMatchObject({
+      code: 'E_WORKER_UNSUPPORTED',
+    })
+    expect(resolveRemoteWorkerAdapters).not.toHaveBeenCalled()
     expect(startEngineJob).not.toHaveBeenCalled()
   })
 

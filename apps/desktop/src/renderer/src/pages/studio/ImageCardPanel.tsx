@@ -1,4 +1,5 @@
 import type { ProjectCanvas } from '@shared/types'
+import { PreviewButton } from '../../components/common/ImageLightbox'
 import { Notice } from '../../components/common/Notice'
 import { Button } from '../../components/ui'
 import { cloverUrl } from '../../lib/clover'
@@ -18,12 +19,14 @@ export function ImageCardPanel({
           <h2 className="truncate text-control font-semibold text-ink">{canvas.title}</h2>
         </div>
         {canvas.imagePath ? (
-          <img
-            src={cloverUrl(canvas.imagePath)}
-            alt={canvas.title}
-            draggable={false}
-            className="max-h-[320px] w-full rounded-lg bg-well object-contain"
-          />
+          <PreviewButton path={canvas.imagePath} title={canvas.title} className="h-auto">
+            <img
+              src={cloverUrl(canvas.imagePath)}
+              alt={canvas.title}
+              draggable={false}
+              className="max-h-[320px] w-full rounded-lg bg-well object-contain"
+            />
+          </PreviewButton>
         ) : (
           <Notice tone="warn">图片文件找不到了</Notice>
         )}

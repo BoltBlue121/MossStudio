@@ -84,7 +84,7 @@ describe('inventory', () => {
 })
 
 describe('saveTrainingHost', () => {
-  it('persists worker configuration and defaults the workflow', async () => {
+  it('persists worker configuration without pinning a workflow when none was entered', async () => {
     const { saveTrainingHost } = await load()
     const worker = {
       ...input,
@@ -97,13 +97,26 @@ describe('saveTrainingHost', () => {
       remoteBackend: 'worker-daemon',
       workerDiscoveryPath: '/srv/worker/discovery.json',
       workerProviderId: 'render-node',
-      workerWorkflow: 'default',
     })
+    expect(stored()[0]).not.toHaveProperty('workerWorkflow')
     vi.resetModules()
-    expect((await load()).getTrainingHost(workerSettings, saved.id)).toMatchObject({
-      remoteBackend: 'worker-daemon',
-      workerWorkflow: 'default',
-    })
+    const reloaded = (await load()).getTrainingHost(workerSettings, saved.id)
+    expect(reloaded).toMatchObject({ remoteBackend: 'worker-daemon', workerProviderId: 'render-node' })
+    expect(reloaded).not.toHaveProperty('workerWorkflow')
+  })
+
+  it.each(['  ', undefined])('keeps an untouched workflow but removes an explicitly cleared one (%j) from disk', async (clear) => {
+    const { saveTrainingHost } = await load()
+    const host = saveTrainingHost({ ...input, remoteBackend: 'worker-daemon', workerWorkflow: ' explicit-wf ' })
+    expect(stored()[0]?.workerWorkflow).toBe('explicit-wf')
+    saveTrainingHost({ ...input, id: host.id, name: 'Renamed' })
+    expect(stored()[0]?.workerWorkflow).toBe('explicit-wf')
+    saveTrainingHost({ ...input, id: host.id, workerWorkflow: clear })
+    expect(stored()[0]).not.toHaveProperty('workerWorkflow')
+    vi.resetModules()
+    const reloaded = (await load()).getTrainingHost(workerSettings, host.id)
+    expect(reloaded?.id).toBe(host.id)
+    expect(reloaded).not.toHaveProperty('workerWorkflow')
   })
 
   it('hides a saved Worker host everywhere while its switch is off, and keeps it in the file', async () => {

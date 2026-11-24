@@ -23,7 +23,7 @@ export interface Recipe {
   disabled?: string
 }
 
-const RECIPES: readonly Omit<Recipe, 'disabled'>[] = [
+export const RECIPES: readonly Omit<Recipe, 'disabled'>[] = [
   { id: 'edit', label: '改一张图', hint: '选一张图，从它开始改', role: 'init' },
   { id: 'inpaint', label: '局部重绘', hint: '选一张图，只重画涂出来的部分', role: 'init' },
   { id: 'compose', label: '按构图生成', hint: '选一张图，按它的深度或轮廓构图', role: 'control' },

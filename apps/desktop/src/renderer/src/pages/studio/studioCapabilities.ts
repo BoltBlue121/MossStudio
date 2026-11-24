@@ -53,7 +53,7 @@ import {
   withUpscaleSize,
 } from './nodes'
 import { withDescription } from './prompt'
-import { deriveReadiness, resolveBundle } from './readiness'
+import { deriveReadiness, isWorkerRun, resolveBundle } from './readiness'
 import {
   boardCanvases,
   canDropRun,
@@ -164,7 +164,9 @@ export function registerStudioCapabilities(
   const diagnose = (canvas: ProjectCanvas | null) => {
     const deps = getDeps()
     const canvases = deps.project.canvasesRef.current
-    const features = deps.boardFeatures ?? null
+    const bundle = resolveBundle(deps.catalog, canvas?.modelBundleId, deps.preferredBundleId)
+    const worker = isWorkerRun(bundle.bundle, deps.remoteHost)
+    const features = worker && deps.remoteHost?.remoteBackend !== 'worker-daemon' ? null : (deps.boardFeatures ?? null)
     if (!canvas)
       return { ready: false, busy: false, canvasId: null, blockers: [{ id: 'selection', message: '先在画布上选中一个画面' }], features }
     const busy = activeCanvasBranchIds(canvases, [...deps.jobs]).has(canvas.id)
@@ -173,12 +175,12 @@ export function registerStudioCapabilities(
       return { ready: false, busy, canvasId: canvas.id, kind: canvas.kind, blockers: [{ id: 'kind', message }], features }
     }
     const generating = generationCanvas(canvas, canvases)
-    const bundle = resolveBundle(deps.catalog, canvas.modelBundleId, deps.preferredBundleId)
     const inputBlockers = [
       ...nodeBlockers(generating, canvases),
       ...resolveJobInputs(generating, {
         canvases,
-        features: deps.boardFeatures,
+        features,
+        worker,
         controlAdapters: deps.controlAdapters,
         controlAdaptersLoaded: deps.controlAdaptersLoaded,
       }).blockers,
@@ -197,7 +199,7 @@ export function registerStudioCapabilities(
         : null,
       inputBlockers,
       update: deps.update,
-      features: deps.boardFeatures,
+      features,
       gpus,
       cliGpus: cliGpuUuids(deps.engineReadiness),
     })

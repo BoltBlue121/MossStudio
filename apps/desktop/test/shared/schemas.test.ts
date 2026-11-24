@@ -82,7 +82,11 @@ const cases = {
   loraProfilesSave: { valid: { loraId: 'lora' }, rejects: { strength: { loraId: 'lora', defaultStrength: 5 } } },
   loraProfilesInspect: { valid: { loraId: 'lora' }, rejects: { missing: {} } },
   mcpClientsStatus: { valid: {}, rejects: { unknown: { x: true } } },
-  mcpClientInstall: { valid: { clientId: 'codex' }, rejects: { unknown: { clientId: 'other' } } },
+  mcpClientInstall: {
+    valid: { clientId: 'codex' },
+    accepts: { reconnect: { clientId: 'codex', resetPolicy: true } },
+    rejects: { unknown: { clientId: 'other' }, invalidConsent: { clientId: 'codex', resetPolicy: 'true' } },
+  },
   mcpClientUninstall: { valid: { clientId: 'claude-code' }, rejects: { missing: {} } },
   agentHubConnect: { valid: { backendId: 'codex' }, rejects: { command: { backendId: 'custom', customCommand: 'bad\ncommand' } } },
   agentHubBackend: { valid: { backendId: 'codex' }, rejects: { empty: { backendId: '' } } },
@@ -128,7 +132,7 @@ const cases = {
       'lowest LAN port': { lanWebPort: 1024 },
       'null LAN port': { lanWebPort: null },
       'concurrency 1': { modelDownloadConcurrency: 1 },
-      'feature toggles': { remoteHostsEnabled: true, trainingEnabled: false, engineAutoUpdate: true },
+      'feature toggles': { remoteHostsEnabled: true, trainingEnabled: false, engineAutoUpdate: true, toolHubEnabled: true },
       'per-GPU engines': {
         engineDeviceOverrides: { 'GPU-1': 'cu13-sm75-system-cuda', 'vk-1002-744c-0': 'hip', 'vk-8086-56a0-0': 'vulkan' },
       },
@@ -139,6 +143,7 @@ const cases = {
       '助手和漫画 default': { languageProviderId: null },
     },
     rejects: {
+      'non-boolean tool hub switch': { toolHubEnabled: 'true' },
       'unknown theme': { theme: 'blue' },
       'null theme': { theme: null },
       'concurrency 0': { modelDownloadConcurrency: 0 },

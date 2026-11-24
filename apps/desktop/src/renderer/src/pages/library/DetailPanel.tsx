@@ -7,6 +7,7 @@ import { call } from '../../lib/api'
 import { cloverUrl } from '../../lib/clover'
 import { buildReuseRequest, buildStartPictureRequest, canReuse } from '../../lib/studioReuse'
 import { useApp } from '../../store'
+import { openImagePreview } from '../../components/common/ImageLightbox'
 import { PromptBlock } from '../../components/common/PromptBlock'
 import { Notice } from '../../components/common/Notice'
 import { Button, ConfirmDialog, FieldLabel, IconButton, LoadingRow, Spinner, useToast } from '../../components/ui'
@@ -19,6 +20,7 @@ export const trashName = (): string => (window.clover.platform === 'darwin' ? '�
 /** Right-hand panel for the selected image: preview, prompt, parameters and actions. */
 export function DetailPanel({
   item,
+  items,
   position,
   total,
   canPrevious,
@@ -29,6 +31,7 @@ export function DetailPanel({
   onDeleted,
 }: {
   item: GalleryItem
+  items: readonly GalleryItem[]
   /** 1-based position of the item in the listing. */
   position: number
   total: number
@@ -135,9 +138,21 @@ export function DetailPanel({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
-        <div className="flex aspect-square w-full shrink-0 items-center justify-center overflow-hidden rounded-lg bg-well">
+        <button
+          type="button"
+          aria-label="放大预览作品"
+          className="flex aspect-square w-full shrink-0 cursor-zoom-in items-center justify-center overflow-hidden rounded-lg bg-well"
+          onClick={() =>
+            openImagePreview({
+              ...item,
+              title: item.name,
+              artwork: true,
+              gallery: items.map((i) => ({ path: i.path, title: i.name, artwork: true })),
+            })
+          }
+        >
           <img key={item.path} src={cloverUrl(item.path)} alt={item.name} className="size-full object-contain" />
-        </div>
+        </button>
 
         <div className="min-w-0">
           <div className="truncate text-control font-medium text-ink" title={item.name}>
