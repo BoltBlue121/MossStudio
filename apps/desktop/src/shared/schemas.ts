@@ -421,6 +421,12 @@ export const schemas = {
         )
         .max(100)
         .optional(),
+      /** A DSH Desktop's own local pairing address; the driver validates it is this machine's. */
+      pairingUrl: z
+        .string()
+        .max(2048)
+        .regex(/^http:\/\/(?:127\.0\.0\.1|\[::1\]|localhost):\d{1,5}\/\?token=[\w-]{1,512}$/)
+        .optional(),
     })
     .strict(),
   agentHubBackend: z.object({ backendId: agentBackend }).strict(),
@@ -431,6 +437,7 @@ export const schemas = {
       cwd: pathLike.optional(),
       createCwd: z.boolean().optional(),
       projectId: z.string().min(1).max(128).optional(),
+      workspaceId: z.string().min(1).max(256).optional(),
       agentPreset: z.string().min(1).max(128).optional(),
       model: z.string().min(1).max(256).optional(),
       provider: z.string().min(1).max(128).optional(),

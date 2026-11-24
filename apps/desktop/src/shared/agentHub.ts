@@ -11,7 +11,7 @@ interface AgentSessionBase {
   updatedAt?: number
 }
 export interface AgentMessagePage {
-  messages: Array<{ seq: number; role: 'user' | 'assistant'; text: string }>
+  messages: Array<{ seq: number; role: 'user' | 'assistant'; text: string; images?: string[] }>
   steps?: Array<{ id: string; title: string; status: 'running' | 'done' | 'error'; detail?: string }>
   hasMore: boolean
   asOfSeq: number
@@ -20,13 +20,23 @@ export interface AgentMessagePage {
 export interface AgentBackendInfo {
   id: string
   label: string
-  kind: 'acp'
+  /** `acp` is a command that speaks ACP; `dsh-desktop` is another DeepSeek Harness on this computer. */
+  kind: 'acp' | 'dsh-desktop'
+  /** First available driver, unless the person explicitly picked another. */
+  preferred?: boolean
   available: boolean
   connected: boolean
   command?: string
   detail?: string
   /** Its conversations outlive a restart: it lists them (`session/list`) and loads them again (`session/load`). */
   resumable?: boolean
+}
+/** A DSH workspace, i.e. a folder whose conversations belong together. */
+export interface AgentProject {
+  id: string
+  title: string
+  cwd: string
+  sessionIds: string[]
 }
 export interface AgentSession extends AgentSessionBase {
   projectId?: string
@@ -68,6 +78,8 @@ export interface AgentConnectInput {
 export interface AgentCreateSessionInput {
   backendId: string
   title?: string
+  /** A DSH workspace to put the conversation in (the driver makes one when only `cwd` is given). */
+  workspaceId?: string
   cwd?: string
   /** Create `cwd` first: the person chose to start a new project folder. */
   createCwd?: boolean
@@ -113,6 +125,8 @@ export interface AgentDriver {
   probe(): Promise<AgentBackendInfo>
   connect(input: AgentConnectInput): Promise<AgentBackendInfo>
   disconnect(): Promise<void>
+  /** Workspaces this Agent groups conversations by; absent when it has none. */
+  listProjects?(): Promise<AgentProject[]>
   listSessions(): Promise<AgentSession[]>
   createSession(input: AgentCreateSessionInput): Promise<{ sessionId: string }>
   readMessages(sessionId: string): Promise<AgentMessagePage>

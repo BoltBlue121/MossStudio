@@ -304,6 +304,10 @@ function defaultHandlers(): Map<string, Handler> {
     external((_, { state }) => state.agents.backends),
   )
   h.set(
+    Ipc.agentHubProjects,
+    external((payload, { state }) => (p<{ backendId: string }>(payload).backendId === 'dsh-desktop' ? (state.agents.projects ?? []) : [])),
+  )
+  h.set(
     Ipc.agentHubSessions,
     external((_, { state }) => state.agents.sessions),
   )
@@ -346,7 +350,21 @@ function defaultHandlers(): Map<string, Handler> {
   )
   h.set(
     Ipc.agentHubCreateSession,
-    external(() => ({ sessionId: 'fixture-agent-session' })),
+    external((payload, { state }) => {
+      const input = p<import('@shared/agentHub').AgentCreateSessionInput>(payload)
+      if (input.backendId !== 'dsh-desktop') return { sessionId: 'fixture-agent-session' }
+      const projects = (state.agents.projects ??= [])
+      let workspace = projects.find((w) => w.id === input.workspaceId)
+      if (!workspace && input.createCwd && input.cwd) {
+        workspace = { id: crypto.randomUUID(), title: input.cwd.split(/[\\/]/).at(-1) || input.cwd, cwd: input.cwd, sessionIds: [] }
+        projects.push(workspace)
+      }
+      if (!workspace) throw new MockIpcError('E_WORKSPACE', '选择工作区')
+      const id = crypto.randomUUID()
+      workspace.sessionIds = [...workspace.sessionIds, id]
+      state.agents.sessions.push({ id, title: input.title || '新对话', cwd: workspace.cwd, projectId: input.projectId })
+      return { sessionId: id }
+    }),
   )
   h.set(
     Ipc.agentHubSetModel,
@@ -357,7 +375,14 @@ function defaultHandlers(): Map<string, Handler> {
     external((payload, { state }) => {
       const id = p<{ backendId: string }>(payload).backendId
       const known = state.agents.backends.find((backend) => backend.id === id)
-      const backend = { id, label: known?.label ?? 'Fixture agent', kind: 'acp' as const, available: true, connected: true }
+      const backend = {
+        ...known,
+        id,
+        label: known?.label ?? 'Fixture agent',
+        kind: known?.kind ?? ('acp' as const),
+        available: true,
+        connected: true,
+      }
       state.agents.backends = [...state.agents.backends.filter((item) => item.id !== id), backend]
       return backend
     }),

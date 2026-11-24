@@ -72,3 +72,21 @@ describe('agent hub createSession', () => {
     expect(seen).toEqual([])
   })
 })
+
+describe('agent hub default backend', () => {
+  const probing = (id: string, available: boolean): AgentDriver => ({
+    ...fakeDriver([]),
+    id,
+    probe: async () => ({ id, label: id, kind: 'acp', available, connected: false }),
+  })
+  const preferred = async (codex: boolean, dsh: boolean) =>
+    (await createAgentHub([probing('codex-acp', codex), probing('dsh-desktop', dsh), probing('custom-acp', true)]).backends()).find(
+      (b) => b.preferred,
+    )?.id
+
+  it('keeps the first Agent found the default, and never the custom command', async () => {
+    expect(await preferred(true, true)).toBe('codex-acp')
+    expect(await preferred(false, true)).toBe('dsh-desktop')
+    expect(await preferred(false, false)).toBeUndefined()
+  })
+})

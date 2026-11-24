@@ -17,6 +17,7 @@ const FOLDER_MODES: Array<{ value: FolderMode; label: string }> = [
 
 /** A folder the Agent already worked in. */
 export interface WorkspaceOption {
+  id?: string
   cwd: string
   label: string
 }
@@ -83,6 +84,7 @@ export function NewSessionDialog({
   projects = [],
   workspaces = [],
   defaultCwd,
+  defaultWorkspaceId,
   onClose,
   onCreate,
   onCreateProject,
@@ -98,6 +100,7 @@ export function NewSessionDialog({
   /** Folders this Agent's conversations already use, newest first. */
   workspaces?: readonly WorkspaceOption[]
   defaultCwd?: string
+  defaultWorkspaceId?: string
   onClose: () => void
   onCreate: (input: CollabCreateSessionInput) => Promise<boolean>
   /** Saves a new, empty Studio project; its id, or null when that failed. */
@@ -105,6 +108,7 @@ export function NewSessionDialog({
 }): React.JSX.Element {
   const [title, setTitle] = useState('')
   const [mode, setMode] = useState<FolderMode>('existing')
+  const [workspaceId, setWorkspaceId] = useState(defaultWorkspaceId ?? '')
   const [cwd, setCwd] = useState(defaultCwd ?? '')
   const [parent, setParent] = useState('')
   const [folderName, setFolderName] = useState('')
@@ -123,6 +127,7 @@ export function NewSessionDialog({
     setTitle('')
     setMode('existing')
     setCwd(defaultCwd ?? '')
+    setWorkspaceId(defaultWorkspaceId ?? '')
     setParent(parentFolder(defaultCwd ?? latestWorkspaces.current[0]?.cwd))
     setFolderName('')
     setProject(projectId ?? NO_PROJECT)
@@ -137,10 +142,16 @@ export function NewSessionDialog({
     return () => {
       active = false
     }
-  }, [open, client, backendId, defaultCwd, projectId])
+  }, [open, client, backendId, defaultCwd, defaultWorkspaceId, projectId])
 
   const newFolder = joinProjectPath(parent, folderName)
-  const folderProblem = mode === 'create' ? newFolderProblem(parent, folderName) : ''
+  const desktop = backendId === 'dsh-desktop'
+  const folderProblem =
+    mode === 'create'
+      ? newFolderProblem(parent, folderName)
+      : desktop && !workspaces.some((w) => w.id === workspaceId)
+        ? '先选择工作区，或创建新项目文件夹。'
+        : ''
   const projectProblem = project === NEW_PROJECT && !newProjectName.trim()
   const chosenWorkspace = workspaces.find((item) => workspaceKey(item.cwd) === workspaceKey(cwd))?.cwd ?? TYPED_FOLDER
   const otherProjects = projects.filter((item) => item.id !== projectId)
@@ -167,7 +178,8 @@ export function NewSessionDialog({
       setProject(linked)
     }
     const option = models.find((item) => item.id === model)
-    const folder = mode === 'create' ? { cwd: newFolder, createCwd: true } : cwd.trim() ? { cwd: cwd.trim() } : {}
+    const folder =
+      mode === 'create' ? { cwd: newFolder, createCwd: true } : desktop ? { workspaceId } : cwd.trim() ? { cwd: cwd.trim() } : {}
     const input: CollabCreateSessionInput = {
       ...(title.trim() ? { title: title.trim().slice(0, 120) } : {}),
       ...folder,
@@ -219,37 +231,50 @@ export function NewSessionDialog({
           <FieldLabel>工作区 / 项目</FieldLabel>
           <Segmented<FolderMode> label="工作区 / 项目" block value={mode} options={FOLDER_MODES} onChange={setMode} />
           {mode === 'existing' ? (
-            <>
-              {workspaces.length ? (
-                <Field label="这个 Agent 用过的项目">
-                  <Select value={chosenWorkspace} onValueChange={(value) => value && setCwd(value)} data-workspace-select>
-                    <option value={TYPED_FOLDER}>手动填写或浏览其他文件夹</option>
-                    {workspaces.map((item) => (
-                      <option key={workspaceKey(item.cwd)} value={item.cwd}>
-                        {item.label} · {item.cwd}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-              ) : null}
-              <Field label="工作区目录">
-                <div className="flex min-w-0 gap-1.5">
-                  <Input
-                    value={cwd}
-                    maxLength={4096}
-                    spellCheck={false}
-                    placeholder="本机文件夹"
-                    onChange={(event) => setCwd(event.target.value)}
-                    className="min-w-0 flex-1"
-                    data-workspace-cwd
-                  />
-                  <Button onClick={() => browse('选择工作区目录', setCwd)}>
-                    <FolderOpen className="size-4" aria-hidden="true" strokeWidth={1.6} />
-                    选择…
-                  </Button>
-                </div>
+            desktop ? (
+              <Field label="已有 DSH 工作区">
+                <Select
+                  value={workspaceId}
+                  onValueChange={setWorkspaceId}
+                  options={[
+                    { value: '', label: '选择工作区' },
+                    ...workspaces.map((w) => ({ value: w.id!, label: `${w.label} · ${w.cwd}` })),
+                  ]}
+                />
               </Field>
-            </>
+            ) : (
+              <>
+                {workspaces.length ? (
+                  <Field label="这个 Agent 用过的项目">
+                    <Select value={chosenWorkspace} onValueChange={(value) => value && setCwd(value)} data-workspace-select>
+                      <option value={TYPED_FOLDER}>手动填写或浏览其他文件夹</option>
+                      {workspaces.map((item) => (
+                        <option key={workspaceKey(item.cwd)} value={item.cwd}>
+                          {item.label} · {item.cwd}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                ) : null}
+                <Field label="工作区目录">
+                  <div className="flex min-w-0 gap-1.5">
+                    <Input
+                      value={cwd}
+                      maxLength={4096}
+                      spellCheck={false}
+                      placeholder="本机文件夹"
+                      onChange={(event) => setCwd(event.target.value)}
+                      className="min-w-0 flex-1"
+                      data-workspace-cwd
+                    />
+                    <Button onClick={() => browse('选择工作区目录', setCwd)}>
+                      <FolderOpen className="size-4" aria-hidden="true" strokeWidth={1.6} />
+                      选择…
+                    </Button>
+                  </div>
+                </Field>
+              </>
+            )
           ) : (
             <>
               <Field label="所在目录">

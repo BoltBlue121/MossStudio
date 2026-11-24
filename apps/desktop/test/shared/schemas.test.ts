@@ -109,11 +109,21 @@ const cases = {
     rejects: { unknown: { clientId: 'other' }, invalidConsent: { clientId: 'codex', resetPolicy: 'true' } },
   },
   mcpClientUninstall: { valid: { clientId: 'claude-code' }, rejects: { missing: {} } },
-  agentHubConnect: { valid: { backendId: 'codex' }, rejects: { command: { backendId: 'custom', customCommand: 'bad\ncommand' } } },
+  agentHubConnect: {
+    valid: { backendId: 'codex' },
+    accepts: { 'a local DSH pairing URL': { backendId: 'dsh-desktop', pairingUrl: 'http://127.0.0.1:52497/?token=demo_token-1' } },
+    rejects: {
+      command: { backendId: 'custom', customCommand: 'bad\ncommand' },
+      'a remote pairing URL': { backendId: 'dsh-desktop', pairingUrl: 'https://remote.invalid/?token=secret' },
+    },
+  },
   agentHubBackend: { valid: { backendId: 'codex' }, rejects: { empty: { backendId: '' } } },
   agentHubCreateSession: {
     valid: { backendId: 'codex' },
-    accepts: { 'a new project folder': { backendId: 'codex', cwd: 'F:/work/new', createCwd: true } },
+    accepts: {
+      'a new project folder': { backendId: 'codex', cwd: 'F:/work/new', createCwd: true },
+      'an existing DSH workspace': { backendId: 'dsh-desktop', workspaceId: 'work-1' },
+    },
     rejects: { missing: {}, createCwd: { backendId: 'codex', cwd: 'F:/work/new', createCwd: 'yes' } },
   },
   agentHubModels: { valid: { backendId: 'codex' }, rejects: { missing: {} } },

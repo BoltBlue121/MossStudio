@@ -379,6 +379,7 @@ export function registerIpc(): void {
   )
   handleExternal(Ipc.agentHubConnect, schemas.agentHubConnect, (input) => agentHub.connect(input))
   handleExternal(Ipc.agentHubDisconnect, schemas.agentHubBackend, ({ backendId }) => agentHub.disconnect(backendId))
+  handleExternal(Ipc.agentHubProjects, schemas.agentHubBackend, ({ backendId }) => agentHub.projects(backendId))
   handleExternal(Ipc.agentHubSessions, schemas.agentHubBackend, ({ backendId }) => agentHub.sessions(backendId))
   handleExternal(Ipc.agentHubCreateSession, schemas.agentHubCreateSession, (input) => agentHub.createSession(input))
   handleExternal(Ipc.agentHubMessages, schemas.agentHubSession, ({ backendId, sessionId }) => agentHub.messages(backendId, sessionId))
