@@ -1,18 +1,20 @@
 /*
- * The two guides below combine the official MOSS-Image prompt-enhancer skill
+ * The two guides below are adapted from the MOSS-Image prompt-enhancer skill
  * (skills/moss-image-prompt-enhancer/SKILL.md and references/layout.md in
- * https://github.com/OpenMOSS/MOSS-Image, Apache License 2.0) with original
- * MossStudio engineering rules tailored to MOSS-Image's unidirectional
- * Qwen3.5-9B text encoder, 5B single-stream DiT, and MossStudio's live board
- * tools. Each guide stands alone as a toggleable Skill pack (`skill.moss.standard`
- * for pure Caption workflows, `skill.moss.layout` for region/Layout workflows).
+ * https://github.com/OpenMOSS/MOSS-Image), copyright the MOSS-Image authors and
+ * licensed under the Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+ * Changed for MossStudio: rewritten, extended with MossStudio's own prompt and
+ * layout rules, and pointed at MossStudio's own board tools instead of a JSON
+ * output format. Each guide names its source and licence where an Agent reads it.
+ * Each is also a Skill pack (`skill.moss.standard`, `skill.moss.layout`) that
+ * stays out of the active Skill until the person turns it on.
  */
 export const MOSS_PROMPTCRAFT_SKILL_MD = String.raw`# MOSS Promptcraft Skill (Standard Caption Mode)
 
-Adapted from https://github.com/OpenMOSS/MOSS-Image/blob/main/skills/moss-image-prompt-enhancer/SKILL.md (Apache License 2.0) with MossStudio prompt-engineering rules for Qwen3.5-9B + 5B DiT.
+Adapted from https://github.com/OpenMOSS/MOSS-Image/blob/main/skills/moss-image-prompt-enhancer/SKILL.md (Apache License 2.0), changed for MossStudio and extended with MossStudio prompt-writing rules.
 
-## 1. Unidirectional Causal Ordering (Macro -> Micro)
-MOSS-Image encodes text through a unidirectional causal language model (Qwen3.5-9B): later tokens attend to earlier ones, never the reverse. Always write prompts in strict macro-to-micro order so lighting and medium govern everything downstream:
+## 1. Ordering (Macro -> Micro)
+Write prompts in macro-to-micro order:
 1. **Medium, art style & camera framing**: lead with the visual medium, style era/technique, focal feel, camera angle, and shot scale (e.g. "High-taste 2D digital painting with selective focus, medium three-quarter shot, slight low angle" or "Candid 35mm film photograph, harsh direct on-camera flash, deep depth of field").
 2. **Environment & global lighting**: establish setting, key light direction/temperature, fill/rim light, and shadow behavior BEFORE describing skin or fabric. For dark rooms or backlit silhouettes, state front-body shadows explicitly and omit "fair/bright skin" words that force flat front fill.
 3. **Subject pose, orientation & gaze**: state exact body/head orientation ("viewer left", "her right hand"), physical contact points, and subtle expression.
@@ -21,14 +23,13 @@ MOSS-Image encodes text through a unidirectional causal language model (Qwen3.5-
 
 ## 2. Visible Phenomena Only — What Works vs What Fails
 - **Describe visible optical/painterly results, never bare gear or engine names**: training captions describe what the eye sees, not camera bodies or renderers. Bare tags like "Contax T2", "Unreal Engine 5", or "Octane Render" have negligible effect unless paired with visible traits (hard flash drop shadows, film grain, gouache brushwork, cel-shaded hard shadows).
-- **Drop unindexed personal artist handles**: generic Danbooru artist handles ("xxx style") are largely absent from VLM recaptions and waste tokens unless backed by an active LoRA trigger word from \`models.catalog.installed\` or \`remote.hosts.loras_list\`. Keep recognizable character names when fidelity helps, and strip broad franchise/company tags that induce cheap cosplay-wig artifacts.
 - **Selective focus & finish**: concentrate crisp detail on eyes, eyelashes, lips, hair wisps, and hands while allowing breathable brushwork or natural depth-of-field falloff on secondary clothing folds and backgrounds; this avoids both unfinished-sketch faces and over-sharpened plastic skin.
-- **Closed \`<|block|>...<|/block|>\` tags for multi-subject scenes**: for compact single-subject scenes, write one cohesive English paragraph (around 60-120 words). When two or more subjects or distinct depth layers share a pure Caption without region boxes, wrap each subject/layer on its own line (\`<|camera_and_lighting|>...<|/camera_and_lighting|>\`, \`<|left_subject|>...<|/left_subject|>\`, \`<|right_subject|>In sharp contrast, NO ...<|/right_subject|>\`), grouping all attributes of one character inside their own block and adding explicit "In sharp contrast, NO <neighbor trait>" anchors to prevent feature bleed.
+- **Multi-subject scenes**: for compact single-subject scenes, write one cohesive English paragraph (around 60-120 words). When two or more subjects or distinct depth layers share a pure Caption without region boxes, keep all attributes of one subject together and add explicit "In sharp contrast, NO <neighbor trait>" anchors to prevent feature bleed.
 - **Exact visible text**: quote any intended visible text verbatim in its original language, preserving punctuation, casing, and line breaks; never use placeholders like "headline here" and never leak JSON/tool/coordinate notes into the prompt.
 
 ## 3. MossStudio Standard Caption Workflow
 1. Call \`studio.board.read_context\` (or \`studio_read_context\`) first to inspect the selected Canvas, size, prompt, regions, model, and LoRAs.
-2. Check \`models.catalog.installed\` (or \`remote.hosts.loras_list\` when running on a Worker host) before changing models or LoRAs; honor each active LoRA's real trigger words and model defaults (e.g. 16 steps / CFG 3 on Heal or distilled 8-step CFG 1 on Turbo, 20-50 steps / CFG 3-4 on standard SFT).
+2. Check \`models.catalog.installed\` (or \`remote.hosts.loras_list\` when running on a Worker host) before changing models or LoRAs; honor each active LoRA's real trigger words and the model's own defaults.
 3. In Standard Caption mode, keep the Canvas region list empty (or clear stale regions when switching from Layout to pure Caption) and write the positive prompt via \`studio.board.set_prompt\`. Set \`negative\` only when needed (concise quality/anatomy/style exclusions, omitting \`text\` when rendering words).
 4. Verify readiness via \`studio.board.diagnose\`, then start generation with \`studio.runs.generate\` when requested by the user.`
 
@@ -38,11 +39,11 @@ Adapted from https://github.com/OpenMOSS/MOSS-Image/blob/main/skills/moss-image-
 
 ## 1. When and How Layout Mode Works in MossStudio
 - Use Layout mode whenever spatial control matters: multi-character staging, posters, typography/signage, comics/multi-panel pages, asymmetric compositions, or exact object-to-character relationships. Even a single-subject scene can use Layout to lock framing, scale, and negative space.
-- MossStudio stores the global scene description on the Canvas prompt (\`summary.caption\`) and stores spatial items as Canvas regions (\`object\`, \`character\`, \`text\`). When generating, MossStudio's built-in compiler automatically converts normalized \`0..1\` \`{x, y, w, h}\` boxes on the active \`width × height\` (multiples of 16, up to 4.2 MP) into MOSS-Image's centered integer \`abs_centralized\` / \`yxyx\` JSON.
+- MossStudio stores the global scene description on the Canvas prompt (\`summary.caption\`) and stores spatial items as Canvas regions (\`object\`, \`character\`, \`text\`). When generating, MossStudio's built-in compiler automatically converts normalized \`0..1\` \`{x, y, w, h}\` boxes on the active \`width × height\` (multiples of 16) into MOSS-Image's centered integer \`abs_centralized\` / \`yxyx\` JSON.
 - **Never** hand-write raw Layout JSON into \`studio.board.set_prompt\`, **never** compute \`abs_centralized\` / \`yxyx\` coordinates by hand, and **never** invoke external \`compile_prompt.py\` scripts. Always use \`studio.regions.add\`, \`studio.regions.add_text\`, \`studio.regions.update\`, and \`studio.regions.remove\`.
 
 ## 2. Global Summary vs Per-Region Captions
-- **Global Canvas prompt (\`studio.board.set_prompt\`)**: acts as \`summary.caption\`. Lead with overall medium, art style, lighting, color harmony, and—for multi-panel or recurring characters—a concise character appearance sheet so unidirectional attention propagates consistent traits into every region below.
+- **Global Canvas prompt (\`studio.board.set_prompt\`)**: acts as \`summary.caption\`. Lead with overall medium, art style, lighting, color harmony, and—for multi-panel or recurring characters—a concise character appearance sheet that every region below stays consistent with.
 - **Region labels (\`character\` vs \`object\` vs \`text\`)**:
   - Use \`character\` ONLY for regions containing a person/creature with a head/body. For inset close-ups of eyes, lips, hands, shoes, or props, use \`object\` and start the caption with \`Extreme close-up showing ONLY ...\` so the model does not hallucinate an extra head inside the inset box.
   - Separate two characters into two distinct \`character\` regions with clear horizontal/vertical separation or intentional overlap, repeating core hair/eye/outfit anchors in each region caption so traits never swap.
